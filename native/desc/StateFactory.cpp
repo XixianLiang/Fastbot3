@@ -11,7 +11,7 @@
 
 namespace fastbotx {
 
-    StatePtr StateFactory::createState(AlgorithmType agentT, const stringPtr &activity,
+    StatePtr StateFactory::createState(AlgorithmType /*agentT*/, const stringPtr &activity,
                                        const ElementPtr &element) {
         StatePtr state = nullptr;
         state = ReuseState::create(element, activity);

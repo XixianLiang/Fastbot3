@@ -34,9 +34,9 @@ namespace fastbotx {
         if (STATE_WITH_TEXT || Preference::inst()->isForceUseTextModel()) {
             bool overMaxLen = this->_text.size() > STATE_TEXT_MAX_LEN;
             this->_text = this->_text.substr(0, STATE_TEXT_MAX_LEN * 4);
-            int cutLength = STATE_TEXT_MAX_LEN;
+            size_t cutLength = static_cast<size_t>(STATE_TEXT_MAX_LEN);
             if (this->_text.length() > cutLength && isZhCn(this->_text[STATE_TEXT_MAX_LEN])) {
-                int ci = 0;
+                size_t ci = 0;
                 for (; ci < cutLength; ci++) {
                     if (isZhCn(this->_text[ci])) {
                         ci += 2;

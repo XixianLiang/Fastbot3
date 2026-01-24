@@ -115,6 +115,7 @@ namespace fastbotx {
         // Random number generator for better performance and thread safety
         mutable std::mt19937 _rng;
         mutable std::uniform_real_distribution<double> _uniformDist{0.0, 1.0};
+        mutable std::uniform_real_distribution<float> _uniformFloatDist{0.0f, 1.0f};
         // A map containing entry of hash code of Action and map, which containing entry of name of activity that this
         // action goes to and the count of this very activity being visited.
         ReuseEntryIntMap _reuseModel;
@@ -122,7 +123,7 @@ namespace fastbotx {
         std::string _modelSavePath;
         std::string _defaultModelSavePath;
         static std::string DefaultModelSavePath; // if the saved path is not specified, use this as the default.
-        std::mutex _reuseModelLock;
+        mutable std::mutex _reuseModelLock;  // mutable to allow locking in const methods
 
         void computeAlphaValue();
         
@@ -137,6 +138,11 @@ namespace fastbotx {
         
         /// Update Q values for previous actions using SARSA algorithm
         void updateQValues();
+        
+        /// Check if an action is in the reuse model
+        /// \param actionHash The hash of the action to check
+        /// \return true if the action is in the reuse model, false otherwise
+        bool isActionInReuseModel(uintptr_t actionHash) const;
     };
 
     typedef std::shared_ptr<ModelReusableAgent> ReuseAgentPtr;

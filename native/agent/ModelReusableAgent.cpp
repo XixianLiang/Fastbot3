@@ -18,7 +18,20 @@
 #include <memory>
 #include <mutex>
 #include <utility>
+#include <algorithm>
+#include <thread>
+#include <chrono>
+#include <cstdio>
 
+namespace ModelStorageConstants {
+#ifdef __ANDROID__
+    constexpr const char* StoragePrefix = "/sdcard/fastbot_";
+#else
+    constexpr const char* StoragePrefix = "";
+#endif
+    constexpr const char* ModelFileExtension = ".fbm";
+    constexpr const char* TempModelFileExtension = ".tmp.fbm";
+}  // namespace ModelStorageConstants
 
 namespace fastbotx {
 
@@ -26,13 +39,16 @@ namespace fastbotx {
             : AbstractAgent(model), 
               _alpha(SarsaRLConstants::DefaultAlpha), 
               _epsilon(SarsaRLConstants::DefaultEpsilon),
+              _rng(std::random_device{}()),
               _modelSavePath(DefaultModelSavePath), 
-              _defaultModelSavePath(DefaultModelSavePath),
-              _rng(std::random_device{}()) {
+              _defaultModelSavePath(DefaultModelSavePath) {
         this->_algorithmType = AlgorithmType::Reuse;
     }
 
     ModelReusableAgent::~ModelReusableAgent() {
+        // Note: Model should have been saved by the periodic save thread (threadModelStorage)
+        // If the thread is not running or save failed, we still try to save here as a fallback
+        // However, this may block the destructor, so it's better to ensure saves happen during lifetime
         BLOG("save model in destruct");
         this->saveReuseModel(this->_modelSavePath);
         this->_reuseModel.clear();
@@ -63,7 +79,9 @@ namespace fastbotx {
         };
         
         double movingAlpha = InitialMovingAlpha;
-        for (const auto& [threshold, decrement] : alphaThresholds) {
+        for (const auto& pair : alphaThresholds) {
+            int threshold = pair.first;
+            double decrement = pair.second;
             if (visitCount > threshold) {
                 movingAlpha -= decrement;
             }
@@ -86,9 +104,8 @@ namespace fastbotx {
             const GraphPtr &graphRef = modelPtr->getGraph();
             auto visitedActivities = graphRef->getVisitedActivities(); // get the set of visited activities
             // get the last, or previous, action in the vector containing previous actions.
-            ActivityStateActionPtr lastSelectedAction = std::dynamic_pointer_cast<ActivityStateAction>(
-                    this->_previousActions.back());
-            if (nullptr != lastSelectedAction) {
+            if (auto lastSelectedAction = std::dynamic_pointer_cast<ActivityStateAction>(
+                    this->_previousActions.back())) {
                 // Get the expectation of this action for accessing unvisited new activity.
                 rewardValue = this->probabilityOfVisitingNewActivities(lastSelectedAction,
                                                                        visitedActivities);
@@ -125,6 +142,7 @@ namespace fastbotx {
         int unvisited = 0;
         // find this action in this model according to its int hash
         // according to the given action, get the activities that this action could reach in reuse model.
+        std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
         auto actionMapIterator = this->_reuseModel.find(action->hash());
         if (actionMapIterator != this->_reuseModel.end()) {
             // Iterate the map containing entry of activity name and visited count
@@ -132,7 +150,7 @@ namespace fastbotx {
             for (const auto &activityCountMapIterator: (*actionMapIterator).second) {
                 total += activityCountMapIterator.second;
                 stringPtr activity = activityCountMapIterator.first;
-                if (visitedActivities.find(activity) == visitedActivities.end()) {
+                if (visitedActivities.count(activity) == 0) {
                     unvisited += activityCountMapIterator.second;
                 }
             }
@@ -149,6 +167,11 @@ namespace fastbotx {
     /// @param visitedActivities the visited activity set AFTER reaching this state(the activity of this
     ///         state is included)
     /// @return the expectation of this state reaching an unvisited activity after executing one of the action
+    bool ModelReusableAgent::isActionInReuseModel(uintptr_t actionHash) const {
+        std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+        return this->_reuseModel.count(actionHash) > 0;
+    }
+
     double ModelReusableAgent::getStateActionExpectationValue(const StatePtr &state,
                                                               const stringPtrSet &visitedActivities) const {
         double value = 0.0;
@@ -156,7 +179,7 @@ namespace fastbotx {
             uintptr_t actionHash = action->hash();
             // if this action is new, increment the value by 1, else by 0.5
             // If this action has not been visited yet.
-            if (this->_reuseModel.find(actionHash) == this->_reuseModel.end()) {
+            if (!this->isActionInReuseModel(actionHash)) {
                 value += SarsaRLConstants::NewActionInStateReward;
             }
                 // If this action is been performed in current testing.
@@ -222,27 +245,26 @@ namespace fastbotx {
         if (this->_previousActions.empty())
             return;
         ActionPtr lastAction = this->_previousActions.back();
-        ActivityNameActionPtr modelAction = std::dynamic_pointer_cast<ActivityNameAction>(
-                lastAction);
-        if (nullptr == modelAction || nullptr == this->_newState)
-            return;
-        auto hash = (uint64_t) modelAction->hash();
-        stringPtr activity = this->_newState->getActivityString(); // mark: use the _newstate as last selected action's target
-        if (activity == nullptr)
-            return;
-        {
-            std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
-            auto iter = this->_reuseModel.find(hash);
-            if (iter == this->_reuseModel.end()) {
-                BDLOG("can not find action %s in reuse map", modelAction->getId().c_str());
-                ReuseEntryM entryMap;
-                entryMap.emplace(std::make_pair(activity, 1));
-                this->_reuseModel[hash] = entryMap;
-            } else {
-                ((*iter).second)[activity] += 1;
+        if (auto modelAction = std::dynamic_pointer_cast<ActivityNameAction>(lastAction)) {
+            if (nullptr == this->_newState)
+                return;
+            auto hash = (uint64_t) modelAction->hash();
+            stringPtr activity = this->_newState->getActivityString(); // mark: use the _newstate as last selected action's target
+            if (activity == nullptr)
+                return;
+            {
+                std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+                auto iter = this->_reuseModel.find(hash);
+                if (iter == this->_reuseModel.end()) {
+                    BDLOG("can not find action %s in reuse map", modelAction->getId().c_str());
+                    ReuseEntryM entryMap;
+                    entryMap.emplace(activity, 1);
+                    this->_reuseModel[hash] = entryMap;
+                } else {
+                    ((*iter).second)[activity] += 1;
+                }
+                this->_reuseQValue[hash] = modelAction->getQValue();
             }
-            auto qValueReuseEntryIter = this->_reuseQValue.find(hash);
-            this->_reuseQValue[hash] = modelAction->getQValue();
         }
     }
 
@@ -313,34 +335,44 @@ namespace fastbotx {
     ///        SCROLL_BOTTOM_UP_N
     /// \return An action in this new state but not been performed before nor been recorded by Reuse Model
     ActionPtr ModelReusableAgent::selectUnperformedActionNotInReuseModel() const {
-        ActionPtr retAct = nullptr;
         std::vector<ActionPtr> actionsNotInModel;
         for (const auto &action: this->_newState->getActions()) {
             bool matched = action->isModelAct() // should be one of aforementioned actions.
-                           && (this->_reuseModel.find(action->hash()) ==
-                               this->_reuseModel.end()) // this action should not be in reuse model
+                           && !this->isActionInReuseModel(action->hash()) // this action should not be in reuse model
                            && action->getVisitedCount() <=
                               0; // find the action that not been explored before
             if (matched) {
                 actionsNotInModel.emplace_back(action);
             }
         }
-        // random by priority
+        // random by priority - use cumulative distribution function (CDF) and binary search for O(log n) complexity
+        if (actionsNotInModel.empty()) {
+            BDLOGE("%s", " no actions not in model");
+            return nullptr;
+        }
+        
+        // Build cumulative weights for binary search
+        std::vector<int> cumulativeWeights;
         int totalWeight = 0;
         for (const auto &action: actionsNotInModel) {
             totalWeight += action->getPriority();
+            cumulativeWeights.push_back(totalWeight);
         }
+        
         if (totalWeight <= 0) {
             BDLOGE("%s", " total weights is 0");
             return nullptr;
         }
+        
         int randI = randomInt(0, totalWeight);
-        for (auto action: actionsNotInModel) {
-            if (randI < action->getPriority()) {
-                return action;
-            }
-            randI -= action->getPriority();
+        auto it = std::lower_bound(cumulativeWeights.begin(), 
+                                  cumulativeWeights.end(), randI);
+        size_t index = std::distance(cumulativeWeights.begin(), it);
+        
+        if (index < actionsNotInModel.size()) {
+            return actionsNotInModel[index];
         }
+        
         BDLOGE("%s", " rand a null action");
         return nullptr;
     }
@@ -348,12 +380,22 @@ namespace fastbotx {
     ActionPtr ModelReusableAgent::selectUnperformedActionInReuseModel() const {
         float maxValue = -MAXFLOAT;
         ActionPtr nextAction = nullptr;
+        
+        // Cache visitedActivities to avoid repeated calls in the loop
+        auto modelPointer = this->_model.lock();
+        stringPtrSet visitedActivities;
+        if (modelPointer) {
+            const GraphPtr &graphRef = modelPointer->getGraph();
+            visitedActivities = graphRef->getVisitedActivities();
+        } else {
+            return nullptr;
+        }
+        
         // use humble gumbel(http://amid.fish/humble-gumbel) to affect the sampling of actions from reuseModel
         for (const auto &action: this->_newState->targetActions())  // except BACK/FEED/EVENT_SHELL actions. Only actions from  ActionType::CLICK to ActionType::SCROLL_BOTTOM_UP_N are allowed
         {
             uintptr_t actionHash = action->hash();
-            if (this->_reuseModel.find(actionHash) !=
-                this->_reuseModel.end()) // found this action in reuse model
+            if (this->isActionInReuseModel(actionHash)) // found this action in reuse model
             {
                 if (action->getVisitedCount() >
                     0) // In this state, this action has just been performed in this round.
@@ -361,31 +403,25 @@ namespace fastbotx {
                     BDLOG("%s", "action has been visited");
                     continue;
                 }
-                auto modelPointer = this->_model.lock();
-                if (modelPointer) {
-                    const GraphPtr &graphRef = modelPointer->getGraph();
-                    auto visitedActivities = graphRef->getVisitedActivities();
-                    auto qualityValue = static_cast<float>(this->probabilityOfVisitingNewActivities(
-                            action,
-                            visitedActivities));
-                    if (qualityValue > SarsaRLConstants::QualityValueThreshold)
-                    {
-                        // following code is for generating a random value to slight affect the quality value
-                        qualityValue = SarsaRLConstants::QualityValueMultiplier * qualityValue;
-                        // Use member random number generator for better performance
-                        std::uniform_real_distribution<float> uniformDist(0.0f, 1.0f);
-                        auto uniform = uniformDist(_rng);
-                        // random value from uniform distribution should not be 0, or log function will return INF
-                        if (uniform < std::numeric_limits<float>::min())
-                            uniform = std::numeric_limits<float>::min();
-                        // add this random factor to quality value
-                        qualityValue -= log(-log(uniform));
+                auto qualityValue = static_cast<float>(this->probabilityOfVisitingNewActivities(
+                        action,
+                        visitedActivities));
+                if (qualityValue > SarsaRLConstants::QualityValueThreshold)
+                {
+                    // following code is for generating a random value to slight affect the quality value
+                    qualityValue = SarsaRLConstants::QualityValueMultiplier * qualityValue;
+                    // Use member random number generator for better performance
+                    auto uniform = _uniformFloatDist(_rng);
+                    // random value from uniform distribution should not be 0, or log function will return INF
+                    if (uniform < std::numeric_limits<float>::min())
+                        uniform = std::numeric_limits<float>::min();
+                    // add this random factor to quality value
+                    qualityValue -= log(-log(uniform));
 
-                        // choose the action with the maximum quality value
-                        if (qualityValue > maxValue) {
-                            maxValue = qualityValue;
-                            nextAction = action;
-                        }
+                    // choose the action with the maximum quality value
+                    if (qualityValue > maxValue) {
+                        maxValue = qualityValue;
+                        nextAction = action;
                     }
                 }
             }
@@ -406,14 +442,13 @@ namespace fastbotx {
         }
         const GraphPtr &graphRef = modelPtr->getGraph();
         auto visitedActivities = graphRef->getVisitedActivities();
-        for (auto action: this->_newState->getActions()) {
+        for (const auto &action: this->_newState->getActions()) {
             double qv = 0.0;
             uintptr_t actionHash = action->hash();
             // it won't happen, since if there is am unvisited action in state, it will be
             // visited before this method is called.
             if (action->getVisitedCount() <= 0) {
-                auto iterator = this->_reuseModel.find(actionHash);
-                if (iterator != this->_reuseModel.end()) {
+                if (this->isActionInReuseModel(actionHash)) {
                     qv += this->probabilityOfVisitingNewActivities(action, visitedActivities);
                 } else {
                     BDLOG("qvalue pick return a action: %s", action->toString().c_str());
@@ -423,8 +458,7 @@ namespace fastbotx {
             qv += getQValue(action);
             qv /= SarsaRLConstants::EntropyAlpha;
             // Use member random number generator for better performance
-            std::uniform_real_distribution<float> uniformDist(0.0f, 1.0f);
-            float uniform = uniformDist(_rng); // with this uniform distribution, add a little disturbance to the qv value
+            float uniform = _uniformFloatDist(_rng); // with this uniform distribution, add a little disturbance to the qv value
 
             // use the uniform distribution and humble gumbel to add some randomness to the qv value
             if (uniform < std::numeric_limits<float>::min())
@@ -445,34 +479,44 @@ namespace fastbotx {
 
     void ModelReusableAgent::threadModelStorage(const std::weak_ptr<ModelReusableAgent> &agent) {
         constexpr int saveInterval = SarsaRLConstants::ModelSaveIntervalMs;
-        while (!agent.expired()) {
-            agent.lock()->saveReuseModel(agent.lock()->_modelSavePath);
-            std::this_thread::sleep_for(std::chrono::milliseconds(saveInterval));
+        constexpr auto interval = std::chrono::milliseconds(saveInterval);
+        
+        while (true) {
+            auto agentPtr = agent.lock();  // 只lock一次
+            if (!agentPtr) {
+                break;
+            }
+            
+            std::string savePath = agentPtr->_modelSavePath;  // 复制路径
+            agentPtr.reset();  // 释放锁，避免长时间持有
+            
+            // 在锁外保存模型
+            if (auto locked = agent.lock()) {
+                locked->saveReuseModel(savePath);
+            }
+            
+            std::this_thread::sleep_for(interval);
         }
     }
-
-#ifdef __ANDROID__
-#define STORAGE_PREFIX "/sdcard/fastbot_"
-#else
-#define STORAGE_PREFIX ""
-#endif
 
     /// According to the given package name, deserialize
     /// the serialized model file with the ReuseModel.fbs
     /// by FlatBuffers
     /// \param packageName The package name of the tested application
     void ModelReusableAgent::loadReuseModel(const std::string &packageName) {
-        std::string modelFilePath = STORAGE_PREFIX + packageName + ".fbm";
+        std::string modelFilePath = std::string(ModelStorageConstants::StoragePrefix) + 
+                                    packageName + ModelStorageConstants::ModelFileExtension;
 
         this->_modelSavePath = modelFilePath;
         if (!this->_modelSavePath.empty()) {
-            this->_defaultModelSavePath = STORAGE_PREFIX + packageName + ".tmp.fbm";
+            this->_defaultModelSavePath = std::string(ModelStorageConstants::StoragePrefix) + 
+                                         packageName + ModelStorageConstants::TempModelFileExtension;
         }
         BLOG("begin load model: %s", this->_modelSavePath.c_str());
 
         std::ifstream modelFile(modelFilePath, std::ios::binary | std::ios::in);
-        if (modelFile.fail()) {
-            BLOG("read model file %s failed, check if file exists!", modelFilePath.c_str());
+        if (!modelFile.is_open()) {
+            BLOGE("Failed to open model file: %s", modelFilePath.c_str());
             return;
         }
 
@@ -492,7 +536,14 @@ namespace fastbotx {
         // Use smart pointer to manage memory, exception safe
         std::unique_ptr<char[]> modelFileData(new char[filesize]);
         //Reads count characters from the input sequence and stores them into a character array.
-        fileBuffer->sgetn(modelFileData.get(), static_cast<int>(filesize));
+        std::streamsize bytesRead = fileBuffer->sgetn(modelFileData.get(), static_cast<int>(filesize));
+        
+        // Check if read was successful
+        if (bytesRead != static_cast<std::streamsize>(filesize)) {
+            BLOGE("Failed to read complete model file: read %lld bytes, expected %zu bytes", 
+                  static_cast<long long>(bytesRead), filesize);
+            return;
+        }
         auto reuseFBModel = GetReuseModel(modelFileData.get());
 
         // to std::map
@@ -506,23 +557,23 @@ namespace fastbotx {
             BLOG("%s", "model data is null");
             return;
         }
-        for (int entryIndex = 0; entryIndex < reusedModelDataPtr->size(); entryIndex++) {
+        for (flatbuffers::uoffset_t entryIndex = 0; entryIndex < reusedModelDataPtr->size(); entryIndex++) {
             auto reuseEntryInReuseModel = reusedModelDataPtr->Get(entryIndex);
             uint64_t actionHash = reuseEntryInReuseModel->action();
             auto activityEntry = reuseEntryInReuseModel->targets();
             ReuseEntryM entryPtr;
-            for (uoffset_t targetIndex = 0; targetIndex < activityEntry->size(); targetIndex++) {
+            for (flatbuffers::uoffset_t targetIndex = 0; targetIndex < activityEntry->size(); targetIndex++) {
                 auto targetEntry = activityEntry->Get(targetIndex);
                 BDLOG("load model hash: %llu %s %d", actionHash,
                       targetEntry->activity()->str().c_str(), (int) targetEntry->times());
-                entryPtr.insert(std::make_pair(
+                entryPtr.emplace(
                         std::make_shared<std::string>(targetEntry->activity()->str()),
-                        (int) targetEntry->times()));
+                        (int) targetEntry->times());
             }
             if (!entryPtr.empty()) {
                 std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
 //            this->_reuseQValue.insert(std::make_pair(actionHash, reuseEntryInReuseModel->quality()));
-                this->_reuseModel.insert(std::make_pair(actionHash, entryPtr));
+                this->_reuseModel.emplace(actionHash, entryPtr);
             }
         }
         BLOG("loaded model contains actions: %zu", this->_reuseModel.size());
@@ -560,16 +611,47 @@ namespace fastbotx {
                 actionActivityVector.data(), actionActivityVector.size()));
         builder.Finish(savedActionActivityEntries);
 
-        //save to local file
+        //save to local file - use temporary file first, then atomically replace
         std::string outputFilePath = modelFilepath;
         if (outputFilePath.empty()) // if the passed argument modelFilepath is "", use the tmpSavePath
             outputFilePath = this->_defaultModelSavePath;
-        BLOG("save model to path: %s", outputFilePath.c_str());
-        std::ofstream outputFile(outputFilePath);
+        
+        if (outputFilePath.empty()) {
+            BLOGE("Cannot save model: output file path is empty");
+            return;
+        }
+        
+        // Write to temporary file first
+        std::string tempFilePath = outputFilePath + ".tmp";
+        BLOG("save model to temporary path: %s", tempFilePath.c_str());
+        
+        std::ofstream outputFile(tempFilePath, std::ios::binary);
+        if (!outputFile.is_open()) {
+            BLOGE("Failed to open temporary file for writing: %s", tempFilePath.c_str());
+            return;
+        }
+        
         outputFile.write((char *) builder.GetBufferPointer(), static_cast<int>(builder.GetSize()));
         outputFile.close();
+        
+        // Check if write was successful
+        if (outputFile.fail()) {
+            BLOGE("Failed to write model to temporary file: %s", tempFilePath.c_str());
+            std::remove(tempFilePath.c_str());  // Clean up temporary file
+            return;
+        }
+        
+        // Atomically replace the original file with the temporary file
+        if (std::rename(tempFilePath.c_str(), outputFilePath.c_str()) != 0) {
+            BLOGE("Failed to rename temporary file to final file: %s -> %s", 
+                  tempFilePath.c_str(), outputFilePath.c_str());
+            std::remove(tempFilePath.c_str());  // Clean up temporary file
+            return;
+        }
+        
+        BLOG("Model saved successfully to: %s", outputFilePath.c_str());
     }
 
-}
+}  // namespace fastbotx
 
 #endif

@@ -15,7 +15,7 @@ namespace fastbotx {
     Node::Node()
             : _visitedCount(0), _id(0) {}
 
-    void Node::visit(time_t timestamp) {
+    void Node::visit(time_t /*timestamp*/) {
         _visitedCount++;
         BDLOG("visit id:%s times %d", this->getId().c_str(), this->_visitedCount);
     }

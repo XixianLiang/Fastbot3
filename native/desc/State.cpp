@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <utility>
 #include <cmath>
+#include <sstream>
 
 namespace fastbotx {
 
@@ -36,7 +37,7 @@ namespace fastbotx {
                 if (!noMerged) {
                     uintptr_t h = widgetPtr->hash();
                     mergedWidgetCount++;
-                    if (this->_mergedWidgets.find(h) == this->_mergedWidgets.end()) {
+                    if (this->_mergedWidgets.count(h) == 0) {
                         WidgetPtrVec tempWidgetVector;
                         tempWidgetVector.emplace_back(widgetPtr);
                         this->_mergedWidgets.emplace(h, tempWidgetVector);
@@ -50,6 +51,8 @@ namespace fastbotx {
     }
 
     StatePtr State::create(ElementPtr elem, stringPtr activityName) {
+        // Use new + shared_ptr instead of make_shared because constructor is protected
+        // and make_shared cannot access protected constructors from outside the class
         StatePtr sharedPtr = std::shared_ptr<State>(new State(std::move(activityName)));
         sharedPtr->buildFromElement(nullptr, std::move(elem));
         uintptr_t activityHash =
@@ -87,7 +90,7 @@ namespace fastbotx {
         }
         if (nullptr != action->getTarget()) {
             uintptr_t h = action->getTarget()->hash();
-            if (this->_mergedWidgets.find(h) != this->_mergedWidgets.end()) {
+            if (this->_mergedWidgets.count(h) > 0) {
                 return action->getVisitedCount() > (int) this->_mergedWidgets.at(h).size();
             }
         }
@@ -171,15 +174,17 @@ namespace fastbotx {
     }
 
     std::string State::toString() const {
-        std::string ret("{state: " + std::to_string(this->hash()) + "\n    widgets: \n");
+        std::ostringstream oss;
+        oss << "{state: " << this->hash() << "\n    widgets: \n";
         for (auto const &widget: this->_widgets) {
-            ret += "   " + widget->toString() + "\n";
+            oss << "   " << widget->toString() << "\n";
         }
-        ret += ("action: \n");
+        oss << "action: \n";
         for (auto const &action: this->_actions) {
-            ret += "   " + action->toString() + "\n";
+            oss << "   " << action->toString() << "\n";
         }
-        return ret + "\n}";
+        oss << "\n}";
+        return oss.str();
     }
 
 
@@ -267,7 +272,7 @@ namespace fastbotx {
     }
 
 
-    ActivityStateActionPtr State::resolveAt(ActivityStateActionPtr action, time_t t) {
+    ActivityStateActionPtr State::resolveAt(ActivityStateActionPtr action, time_t /*t*/) {
         if (action->getTarget() == nullptr)
             return action;
         uintptr_t h = action->getTarget()->hash();

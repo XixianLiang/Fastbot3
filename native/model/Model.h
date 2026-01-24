@@ -19,6 +19,11 @@
 
 namespace fastbotx {
 
+    // Constants namespace for model-related constants
+    namespace ModelConstants {
+        constexpr const char* DefaultDeviceID = "0000001";
+    }
+
     class Model : public std::enable_shared_from_this<Model> {
     public:
         /// Create smart pointer of a new model object
@@ -87,6 +92,30 @@ namespace fastbotx {
         Model();
 
     private:
+        // Helper methods for getOperateOpt refactoring
+        /// Get custom action from preference if exists
+        ActionPtr getCustomActionIfExists(const std::string &activity, const ElementPtr &element) const;
+        
+        /// Get or create activity string pointer
+        stringPtr getOrCreateActivityPtr(const std::string &activity);
+        
+        /// Get or create agent for the given device ID
+        AbstractAgentPtr getOrCreateAgent(const std::string &deviceID);
+        
+        /// Create and add state to graph
+        StatePtr createAndAddState(const ElementPtr &element, const AbstractAgentPtr &agent, 
+                                   const stringPtr &activityPtr);
+        
+        /// Select action based on state, agent and custom action
+        /// \param state The current state
+        /// \param agent The agent to use for action selection
+        /// \param customAction Custom action from preference, if any
+        /// \param actionCost Output parameter for action generation cost in seconds
+        /// \return Selected action, or nullptr if failed
+        ActionPtr selectAction(StatePtr &state, AbstractAgentPtr &agent, ActionPtr customAction, double &actionCost);
+        
+        /// Convert action to operate and apply patches
+        OperatePtr convertActionToOperate(ActionPtr action, StatePtr state);
         // The smart pointer of the graph object
         GraphPtr _graph;
         // A map containing pairs of device id and the corresponding agent object

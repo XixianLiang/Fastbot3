@@ -120,7 +120,7 @@ namespace fastbotx {
         {
             BLOGE("Parse Operate For Device Error! %s", e.what());
             char returnCString[2000];
-            sprintf(returnCString, "{\"act\":\"%s\", \"pos\":[%d,%d,%d,%d],\"sid\":\"%s\",        \
+            snprintf(returnCString, sizeof(returnCString), "{\"act\":\"%s\", \"pos\":[%d,%d,%d,%d],\"sid\":\"%s\",        \
             \"aid\":\"%s\",\"waitTime\":%d,\"throttle\":%.2f,\"extra0\":\"%s\",    \
             \"name\":\"%s\",\"text\":\"%s\",\"allowFuzzing\":\"%s\",\"clear\":\"%s\",\"adbInput\":\"%s\",       \
             \"rawInput\":\"%s\",\"editable\":\"%s\",\"jAction\":\"%s\"}",

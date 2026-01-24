@@ -121,9 +121,9 @@ namespace fastbotx {
         tinyxml2::XMLDocument doc;
         std::vector<std::string> strings;
         int startIndex = 0, endIndex = 0;
-        for (int i = 0; i <= xmlContent.size(); i++) {
+        for (size_t i = 0; i <= xmlContent.size(); i++) {
             // If we reached the end of the word or the end of the input.
-            if (xmlContent[i] == '\n' || i == xmlContent.size()) {
+            if (i >= xmlContent.size() || xmlContent[i] == '\n') {
                 endIndex = i;
                 std::string temp;
                 temp.append(xmlContent, startIndex, endIndex - startIndex);
@@ -168,7 +168,7 @@ namespace fastbotx {
         return elementPtr;
     }
 
-    void Element::fromJson(const std::string &jsonData) {
+    void Element::fromJson(const std::string &/*jsonData*/) {
         //nlohmann::json
     }
 
@@ -429,7 +429,7 @@ namespace fastbotx {
         hashcode =
                 hashcode1 ^ hashcode2 ^ hashcode3 ^ hashcode4 ^ hashcode5 ^ hashcode6 ^ hashcode7;
         if (recursive) {
-            for (int i = 0; i < this->_children.size(); i++) {
+            for (size_t i = 0; i < this->_children.size(); i++) {
                 long childHash = this->_children[i]->hash() << 2;
                 hashcode ^= childHash;
                 // with order

@@ -17,7 +17,9 @@ namespace fastbotx {
 
 
     std::shared_ptr<Model> Model::create() {
-        return ModelPtr(new Model());
+        // Use new + shared_ptr instead of make_shared because constructor is protected
+        // and make_shared cannot access protected constructors from outside the class
+        return std::shared_ptr<Model>(new Model());
     }
 
     Model::Model() {
@@ -47,13 +49,10 @@ namespace fastbotx {
         return this->getOperate(elem, activity, deviceID);
     }
 
-
-#define DefaultDeviceID "0000001"
-
     AbstractAgentPtr Model::addAgent(const std::string &deviceIDString, AlgorithmType agentType,
                                      DeviceType deviceType) {
         auto agent = AgentFactory::create(agentType, shared_from_this(), deviceType);
-        const std::string &deviceID = deviceIDString.empty() ? DefaultDeviceID
+        const std::string &deviceID = deviceIDString.empty() ? ModelConstants::DefaultDeviceID
                                                              : deviceIDString; // deviceID is device id
         this->_deviceIDAgentMap.emplace(deviceID,
                                         agent); // add the pair of device and agent to the _deviceIDAgentMap
@@ -63,7 +62,7 @@ namespace fastbotx {
     }
 
     AbstractAgentPtr Model::getAgent(const std::string &deviceID) const {
-        const std::string &d = deviceID.empty() ? DefaultDeviceID : deviceID;
+        const std::string &d = deviceID.empty() ? ModelConstants::DefaultDeviceID : deviceID;
         auto iter = this->_deviceIDAgentMap.find(d);
         if (iter != this->_deviceIDAgentMap.end())
             return (*iter).second;
@@ -79,57 +78,58 @@ namespace fastbotx {
     }
 
 
-    OperatePtr Model::getOperateOpt(const ElementPtr &element, const std::string &activity,
-                                    const std::string &deviceID) {
-        // the whole process begins.
-        double methodStartTimestamp = currentStamp(); //the time stamp of this current time
-        ActionPtr customActionPtr = nullptr;
-        if (this->_preference) //load the preferred action in preference file specified by user in sdcard
-        {
+    // Helper method implementations
+    ActionPtr Model::getCustomActionIfExists(const std::string &activity, const ElementPtr &element) const {
+        if (this->_preference) {
             BLOG("try get custom action from preference");
-            customActionPtr = this->_preference->resolvePageAndGetSpecifiedAction(activity,
-                                                                                  element);
+            return this->_preference->resolvePageAndGetSpecifiedAction(activity, element);
         }
+        return nullptr;
+    }
+
+    stringPtr Model::getOrCreateActivityPtr(const std::string &activity) {
         // get activity - optimize by using temporary shared_ptr for lookup
         stringPtrSet activityStringPtrSet = this->_graph->getVisitedActivities();
         // Create temporary shared_ptr for lookup to avoid unnecessary allocation
         stringPtr tempActivityPtr = std::make_shared<std::string>(activity);
         auto founded = activityStringPtrSet.find(tempActivityPtr);
-        stringPtr activityStringPtr = nullptr;
         if (founded == activityStringPtrSet.end())
-            activityStringPtr = tempActivityPtr; //this is a new activity, use the temp pointer
+            return tempActivityPtr; // this is a new activity, use the temp pointer
         else
-            activityStringPtr = *founded; // use the cached activity.
-        //  get agent
-        if (this->_deviceIDAgentMap.empty())  // create a default agent
-        {
+            return *founded; // use the cached activity
+    }
+
+    AbstractAgentPtr Model::getOrCreateAgent(const std::string &deviceID) {
+        // create a default agent if map is empty
+        if (this->_deviceIDAgentMap.empty()) {
             BLOG("%s", "use reuseAgent as the default agent");
-            this->addAgent(DefaultDeviceID, AlgorithmType::Reuse);
+            this->addAgent(ModelConstants::DefaultDeviceID, AlgorithmType::Reuse);
         }
         auto agentIterator = this->_deviceIDAgentMap.find(deviceID);
-        AbstractAgentPtr agent = nullptr;
         if (agentIterator == this->_deviceIDAgentMap.end())
-            agent = this->_deviceIDAgentMap[DefaultDeviceID]; // get the agent from the default device
+            return this->_deviceIDAgentMap[ModelConstants::DefaultDeviceID]; // get the agent from the default device
         else
-            agent = (*agentIterator).second; // get the found agent
+            return (*agentIterator).second; // get the found agent
+    }
 
-        // get state
-        StatePtr state = nullptr;
-        if (nullptr != element) // make sure the XML is not null
-        {
-            //according to the type of the used agent, create the state of this page
-            //include all the possible actions according to the widgets inside.
-            state = StateFactory::createState(agent->getAlgorithmType(), activityStringPtr,
-                                              element);
-            // add state
-            // add this state, and the agent will treat this state as the new state(_newState)
-            state = this->_graph->addState(state);
-            state->visit(this->_graph->getTimestamp());
-        }
+    StatePtr Model::createAndAddState(const ElementPtr &element, const AbstractAgentPtr &agent,
+                                      const stringPtr &activityPtr) {
+        if (nullptr == element) // make sure the XML is not null
+            return nullptr;
+        
+        // according to the type of the used agent, create the state of this page
+        // include all the possible actions according to the widgets inside.
+        StatePtr state = StateFactory::createState(agent->getAlgorithmType(), activityPtr, element);
+        // add state - the agent will treat this state as the new state(_newState)
+        state = this->_graph->addState(state);
+        state->visit(this->_graph->getTimestamp());
+        return state;
+    }
 
-        // new state is prepared, record the current time
-        double stateGeneratedTimestamp = currentStamp();
-        ActionPtr action = customActionPtr; // load the action specified by user
+    ActionPtr Model::selectAction(StatePtr &state, AbstractAgentPtr &agent, ActionPtr customAction, double &actionCost) {
+        double startGeneratingActionTimestamp = currentStamp();
+        actionCost = 0.0;
+        ActionPtr action = customAction; // load the action specified by user
 
         if (state != nullptr) {
             BDLOGE("%s", state->toString().c_str());
@@ -137,16 +137,13 @@ namespace fastbotx {
             BDLOGE("State is null, cannot log state information");
         }
 
-        double startGeneratingActionTimestamp = currentStamp();
-        double endGeneratingActionTimestamp = currentStamp();
-        bool shouldSkipActionsFromModel = this->_preference->skipAllActionsFromModel();
-        if (shouldSkipActionsFromModel) // seems that user could specify if the model should be used?
-        {
+        bool shouldSkipActionsFromModel = this->_preference ? this->_preference->skipAllActionsFromModel() : false;
+        if (shouldSkipActionsFromModel) {
             LOGI("listen mode skip get action from model");
         }
 
         // if there is no action specified by user, ask the agent for a new action.
-        if (nullptr == customActionPtr && !shouldSkipActionsFromModel) {
+        if (nullptr == customAction && !shouldSkipActionsFromModel) {
             if (-1 != BLOCK_STATE_TIME_RESTART &&
                 -1 != Preference::inst()->getForceMaxBlockStateTimes() &&
                 agent->getCurrentStateBlockTimes() > BLOCK_STATE_TIME_RESTART) {
@@ -154,55 +151,93 @@ namespace fastbotx {
                 BLOG("Ran into a block state %s", state ? state->getId().c_str() : "");
             } else {
                 // this is also an entry for modifying RL model
-                action = std::dynamic_pointer_cast<Action>(agent->resolveNewAction());
+                auto resolvedAction = agent->resolveNewAction();
+                action = std::dynamic_pointer_cast<Action>(resolvedAction);
                 // update the strategy based on the new action
                 agent->updateStrategy();
                 if (nullptr == action) {
                     BDLOGE("get null action!!!!");
-                    // handle null action by returning the nop operation to the upper caller.
-                    return DeviceOperateWrapper::OperateNop;
+                    return nullptr; // handle null action
                 }
             }
-            endGeneratingActionTimestamp = currentStamp();
+            double endGeneratingActionTimestamp = currentStamp();
+            actionCost = endGeneratingActionTimestamp - startGeneratingActionTimestamp;
             if (action->isModelAct() && state) {
                 action->visit(this->_graph->getTimestamp());
                 agent->moveForward(state); // update _currentState/Action with _newState/Action
             }
         }
+        return action;
+    }
 
+    OperatePtr Model::convertActionToOperate(ActionPtr action, StatePtr state) {
+        if (action == nullptr) {
+            return DeviceOperateWrapper::OperateNop;
+        }
 
-        //new action generated, RL model is updated, record the current time.
-        OperatePtr opt = DeviceOperateWrapper::OperateNop;
-        if (action != nullptr) {
-            BLOG("selected action %s", action->toString().c_str());
-            opt = action->toOperate();
+        BLOG("selected action %s", action->toString().c_str());
+        OperatePtr opt = action->toOperate();
 
-            if (action->requireTarget()){
-                ActivityStateActionPtr stateAction = std::dynamic_pointer_cast<fastbotx::ActivityStateAction>(action);
-                if (stateAction)
-                {
-                    std::shared_ptr<Widget> widget = stateAction->getTarget();
-                    if (widget){
-                        std::string widget_str = widget->toJson();
-                        opt->widget = widget_str;
-                        BLOG("stateAction Widget: %s", widget_str.c_str());
-                    }
+        if (action->requireTarget()) {
+            if (auto stateAction = std::dynamic_pointer_cast<fastbotx::ActivityStateAction>(action)) {
+                std::shared_ptr<Widget> widget = stateAction->getTarget();
+                if (widget) {
+                    std::string widget_str = widget->toJson();
+                    opt->widget = widget_str;
+                    BLOG("stateAction Widget: %s", widget_str.c_str());
                 }
             }
-
-            if (this->_preference) {
-                this->_preference->patchOperate(opt);
-            }
-
-            if (DROP_DETAIL_AFTER_SATE && state && !state->hasNoDetail())
-                state->clearDetails();
         }
-        // the whole process end, record the current time.
+
+        if (this->_preference) {
+            this->_preference->patchOperate(opt);
+        }
+
+        if (DROP_DETAIL_AFTER_SATE && state && !state->hasNoDetail())
+            state->clearDetails();
+
+        return opt;
+    }
+
+    OperatePtr Model::getOperateOpt(const ElementPtr &element, const std::string &activity,
+                                    const std::string &deviceID) {
+        // the whole process begins.
+        double methodStartTimestamp = currentStamp();
+        
+        // Get custom action from preference if exists
+        ActionPtr customAction = getCustomActionIfExists(activity, element);
+        
+        // Get or create activity pointer
+        stringPtr activityPtr = getOrCreateActivityPtr(activity);
+        
+        // Get or create agent
+        AbstractAgentPtr agent = getOrCreateAgent(deviceID);
+        
+        // Create and add state
+        StatePtr state = createAndAddState(element, agent, activityPtr);
+        
+        // Record state generation time
+        double stateGeneratedTimestamp = currentStamp();
+        
+        // Select action
+        double actionCost = 0.0;
+        ActionPtr action = selectAction(state, agent, customAction, actionCost);
+        
+        // Handle null action
+        if (nullptr == action) {
+            return DeviceOperateWrapper::OperateNop;
+        }
+        
+        // Convert action to operate
+        OperatePtr opt = convertActionToOperate(action, state);
+        
+        // Record end time and log performance
         double methodEndTimestamp = currentStamp();
         BLOG("build state cost: %.3fs action cost: %.3fs total cost %.3fs",
              stateGeneratedTimestamp - methodStartTimestamp,
-             endGeneratingActionTimestamp - startGeneratingActionTimestamp,
+             actionCost,
              methodEndTimestamp - methodStartTimestamp);
+        
         return opt;
     }
 
