@@ -511,7 +511,7 @@ namespace fastbotx {
             uint64_t actionHash = reuseEntryInReuseModel->action();
             auto activityEntry = reuseEntryInReuseModel->targets();
             ReuseEntryM entryPtr;
-            for (int targetIndex = 0; targetIndex < activityEntry->size(); targetIndex++) {
+            for (uoffset_t targetIndex = 0; targetIndex < activityEntry->size(); targetIndex++) {
                 auto targetEntry = activityEntry->Get(targetIndex);
                 BDLOG("load model hash: %llu %s %d", actionHash,
                       targetEntry->activity()->str().c_str(), (int) targetEntry->times());
