@@ -6,7 +6,8 @@
  */
 #include "fastbot_native.h"
 #include "Model.h"
-#include "ModelReusableAgent.h"
+// #include "ModelReusableAgent.h"  // Temporarily disabled for DoubleSarsa testing
+#include "DoubleSarsaAgent.h"
 #include "utils.hpp"
 
 #ifdef __cplusplus
@@ -47,12 +48,16 @@ void JNICALL Java_com_bytedance_fastbot_AiClient_fgdsaf5d(JNIEnv *env, jobject, 
     _fastbot_model->setPackageName(std::string(packageNameCString));
 
     BLOG("init agent with type %d, %s,  %d", agentType, packageNameCString, deviceType);
-    if (algorithmType == fastbotx::AlgorithmType::Reuse) {
-        auto reuseAgentPtr = std::dynamic_pointer_cast<fastbotx::ModelReusableAgent>(agentPointer);
-        reuseAgentPtr->loadReuseModel(std::string(packageNameCString));
-        if (env)
-            env->ReleaseStringUTFChars(packageName, packageNameCString);
+    // Temporarily: Always use DoubleSarsaAgent for testing
+    // ModelReusableAgent has been disabled
+    auto doubleSarsaAgentPtr = std::dynamic_pointer_cast<fastbotx::DoubleSarsaAgent>(agentPointer);
+    if (doubleSarsaAgentPtr) {
+        doubleSarsaAgentPtr->loadReuseModel(std::string(packageNameCString));
+    } else {
+        BLOGE("Double SARSA: Failed to cast agent to DoubleSarsaAgent");
     }
+    if (env)
+        env->ReleaseStringUTFChars(packageName, packageNameCString);
 }
 
 // load ResMapping

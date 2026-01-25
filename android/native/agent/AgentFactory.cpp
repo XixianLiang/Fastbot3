@@ -11,7 +11,8 @@
 #include "AgentFactory.h"
 #include "utils.hpp"
 #include "Model.h"
-#include "ModelReusableAgent.h"
+// #include "ModelReusableAgent.h"  // Temporarily disabled for DoubleSarsa testing
+#include "DoubleSarsaAgent.h"
 #include "json.hpp"
 #include "Preference.h"
 
@@ -20,15 +21,17 @@ namespace fastbotx {
     /**
      * @brief Create Agent instance
      * 
-     * Always creates ModelReusableAgent instance regardless of algorithm type (agentT).
-     * ModelReusableAgent is a SARSA reinforcement learning based reusable model agent.
+     * Creates corresponding Agent instance based on algorithm type (agentT).
+     * 
+     * Supported algorithm types:
+     * - All types: Creates DoubleSarsaAgent (Double SARSA) - ModelReusableAgent temporarily disabled for testing
      * 
      * Creation flow:
-     * 1. Create ModelReusableAgent instance
+     * 1. Create Agent instance based on algorithm type
      * 2. Start background thread to periodically save model (starts after 3 second delay, saves every 10 minutes)
      * 3. Return Agent pointer
      * 
-     * @param agentT Algorithm type (currently unused, reserved interface)
+     * @param agentT Algorithm type, determines which Agent to create
      * @param model Model pointer, Agent needs access to model to get state graph info
      * @param deviceType Device type (currently unused, reserved interface)
      * @return Created Agent smart pointer
@@ -39,22 +42,26 @@ namespace fastbotx {
      * - Model save thread starts after 3 second delay to avoid frequent saves during initialization
      */
     AbstractAgentPtr
-    AgentFactory::create(AlgorithmType /*agentT*/, const ModelPtr &model, DeviceType /*deviceType*/) {
+    AgentFactory::create(AlgorithmType agentT, const ModelPtr &model, DeviceType /*deviceType*/) {
         AbstractAgentPtr agent = nullptr;
         
-        // Always use ModelReusableAgent regardless of algorithm type
-        ReuseAgentPtr reuseAgent = std::make_shared<ModelReusableAgent>(model);
+        // Temporarily: Always create DoubleSarsaAgent for testing
+        // ModelReusableAgent has been disabled
+        // TODO: Re-enable ModelReusableAgent support after DoubleSarsa testing is complete
+        DoubleSarsaAgentPtr doubleSarsaAgent = std::make_shared<DoubleSarsaAgent>(model);
         
         // Start background thread to periodically save model
         // Parameter explanation:
         // - 3000: Start after 3 second delay (avoid frequent saves during initialization)
         // - false: Non-blocking execution
-        // - &ModelReusableAgent::threadModelStorage: Thread execution function
+        // - &DoubleSarsaAgent::threadModelStorage: Thread execution function
         // - weak_ptr: Use weak_ptr to avoid circular references, thread exits when Agent is destructed
-        threadDelayExec(3000, false, &ModelReusableAgent::threadModelStorage,
-                        std::weak_ptr<fastbotx::ModelReusableAgent>(reuseAgent));
+        threadDelayExec(3000, false, &DoubleSarsaAgent::threadModelStorage,
+                        std::weak_ptr<fastbotx::DoubleSarsaAgent>(doubleSarsaAgent));
         
-        agent = reuseAgent;
+        agent = doubleSarsaAgent;
+        BLOG("Created DoubleSarsaAgent (ModelReusableAgent temporarily disabled for testing)");
+        
         return agent;
     }
 

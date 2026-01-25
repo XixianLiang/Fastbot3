@@ -201,6 +201,30 @@ agent/AgentFactory.cpp.s:
 	$(MAKE) $(MAKESILENT) -f CMakeFiles/fastbot_native.dir/build.make CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.s
 .PHONY : agent/AgentFactory.cpp.s
 
+agent/DoubleSarsaAgent.o: agent/DoubleSarsaAgent.cpp.o
+.PHONY : agent/DoubleSarsaAgent.o
+
+# target to build an object file
+agent/DoubleSarsaAgent.cpp.o:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/fastbot_native.dir/build.make CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o
+.PHONY : agent/DoubleSarsaAgent.cpp.o
+
+agent/DoubleSarsaAgent.i: agent/DoubleSarsaAgent.cpp.i
+.PHONY : agent/DoubleSarsaAgent.i
+
+# target to preprocess a source file
+agent/DoubleSarsaAgent.cpp.i:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/fastbot_native.dir/build.make CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.i
+.PHONY : agent/DoubleSarsaAgent.cpp.i
+
+agent/DoubleSarsaAgent.s: agent/DoubleSarsaAgent.cpp.s
+.PHONY : agent/DoubleSarsaAgent.s
+
+# target to generate assembly for a file
+agent/DoubleSarsaAgent.cpp.s:
+	$(MAKE) $(MAKESILENT) -f CMakeFiles/fastbot_native.dir/build.make CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.s
+.PHONY : agent/DoubleSarsaAgent.cpp.s
+
 agent/ModelReusableAgent.o: agent/ModelReusableAgent.cpp.o
 .PHONY : agent/ModelReusableAgent.o
 
@@ -771,6 +795,9 @@ help:
 	@echo "... agent/AgentFactory.o"
 	@echo "... agent/AgentFactory.i"
 	@echo "... agent/AgentFactory.s"
+	@echo "... agent/DoubleSarsaAgent.o"
+	@echo "... agent/DoubleSarsaAgent.i"
+	@echo "... agent/DoubleSarsaAgent.s"
 	@echo "... agent/ModelReusableAgent.o"
 	@echo "... agent/ModelReusableAgent.i"
 	@echo "... agent/ModelReusableAgent.s"

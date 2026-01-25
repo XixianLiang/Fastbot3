@@ -8,6 +8,8 @@ file(REMOVE_RECURSE
   "CMakeFiles/fastbot_native.dir/agent/AbstractAgent.cpp.o.d"
   "CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.o"
   "CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.o.d"
+  "CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o"
+  "CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o.d"
   "CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o"
   "CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o.d"
   "CMakeFiles/fastbot_native.dir/desc/Action.cpp.o"

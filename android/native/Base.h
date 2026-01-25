@@ -208,7 +208,8 @@ namespace fastbotx {
     enum AlgorithmType {
         Random = 0,
         Reuse = 4,
-        Server = 6
+        Server = 6,
+        DoubleSarsa = 8  ///< Double SARSA reinforcement learning algorithm
     };
 
 

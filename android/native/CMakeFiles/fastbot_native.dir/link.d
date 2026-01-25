@@ -3,6 +3,7 @@
  CMakeFiles/fastbot_native.dir/Base.cpp.o \
  CMakeFiles/fastbot_native.dir/agent/AbstractAgent.cpp.o \
  CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.o \
+ CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o \
  CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o \
  CMakeFiles/fastbot_native.dir/desc/Action.cpp.o \
  CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o \
@@ -46,6 +47,8 @@ CMakeFiles/fastbot_native.dir/Base.cpp.o:
 CMakeFiles/fastbot_native.dir/agent/AbstractAgent.cpp.o:
 
 CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.o:
+
+CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o:
 
 CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o:
 

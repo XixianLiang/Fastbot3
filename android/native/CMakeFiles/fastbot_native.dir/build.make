@@ -114,10 +114,24 @@ CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.s: cmake_force
 	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.s"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/zza/Documents/GitHub/Fastbot3/android/native/agent/AgentFactory.cpp -o CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.s
 
+CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
+CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o: agent/DoubleSarsaAgent.cpp
+CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o"
+	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o -MF CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o.d -o CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/agent/DoubleSarsaAgent.cpp
+
+CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.i: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Preprocessing CXX source to CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.i"
+	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -E /Users/zza/Documents/GitHub/Fastbot3/android/native/agent/DoubleSarsaAgent.cpp > CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.i
+
+CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.s: cmake_force
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green "Compiling CXX source to assembly CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.s"
+	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -S /Users/zza/Documents/GitHub/Fastbot3/android/native/agent/DoubleSarsaAgent.cpp -o CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.s
+
 CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o: agent/ModelReusableAgent.cpp
 CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_4) "Building CXX object CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o -MF CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o.d -o CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/agent/ModelReusableAgent.cpp
 
 CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.i: cmake_force
@@ -131,7 +145,7 @@ CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/Action.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/Action.cpp.o: desc/Action.cpp
 CMakeFiles/fastbot_native.dir/desc/Action.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_5) "Building CXX object CMakeFiles/fastbot_native.dir/desc/Action.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/fastbot_native.dir/desc/Action.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/Action.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/Action.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/Action.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/Action.cpp
 
 CMakeFiles/fastbot_native.dir/desc/Action.cpp.i: cmake_force
@@ -145,7 +159,7 @@ CMakeFiles/fastbot_native.dir/desc/Action.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o: desc/ActionFilter.cpp
 CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_6) "Building CXX object CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/ActionFilter.cpp
 
 CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.i: cmake_force
@@ -159,7 +173,7 @@ CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.o: desc/DeviceOperateWrapper.cpp
 CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_7) "Building CXX object CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/DeviceOperateWrapper.cpp
 
 CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.i: cmake_force
@@ -173,7 +187,7 @@ CMakeFiles/fastbot_native.dir/desc/DeviceOperateWrapper.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/Element.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/Element.cpp.o: desc/Element.cpp
 CMakeFiles/fastbot_native.dir/desc/Element.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_8) "Building CXX object CMakeFiles/fastbot_native.dir/desc/Element.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/fastbot_native.dir/desc/Element.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/Element.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/Element.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/Element.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/Element.cpp
 
 CMakeFiles/fastbot_native.dir/desc/Element.cpp.i: cmake_force
@@ -187,7 +201,7 @@ CMakeFiles/fastbot_native.dir/desc/Element.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/Node.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/Node.cpp.o: desc/Node.cpp
 CMakeFiles/fastbot_native.dir/desc/Node.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_9) "Building CXX object CMakeFiles/fastbot_native.dir/desc/Node.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/fastbot_native.dir/desc/Node.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/Node.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/Node.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/Node.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/Node.cpp
 
 CMakeFiles/fastbot_native.dir/desc/Node.cpp.i: cmake_force
@@ -201,7 +215,7 @@ CMakeFiles/fastbot_native.dir/desc/Node.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/State.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/State.cpp.o: desc/State.cpp
 CMakeFiles/fastbot_native.dir/desc/State.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_10) "Building CXX object CMakeFiles/fastbot_native.dir/desc/State.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/fastbot_native.dir/desc/State.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/State.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/State.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/State.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/State.cpp
 
 CMakeFiles/fastbot_native.dir/desc/State.cpp.i: cmake_force
@@ -215,7 +229,7 @@ CMakeFiles/fastbot_native.dir/desc/State.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.o: desc/StateFactory.cpp
 CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_11) "Building CXX object CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/StateFactory.cpp
 
 CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.i: cmake_force
@@ -229,7 +243,7 @@ CMakeFiles/fastbot_native.dir/desc/StateFactory.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/Widget.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/Widget.cpp.o: desc/Widget.cpp
 CMakeFiles/fastbot_native.dir/desc/Widget.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_12) "Building CXX object CMakeFiles/fastbot_native.dir/desc/Widget.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/fastbot_native.dir/desc/Widget.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/Widget.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/Widget.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/Widget.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/Widget.cpp
 
 CMakeFiles/fastbot_native.dir/desc/Widget.cpp.i: cmake_force
@@ -243,7 +257,7 @@ CMakeFiles/fastbot_native.dir/desc/Widget.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.o: desc/reuse/ActivityNameAction.cpp
 CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_13) "Building CXX object CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/reuse/ActivityNameAction.cpp
 
 CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.i: cmake_force
@@ -257,7 +271,7 @@ CMakeFiles/fastbot_native.dir/desc/reuse/ActivityNameAction.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.o: desc/reuse/ReuseState.cpp
 CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_14) "Building CXX object CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/reuse/ReuseState.cpp
 
 CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.i: cmake_force
@@ -271,7 +285,7 @@ CMakeFiles/fastbot_native.dir/desc/reuse/ReuseState.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.o: desc/reuse/RichWidget.cpp
 CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_15) "Building CXX object CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.o -MF CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.o.d -o CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/desc/reuse/RichWidget.cpp
 
 CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.i: cmake_force
@@ -285,7 +299,7 @@ CMakeFiles/fastbot_native.dir/desc/reuse/RichWidget.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/events/Preference.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/events/Preference.cpp.o: events/Preference.cpp
 CMakeFiles/fastbot_native.dir/events/Preference.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_16) "Building CXX object CMakeFiles/fastbot_native.dir/events/Preference.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/fastbot_native.dir/events/Preference.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/events/Preference.cpp.o -MF CMakeFiles/fastbot_native.dir/events/Preference.cpp.o.d -o CMakeFiles/fastbot_native.dir/events/Preference.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/events/Preference.cpp
 
 CMakeFiles/fastbot_native.dir/events/Preference.cpp.i: cmake_force
@@ -299,7 +313,7 @@ CMakeFiles/fastbot_native.dir/events/Preference.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/model/Graph.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/model/Graph.cpp.o: model/Graph.cpp
 CMakeFiles/fastbot_native.dir/model/Graph.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_17) "Building CXX object CMakeFiles/fastbot_native.dir/model/Graph.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/fastbot_native.dir/model/Graph.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/model/Graph.cpp.o -MF CMakeFiles/fastbot_native.dir/model/Graph.cpp.o.d -o CMakeFiles/fastbot_native.dir/model/Graph.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/model/Graph.cpp
 
 CMakeFiles/fastbot_native.dir/model/Graph.cpp.i: cmake_force
@@ -313,7 +327,7 @@ CMakeFiles/fastbot_native.dir/model/Graph.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/model/Model.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/model/Model.cpp.o: model/Model.cpp
 CMakeFiles/fastbot_native.dir/model/Model.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_18) "Building CXX object CMakeFiles/fastbot_native.dir/model/Model.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object CMakeFiles/fastbot_native.dir/model/Model.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/model/Model.cpp.o -MF CMakeFiles/fastbot_native.dir/model/Model.cpp.o.d -o CMakeFiles/fastbot_native.dir/model/Model.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/model/Model.cpp
 
 CMakeFiles/fastbot_native.dir/model/Model.cpp.i: cmake_force
@@ -327,7 +341,7 @@ CMakeFiles/fastbot_native.dir/model/Model.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.o: thirdpart/flatbuffers/code_generators.cpp
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_19) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.o -MF CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.o.d -o CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/thirdpart/flatbuffers/code_generators.cpp
 
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.i: cmake_force
@@ -341,7 +355,7 @@ CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/code_generators.cpp.s: cmake
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.o: thirdpart/flatbuffers/flatc.cpp
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_20) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.o -MF CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.o.d -o CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/thirdpart/flatbuffers/flatc.cpp
 
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.i: cmake_force
@@ -355,7 +369,7 @@ CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/flatc.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.o: thirdpart/flatbuffers/idl_gen_fbs.cpp
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_21) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.o -MF CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.o.d -o CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/thirdpart/flatbuffers/idl_gen_fbs.cpp
 
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.i: cmake_force
@@ -369,7 +383,7 @@ CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_gen_fbs.cpp.s: cmake_for
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.o: thirdpart/flatbuffers/idl_parser.cpp
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_22) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.o -MF CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.o.d -o CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/thirdpart/flatbuffers/idl_parser.cpp
 
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.i: cmake_force
@@ -383,7 +397,7 @@ CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/idl_parser.cpp.s: cmake_forc
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.o: thirdpart/flatbuffers/reflection.cpp
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_23) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.o -MF CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.o.d -o CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/thirdpart/flatbuffers/reflection.cpp
 
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.i: cmake_force
@@ -397,7 +411,7 @@ CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/reflection.cpp.s: cmake_forc
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.o: thirdpart/flatbuffers/util.cpp
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_24) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.o -MF CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.o.d -o CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/thirdpart/flatbuffers/util.cpp
 
 CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.i: cmake_force
@@ -411,7 +425,7 @@ CMakeFiles/fastbot_native.dir/thirdpart/flatbuffers/util.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.o: thirdpart/tinyxml2/tinyxml2.cpp
 CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_25) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building CXX object CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.o -MF CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.o.d -o CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/thirdpart/tinyxml2/tinyxml2.cpp
 
 CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.i: cmake_force
@@ -425,7 +439,7 @@ CMakeFiles/fastbot_native.dir/thirdpart/tinyxml2/tinyxml2.cpp.s: cmake_force
 CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.o: CMakeFiles/fastbot_native.dir/flags.make
 CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.o: project/jni/fastbot_native.cpp
 CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.o: CMakeFiles/fastbot_native.dir/compiler_depend.ts
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_26) "Building CXX object CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.o"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Building CXX object CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.o"
 	/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/bin/clang++ --target=x86_64-none-linux-android21 --sysroot=/Users/zza/Library/Android/sdk/ndk/29.0.14206865/toolchains/llvm/prebuilt/darwin-x86_64/sysroot $(CXX_DEFINES) $(CXX_INCLUDES) $(CXX_FLAGS) -MD -MT CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.o -MF CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.o.d -o CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.o -c /Users/zza/Documents/GitHub/Fastbot3/android/native/project/jni/fastbot_native.cpp
 
 CMakeFiles/fastbot_native.dir/project/jni/fastbot_native.cpp.i: cmake_force
@@ -441,6 +455,7 @@ fastbot_native_OBJECTS = \
 "CMakeFiles/fastbot_native.dir/Base.cpp.o" \
 "CMakeFiles/fastbot_native.dir/agent/AbstractAgent.cpp.o" \
 "CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.o" \
+"CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o" \
 "CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o" \
 "CMakeFiles/fastbot_native.dir/desc/Action.cpp.o" \
 "CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o" \
@@ -471,6 +486,7 @@ fastbot_native_EXTERNAL_OBJECTS =
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/Base.cpp.o
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/agent/AbstractAgent.cpp.o
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/agent/AgentFactory.cpp.o
+/Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/agent/DoubleSarsaAgent.cpp.o
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/agent/ModelReusableAgent.cpp.o
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/desc/Action.cpp.o
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/desc/ActionFilter.cpp.o
@@ -497,7 +513,7 @@ fastbot_native_EXTERNAL_OBJECTS =
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/build.make
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/compiler_depend.ts
 /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so: CMakeFiles/fastbot_native.dir/link.txt
-	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_27) "Linking CXX shared library /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so"
+	@$(CMAKE_COMMAND) -E cmake_echo_color "--switch=$(COLOR)" --green --bold --progress-dir=/Users/zza/Documents/GitHub/Fastbot3/android/native/CMakeFiles --progress-num=$(CMAKE_PROGRESS_28) "Linking CXX shared library /Users/zza/Documents/GitHub/Fastbot3/android/libs/x86_64/libfastbot_native.so"
 	$(CMAKE_COMMAND) -E cmake_link_script CMakeFiles/fastbot_native.dir/link.txt --verbose=$(VERBOSE)
 
 # Rule to build all files generated by this target.
