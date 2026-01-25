@@ -1,0 +1,118 @@
+/*
+ * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
+ */
+/**
+ * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ */
+#ifndef RichWidget_CPP_
+#define RichWidget_CPP_
+
+
+#include "RichWidget.h"
+#include "../utils.hpp"
+#include <algorithm>
+#include <utility>
+
+namespace fastbotx {
+
+
+    /**
+     * @brief Constructor creates RichWidget with enhanced hash computation
+     * 
+     * Computes hash code based on:
+     * - Class name
+     * - Resource ID
+     * - Supported actions
+     * - Valid text (from widget or its children)
+     * 
+     * Performance optimization:
+     * - Uses efficient hash combination with bit shifting
+     * - Only includes text hash if text is not empty
+     * 
+     * @param parent Parent widget (moved to avoid copy)
+     * @param element XML Element to create widget from
+     */
+    RichWidget::RichWidget(WidgetPtr parent, const ElementPtr &element)
+            : Widget(std::move(parent), element) {
+        // Compute hash components
+        uintptr_t hashcode1 = std::hash<std::string>{}(this->_clazz);
+        uintptr_t hashcode2 = std::hash<std::string>{}(this->_resourceID);
+        
+        // Combine action types into hash
+        uintptr_t hashcode3 = 0x1;
+        for (ActionType actionType: this->getActions()) {
+            hashcode3 ^= (127U * std::hash<int>{}(static_cast<int>(actionType)));
+        }
+        
+        // Combine class, resource ID, and actions
+        this->_widgetHashcode = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^ ((127U * hashcode3 << 1));
+        
+        // Include text from widget or children if available
+        std::string elementText = this->getValidTextFromWidgetAndChildren(element);
+        if (!elementText.empty()) {
+            this->_widgetHashcode ^= (0x79b9 + (std::hash<std::string>{}(elementText) << 1));
+        }
+    }
+
+    /**
+     * @brief Get valid text from widget or its children (iterative search)
+     * 
+     * Searches for valid text in the widget and its children using iterative
+     * depth-first search instead of recursion. This avoids stack overflow for
+     * deeply nested UI trees and reduces function call overhead.
+     * 
+     * Performance optimizations:
+     * - Uses iterative search instead of recursion (avoids stack overflow)
+     * - Pre-allocates stack space to reduce reallocations
+     * - Early return when text is found
+     * - Uses const reference for children to avoid copying
+     * 
+     * @param element Element to get text from
+     * @return Valid text from widget or its children/offspring, empty if none found
+     */
+    std::string RichWidget::getValidTextFromWidgetAndChildren(const ElementPtr &element) const {
+        // First check if this element has valid text (fast path)
+        if (!element->validText.empty()) {
+            return element->validText;
+        }
+        
+        // Use iterative search instead of recursion for better performance
+        // Pre-allocate stack to avoid reallocations (typical UI tree depth < 32)
+        std::vector<ElementPtr> stack;
+        stack.reserve(32);
+        
+        // Add children to stack for processing
+        const auto &children = element->getChildren();
+        stack.insert(stack.end(), children.begin(), children.end());
+        
+        // Process stack until text is found or stack is empty
+        while (!stack.empty()) {
+            ElementPtr current = stack.back();
+            stack.pop_back();
+            
+            // Check current element's valid text
+            if (!current->validText.empty()) {
+                return current->validText;
+            }
+            
+            // Add children to stack for further search
+            const auto &currentChildren = current->getChildren();
+            stack.insert(stack.end(), currentChildren.begin(), currentChildren.end());
+        }
+        
+        return "";
+    }
+
+    RichWidget::RichWidget()
+            : Widget() {
+
+    }
+
+    uintptr_t RichWidget::hash() const {
+        return getActHashCode();
+    }
+
+
+}
+
+#endif //RichWidget_CPP_
