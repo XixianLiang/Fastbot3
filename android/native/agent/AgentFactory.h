@@ -13,8 +13,14 @@
 
 namespace fastbotx {
 
+    /**
+     * @brief Device type enumeration
+     * 
+     * Used to distinguish different device types. Currently only Normal type is supported.
+     * Reserved interface for future extension to support other device types.
+     */
     enum DeviceType {
-        Normal
+        Normal  ///< Normal device type
     };
 
     class Model;
@@ -24,15 +30,40 @@ namespace fastbotx {
     typedef std::shared_ptr<Model> ModelPtr;
     typedef std::shared_ptr<AbstractAgent> AbstractAgentPtr;
 
-    /// The factory class for creating different sorts of agents.
+    /**
+     * @brief Factory class for creating different types of agents
+     * 
+     * Uses factory pattern to create different types of Agent instances.
+     * 
+     * Note: In current implementation, regardless of algorithm type (agentT) passed,
+     * ModelReusableAgent instance is always created (SARSA reinforcement learning
+     * based reusable model agent).
+     * 
+     * Advantages of factory pattern:
+     * 1. Encapsulates object creation logic
+     * 2. Unified creation interface
+     * 3. Easy to extend with new agent types
+     */
     class AgentFactory {
     public:
 
-        ///
-        /// \param agentT
-        /// \param model
-        /// \param deviceType
-        /// \return
+        /**
+         * @brief Create Agent instance
+         * 
+         * Creates corresponding Agent instance based on algorithm type and device type.
+         * 
+         * Current implementation:
+         * - Always creates ModelReusableAgent regardless of algorithm type
+         * - After creating Agent, starts a background thread to periodically save model
+         * 
+         * @param agentT Algorithm type (currently unused, reserved interface)
+         * @param model Model pointer, Agent needs access to model to get state graph info
+         * @param deviceType Device type (currently unused, reserved interface, defaults to Normal)
+         * @return Created Agent smart pointer
+         * 
+         * @note After creating Agent, model storage thread is automatically started,
+         *       saving model every 10 minutes
+         */
         static AbstractAgentPtr create(AlgorithmType agentT, const ModelPtr &model,
                                        DeviceType deviceType = DeviceType::Normal);
     };
