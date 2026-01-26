@@ -17,6 +17,7 @@
 #include <utility>
 #include <cmath>
 #include <sstream>
+#include <cinttypes>
 
 namespace fastbotx {
 
@@ -46,6 +47,11 @@ namespace fastbotx {
         int mergedWidgetCount = 0;
         if (STATE_MERGE_DETAIL_TEXT && !this->_widgets.empty()) {
             for (const auto &widgetPtr: this->_widgets) {
+                // Null pointer check for defensive programming
+                if (widgetPtr == nullptr) {
+                    BLOGE("mergeWidgetAndStoreMergedOnes: found nullptr widget, skipping");
+                    continue;
+                }
                 // Try to insert widget into set (returns false if duplicate)
                 auto noMerged = mergeWidgets.emplace(widgetPtr).second;
                 if (!noMerged) {
@@ -96,8 +102,15 @@ namespace fastbotx {
         sharedPtr->buildFromElement(nullptr, std::move(elem));
         
         // Compute hash based on activity name
-        uintptr_t activityHash =
-                (std::hash<std::string>{}(*(sharedPtr->_activity.get())) * 31U) << 5;
+        uintptr_t activityHash;
+        if (sharedPtr->_activity == nullptr || sharedPtr->_activity.get() == nullptr) {
+            BLOGE("State::create: activity is nullptr, using empty string for hash");
+            activityHash = (std::hash<std::string>{}("") * 31U) << 5;
+            // Continue with empty activity hash (should not happen in normal flow)
+        } else {
+            activityHash =
+                    (std::hash<std::string>{}(*(sharedPtr->_activity.get())) * 31U) << 5;
+        }
         
         // Merge duplicate widgets for optimization
         WidgetPtrSet mergedWidgets;
@@ -106,6 +119,19 @@ namespace fastbotx {
             BDLOG("build state merged  %d widget", mergedWidgetCount);
             // Use merged widgets (deduplicated) instead of original widgets
             sharedPtr->_widgets.assign(mergedWidgets.begin(), mergedWidgets.end());
+            
+            // If widget order matters for hash computation, sort by hash to ensure consistency
+            // This ensures that same set of widgets always produces same hash regardless of
+            // the order they were inserted into the set
+            if (STATE_WITH_WIDGET_ORDER) {
+                std::sort(sharedPtr->_widgets.begin(), sharedPtr->_widgets.end(),
+                          [](const WidgetPtr& a, const WidgetPtr& b) {
+                              if (a == nullptr || b == nullptr) {
+                                  return a != nullptr; // nullptr widgets go to end
+                              }
+                              return a->hash() < b->hash();
+                          });
+            }
         }
         
         // Combine activity hash with widget hash
@@ -113,10 +139,20 @@ namespace fastbotx {
         sharedPtr->_hashcode = activityHash;
         
         // Build actions for all widgets
-        // Performance: Could pre-allocate capacity if we can estimate action count
+        // Performance: Pre-allocate capacity to avoid reallocations
+        // Estimate: average 1-2 actions per widget, plus back action
+        size_t estimatedActionCount = sharedPtr->_widgets.size() * 2 + 1;
+        sharedPtr->_actions.reserve(estimatedActionCount);
+        
         for (const auto &w: sharedPtr->_widgets) {
+            // Null pointer check for widget itself
+            if (w == nullptr) {
+                BLOGE("NULL Widget happened");
+                continue;
+            }
+            // Null pointer check for bounds
             if (w->getBounds() == nullptr) {
-                BLOGE("NULL Bounds happened");
+                BLOGE("NULL Bounds happened for widget");
                 continue;
             }
             // Create action for each action type supported by this widget
@@ -150,38 +186,65 @@ namespace fastbotx {
      * @return true if action is saturated (should be avoided)
      */
     bool State::isSaturated(const ActivityStateActionPtr &action) const {
+        if (action == nullptr) {
+            return false;
+        }
+        
+        // Actions without targets are saturated if visited at least once
         if (!action->requireTarget()) {
-            // Actions without targets are saturated if visited at least once
             return action->isVisited();
         }
-        if (nullptr != action->getTarget()) {
-            uintptr_t h = action->getTarget()->hash();
-            // Performance: Use find instead of count + at
-            auto mergedIt = this->_mergedWidgets.find(h);
-            if (mergedIt != this->_mergedWidgets.end()) {
-                // Action is saturated if visited more times than merged widget count
-                return action->getVisitedCount() > static_cast<int>(mergedIt->second.size());
-            }
+        
+        // Actions with targets: check if visited more times than merged widget count
+        const WidgetPtr& target = action->getTarget();
+        if (target == nullptr) {
+            // No target but requires target: default to saturated if visited
+            return action->getVisitedCount() >= 1;
         }
-        // Default: saturated if visited at least once
+        
+        uintptr_t h = target->hash();
+        auto mergedIt = this->_mergedWidgets.find(h);
+        if (mergedIt != this->_mergedWidgets.end()) {
+            // Action is saturated if visited more times than merged widget count
+            return action->getVisitedCount() > static_cast<int>(mergedIt->second.size());
+        }
+        
+        // Target not found in merged widgets: default to saturated if visited at least once
         return action->getVisitedCount() >= 1;
     }
 
     RectPtr State::_sameRootBounds = std::make_shared<Rect>();
 
     void State::buildFromElement(WidgetPtr parentWidget, ElementPtr elem) {
-        if (elem->getParent().expired() && !(elem->getBounds()->isEmpty())) {
-            if (_sameRootBounds.get()->isEmpty() && elem) {
-                _sameRootBounds = elem->getBounds();
+        // Handle root element bounds
+        if (elem != nullptr && elem->getParent().expired()) {
+            RectPtr elemBounds = elem->getBounds();
+            if (elemBounds != nullptr && !elemBounds->isEmpty()) {
+                // Initialize static root bounds (only on first call)
+                if (_sameRootBounds->isEmpty()) {
+                    _sameRootBounds = elemBounds;
+                }
+                
+                // If current bounds match static bounds, use static reference (save memory)
+                if (equals(_sameRootBounds, elemBounds)) {
+                    this->_rootBounds = _sameRootBounds;
+                } else {
+                    // Different bounds, use current bounds
+                    this->_rootBounds = elemBounds;
+                }
             }
-            if (equals(_sameRootBounds, elem->getBounds())) {
-                this->_rootBounds = _sameRootBounds;
-            } else
-                this->_rootBounds = elem->getBounds();
         }
-        WidgetPtr widget = nullptr;
-        widget = std::make_shared<Widget>(parentWidget, elem);
+        
+        // Create widget from element
+        if (elem == nullptr) {
+            BLOGE("buildFromElement: elem is nullptr");
+            return;
+        }
+        
+        WidgetPtr widget = std::make_shared<Widget>(parentWidget, elem);
         this->_widgets.emplace_back(widget);
+        
+        // Recursively process children
         for (const auto &childElement: elem->getChildren()) {
             buildFromElement(widget, childElement);
         }
@@ -207,19 +270,33 @@ namespace fastbotx {
 
     void State::clearDetails() {
         for (auto const &widget: this->_widgets) {
-            widget->clearDetails();
+            if (widget != nullptr) {
+                widget->clearDetails();
+            }
         }
         this->_mergedWidgets.clear();
         _hasNoDetail = true;
     }
 
     void State::fillDetails(const std::shared_ptr<State> &copy) {
-        for (auto widgetPtr: this->_widgets) {
+        if (copy == nullptr) {
+            BLOGE("fillDetails: copy state is nullptr");
+            return;
+        }
+        
+        for (const auto &widgetPtr: this->_widgets) {
+            if (widgetPtr == nullptr) {
+                BLOGE("fillDetails: found nullptr widget, skipping");
+                continue;
+            }
             auto widgetIterator = std::find_if(copy->_widgets.begin(), copy->_widgets.end(),
                                                [&widgetPtr](const WidgetPtr &cw) {
+                                                   if (cw == nullptr || widgetPtr == nullptr) {
+                                                       return false;
+                                                   }
                                                    return *(cw.get()) == *widgetPtr;
                                                });
-            if (widgetIterator != copy->_widgets.end()) {
+            if (widgetIterator != copy->_widgets.end() && *widgetIterator != nullptr) {
                 widgetPtr->fillDetails(*widgetIterator);
             } else {
                 LOGE("ERROR can not refill widget");
@@ -229,12 +306,18 @@ namespace fastbotx {
             auto mkw = copy->_mergedWidgets.find(miter.first);
             if (mkw == copy->_mergedWidgets.end())
                 continue;
-            for (auto widgetPtr: miter.second) {
+            for (const auto &widgetPtr: miter.second) {
+                if (widgetPtr == nullptr) {
+                    continue;
+                }
                 auto widgetIterator = std::find_if((*mkw).second.begin(), (*mkw).second.end(),
                                                    [&widgetPtr](const WidgetPtr &cw) {
+                                                       if (cw == nullptr || widgetPtr == nullptr) {
+                                                           return false;
+                                                       }
                                                        return *(cw.get()) == *widgetPtr;
                                                    });
-                if (widgetIterator != (*mkw).second.end()) {
+                if (widgetIterator != (*mkw).second.end() && *widgetIterator != nullptr) {
                     widgetPtr->fillDetails(*widgetIterator);
                 }
             }
@@ -247,11 +330,19 @@ namespace fastbotx {
         std::ostringstream oss;
         oss << "{state: " << this->hash() << "\n    widgets: \n";
         for (auto const &widget: this->_widgets) {
-            oss << "   " << widget->toString() << "\n";
+            if (widget != nullptr) {
+                oss << "   " << widget->toString() << "\n";
+            } else {
+                oss << "   [null widget]\n";
+            }
         }
         oss << "action: \n";
         for (auto const &action: this->_actions) {
-            oss << "   " << action->toString() << "\n";
+            if (action != nullptr) {
+                oss << "   " << action->toString() << "\n";
+            } else {
+                oss << "   [null action]\n";
+            }
         }
         oss << "\n}";
         return oss.str();
@@ -343,21 +434,37 @@ namespace fastbotx {
 
 
     ActivityStateActionPtr State::resolveAt(ActivityStateActionPtr action, time_t /*t*/) {
-        if (action->getTarget() == nullptr)
+        if (action == nullptr) {
             return action;
+        }
+        
+        if (action->getTarget() == nullptr) {
+            return action;
+        }
+        
         uintptr_t h = action->getTarget()->hash();
         auto targetWidgets = this->_mergedWidgets.find(h);
         if (targetWidgets == this->_mergedWidgets.end()) {
             return action;
         }
-        int total = (int) (this->_mergedWidgets.at(h).size());
+        
+        int total = static_cast<int>(targetWidgets->second.size());
+        // Safety check: ensure total is positive to avoid division by zero
+        if (total <= 0) {
+            BLOGE("resolveAt: merged widgets vector is empty for hash %" PRIuPTR, h);
+            return action;
+        }
+        
         int index = action->getVisitedCount() % total;
         BLOG("resolve a merged widget %d/%d for action %s", index, total, action->getId().c_str());
-        action->setTarget(this->_mergedWidgets.at(h)[index]);
+        action->setTarget(targetWidgets->second[index]);
         return action;
     }
 
     bool State::containsTarget(const WidgetPtr &widget) const {
+        if (widget == nullptr) {
+            return false;
+        }
         for (const auto &w: this->_widgets) {
             if (equals(w, widget))
                 return true;
