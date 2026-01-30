@@ -76,8 +76,17 @@ namespace fastbotx {
         bool isResourceIDEqual = (!xpathSelector->resourceID.empty() &&
                                   this->getResourceID() == xpathSelector->resourceID);
         bool isTextEqual = (!xpathSelector->text.empty() && this->getText() == xpathSelector->text);
-        bool isContentEqual = (!xpathSelector->contentDescription.empty() &&
-                               this->getContentDesc() == xpathSelector->contentDescription);
+        
+        // Performance optimization: Early exit for ContentDesc comparison
+        // Most elements don't have ContentDesc, so check emptiness first
+        bool isContentEqual = false;
+        if (!xpathSelector->contentDescription.empty()) {
+            const std::string &contentDesc = this->getContentDesc();
+            // Performance: Check length first to avoid string comparison if lengths differ
+            if (contentDesc.length() == xpathSelector->contentDescription.length()) {
+                isContentEqual = (contentDesc == xpathSelector->contentDescription);
+            }
+        }
         bool isClassNameEqual = (!xpathSelector->clazz.empty() &&
                                  this->getClassname() == xpathSelector->clazz);
         bool isIndexEqual = xpathSelector->index > -1 && this->getIndex() == xpathSelector->index;
@@ -653,13 +662,23 @@ namespace fastbotx {
         
         uintptr_t hashcode = 0x1;
         
+        // Performance optimization: Use fast string hash function instead of std::hash
+        // This provides better performance for typical UI strings (short to medium length)
         // Compute individual property hashes with different bit shifts for better distribution
-        uintptr_t hashcode1 = 127U * std::hash<std::string>{}(this->_resourceID) << 1;
-        uintptr_t hashcode2 = std::hash<std::string>{}(this->_classname) << 2;
-        uintptr_t hashcode3 = std::hash<std::string>{}(this->_packageName) << 3;
-        uintptr_t hashcode4 = 256U * std::hash<std::string>{}(this->_text) << 4;
-        uintptr_t hashcode5 = std::hash<std::string>{}(this->_contentDesc) << 5;
-        uintptr_t hashcode6 = std::hash<std::string>{}(this->_activity) << 2;
+        uintptr_t hashcode1 = 127U * fastbotx::fastStringHash(this->_resourceID) << 1;
+        uintptr_t hashcode2 = fastbotx::fastStringHash(this->_classname) << 2;
+        uintptr_t hashcode3 = fastbotx::fastStringHash(this->_packageName) << 3;
+        uintptr_t hashcode4 = 256U * fastbotx::fastStringHash(this->_text) << 4;
+        
+        // Performance optimization: Only compute ContentDesc hash if not empty
+        // Most elements don't have ContentDesc, so this avoids unnecessary hash computation
+        // Use fast string hash for better performance
+        uintptr_t hashcode5 = 0;
+        if (!this->_contentDesc.empty()) {
+            hashcode5 = fastbotx::fastStringHash(this->_contentDesc) << 5;
+        }
+        
+        uintptr_t hashcode6 = fastbotx::fastStringHash(this->_activity) << 2;
         uintptr_t hashcode7 = 64U * std::hash<int>{}(static_cast<int>(this->_clickable)) << 6;
 
         // Combine all property hashes using XOR

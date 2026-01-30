@@ -2,3 +2,4 @@
 android/.DS_Store
 android/native/.DS_Store
 /android/native/CMakeFiles
+android/native/fastbot.log

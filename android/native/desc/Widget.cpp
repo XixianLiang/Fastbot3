@@ -96,7 +96,8 @@ namespace fastbotx {
 
         // Performance optimization: Compute text hash only once and reuse
         // Component hash for Text (for dynamic abstraction hashWithMask)
-        uintptr_t textHash = finalText.empty() ? 0 : (0x79b9U + (std::hash<std::string>{}(finalText) << 5));
+        // Use fast string hash for better performance
+        uintptr_t textHash = finalText.empty() ? 0 : (0x79b9U + (fastbotx::fastStringHash(finalText) << 5));
         this->_hashText = textHash;
         
         // Only include text in hash if it wasn't truncated
@@ -186,10 +187,21 @@ namespace fastbotx {
         this->_index = element->getIndex();
         this->_enabled = element->getEnable();
         this->_text = element->getText();
-        this->_contextDesc = (element->getContentDesc());
+        
+        // Performance optimization: Use const reference to avoid string copy
+        // Only copy if ContentDesc is actually used (non-empty)
+        const std::string &contentDescRef = element->getContentDesc();
+        if (!contentDescRef.empty()) {
+            this->_contextDesc = contentDescRef; // Copy only when needed
+        } else {
+            this->_contextDesc.clear(); // Explicitly clear to avoid unnecessary allocation
+        }
+        
+        // Performance optimization: Use fast string hash function instead of std::hash
+        // This provides better performance for typical UI strings (short to medium length)
         // compute for only 1 time (base + component hashes for dynamic abstraction)
-        uintptr_t hashcode1 = std::hash<std::string>{}(this->_clazz);
-        uintptr_t hashcode2 = std::hash<std::string>{}(this->_resourceID);
+        uintptr_t hashcode1 = fastbotx::fastStringHash(this->_clazz);
+        uintptr_t hashcode2 = fastbotx::fastStringHash(this->_resourceID);
         uintptr_t hashcode3 = std::hash<int>{}(this->_operateMask);
         uintptr_t hashcode4 = std::hash<int>{}(scrollType);
 
@@ -197,7 +209,16 @@ namespace fastbotx {
         this->_hashResourceID = hashcode2;
         this->_hashOperateMask = hashcode3;
         this->_hashScrollType = hashcode4;
-        this->_hashContentDesc = this->_contextDesc.empty() ? 0 : (0x79b9U + (std::hash<std::string>{}(this->_contextDesc) << 5));
+        
+        // Performance optimization: Compute ContentDesc hash only if not empty
+        // Most widgets don't have ContentDesc, so this avoids unnecessary hash computation
+        // Use fast string hash for better performance
+        if (!this->_contextDesc.empty()) {
+            this->_hashContentDesc = 0x79b9U + (fastbotx::fastStringHash(this->_contextDesc) << 5);
+        } else {
+            this->_hashContentDesc = 0; // Fast path for empty ContentDesc
+        }
+        
         this->_hashIndex = (0x79b9U + (static_cast<uintptr_t>(std::hash<int>{}(this->_index)) << 6)) << 1;
 
         this->_hashcode = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^

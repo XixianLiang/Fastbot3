@@ -138,7 +138,9 @@ namespace fastbotx {
     void ReuseState::buildHashForState() {
         // Build hash from activity name (guard against null _activity)
         std::string activityString = (_activity && _activity.get()) ? *_activity : "";
-        uintptr_t activityHash = (std::hash<std::string>{}(activityString) * 31U) << 5;
+        // Performance optimization: Use fast string hash instead of std::hash
+        // This provides better performance for activity name strings
+        uintptr_t activityHash = (fastbotx::fastStringHash(activityString) * 31U) << 5;
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         uintptr_t widgetsHash = 0x1;
@@ -269,7 +271,8 @@ namespace fastbotx {
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
     uintptr_t ReuseState::getHashUnderMask(WidgetKeyMask mask) const {
         std::string activityString = (_activity && _activity.get()) ? *_activity : "";
-        uintptr_t activityHash = (std::hash<std::string>{}(activityString) * 31U) << 5;
+        // Performance optimization: Use fast string hash instead of std::hash
+        uintptr_t activityHash = (fastbotx::fastStringHash(activityString) * 31U) << 5;
         uintptr_t widgetsHash = 0x1;
         for (const auto &w : _widgets) {
             if (w) {

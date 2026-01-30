@@ -102,14 +102,15 @@ namespace fastbotx {
         sharedPtr->buildFromElement(nullptr, std::move(elem));
         
         // Compute hash based on activity name
+        // Performance optimization: Use fast string hash instead of std::hash
         uintptr_t activityHash;
         if (sharedPtr->_activity == nullptr || sharedPtr->_activity.get() == nullptr) {
             BLOGE("State::create: activity is nullptr, using empty string for hash");
-            activityHash = (std::hash<std::string>{}("") * 31U) << 5;
+            activityHash = (fastbotx::fastStringHash("") * 31U) << 5;
             // Continue with empty activity hash (should not happen in normal flow)
         } else {
             activityHash =
-                    (std::hash<std::string>{}(*(sharedPtr->_activity.get())) * 31U) << 5;
+                    (fastbotx::fastStringHash(*(sharedPtr->_activity.get())) * 31U) << 5;
         }
         
         // Merge duplicate widgets for optimization
