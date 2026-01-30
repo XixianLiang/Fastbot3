@@ -418,6 +418,8 @@ namespace fastbotx {
         return {buf};
     }
 
+    /// Returns current time in **milliseconds** (ms) since epoch.
+    /// Use (currentStamp() - t0) for elapsed ms; divide by 1000 for seconds.
     inline double currentStamp() {
         struct timeval timeValue{};
         gettimeofday(&timeValue, nullptr);
