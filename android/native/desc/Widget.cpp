@@ -84,6 +84,9 @@ namespace fastbotx {
             }
         }
 
+        // Component hash for Text (for dynamic abstraction hashWithMask)
+        this->_hashText = this->_text.empty() ? 0 : (0x79b9U + (std::hash<std::string>{}(this->_text) << 5));
+
         // Include index in hash if configured
         if (STATE_WITH_INDEX) {
             this->_hashcode ^= ((0x79b9 + (std::hash<int>{}(this->_index) << 6)) << 1);
@@ -156,11 +159,18 @@ namespace fastbotx {
         this->_enabled = element->getEnable();
         this->_text = element->getText();
         this->_contextDesc = (element->getContentDesc());
-        // compute for only 1 time
+        // compute for only 1 time (base + component hashes for dynamic abstraction)
         uintptr_t hashcode1 = std::hash<std::string>{}(this->_clazz);
         uintptr_t hashcode2 = std::hash<std::string>{}(this->_resourceID);
         uintptr_t hashcode3 = std::hash<int>{}(this->_operateMask);
         uintptr_t hashcode4 = std::hash<int>{}(scrollType);
+
+        this->_hashClazz = hashcode1;
+        this->_hashResourceID = hashcode2;
+        this->_hashOperateMask = hashcode3;
+        this->_hashScrollType = hashcode4;
+        this->_hashContentDesc = this->_contextDesc.empty() ? 0 : (0x79b9U + (std::hash<std::string>{}(this->_contextDesc) << 5));
+        this->_hashIndex = (0x79b9U + (static_cast<uintptr_t>(std::hash<int>{}(this->_index)) << 6)) << 1;
 
         this->_hashcode = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^
                           (((127U * hashcode3 << 1) ^ (256U * hashcode4 << 3)) >> 1);
@@ -176,6 +186,8 @@ namespace fastbotx {
         this->_contextDesc.clear();
         this->_resourceID.clear();
         this->_bounds = Rect::RectZero;
+        this->_hashClazz = this->_hashResourceID = this->_hashOperateMask = this->_hashScrollType = 0;
+        this->_hashText = this->_hashContentDesc = this->_hashIndex = 0;
     }
 
     void Widget::fillDetails(const std::shared_ptr<Widget> &copy) {
@@ -185,6 +197,13 @@ namespace fastbotx {
         this->_resourceID = copy->_resourceID;
         this->_bounds = copy->getBounds();
         this->_enabled = copy->_enabled;
+        this->_hashClazz = copy->_hashClazz;
+        this->_hashResourceID = copy->_hashResourceID;
+        this->_hashOperateMask = copy->_hashOperateMask;
+        this->_hashScrollType = copy->_hashScrollType;
+        this->_hashText = copy->_hashText;
+        this->_hashContentDesc = copy->_hashContentDesc;
+        this->_hashIndex = copy->_hashIndex;
     }
 
     std::string Widget::toString() const {
@@ -193,9 +212,9 @@ namespace fastbotx {
 
 
     std::string Widget::toXPath() const {
+        // Details cleared for memory (e.g. after state merge); skip per-call log to avoid noise
         if (this->_text.empty() && this->_clazz.empty()
             && this->_resourceID.empty()) {
-            BDLOG("widget detail has been clear");
             return "";
         }
 
@@ -224,9 +243,9 @@ namespace fastbotx {
     }
 
     std::string Widget::toJson() const {
+        // Details cleared for memory (e.g. after state merge); skip per-call log to avoid noise
         if (this->_text.empty() && this->_clazz.empty()
             && this->_resourceID.empty()) {
-            BDLOG("widget detail has been clear");
             return "";
         }
 
@@ -264,6 +283,25 @@ namespace fastbotx {
 
     uintptr_t Widget::hash() const {
         return _hashcode;
+    }
+
+    uintptr_t Widget::hashWithMask(WidgetKeyMask mask) const {
+        uintptr_t h;
+        const auto defaultMask = static_cast<WidgetKeyMask>(DefaultWidgetKeyMask);
+        if ((mask & defaultMask) == defaultMask) {
+            h = ((_hashClazz ^ (_hashResourceID << 4)) >> 2) ^
+                (((127U * _hashOperateMask << 1) ^ (256U * _hashScrollType << 3)) >> 1);
+        } else {
+            h = 0x1;
+            if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Clazz)) h ^= _hashClazz;
+            if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::ResourceID)) h ^= (_hashResourceID << 4);
+            if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::OperateMask)) h ^= (127U * _hashOperateMask << 1);
+            if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::ScrollType)) h ^= (256U * _hashScrollType << 3);
+        }
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Text)) h ^= _hashText;
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::ContentDesc)) h ^= _hashContentDesc;
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Index)) h ^= _hashIndex;
+        return h;
     }
 
 }

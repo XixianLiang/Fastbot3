@@ -20,6 +20,7 @@
 #include <functional>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <random>
 
 #include "json.hpp"
@@ -99,6 +100,25 @@ namespace fastbotx {
         }
     };
 
+    /// Widget key attributes for dynamic state abstraction (bitmask).
+    /// Used to select which attributes participate in widget/state hash.
+    enum class WidgetKeyAttr : uint8_t {
+        Clazz       = 1 << 0,
+        ResourceID  = 1 << 1,
+        OperateMask = 1 << 2,
+        ScrollType  = 1 << 3,
+        Text        = 1 << 4,
+        ContentDesc = 1 << 5,
+        Index       = 1 << 6,
+    };
+    using WidgetKeyMask = uint8_t;
+
+    /// Default (coarse) widget key mask: clazz + resourceID + operateMask + scrollType.
+    constexpr WidgetKeyMask DefaultWidgetKeyMask =
+        static_cast<WidgetKeyMask>(WidgetKeyAttr::Clazz) |
+        static_cast<WidgetKeyMask>(WidgetKeyAttr::ResourceID) |
+        static_cast<WidgetKeyMask>(WidgetKeyAttr::OperateMask) |
+        static_cast<WidgetKeyMask>(WidgetKeyAttr::ScrollType);
 
     typedef std::shared_ptr<std::string> stringPtr;
     typedef std::set<stringPtr, Comparator<std::string>> stringPtrSet;

@@ -127,7 +127,27 @@ inline void logLongStringInfo(const std::string& longStr) {
 
 #define SCROLL_BOTTOM_UP_N_ENABLE 0
 
-#define FASTBOT_VERSION "local build"
+// Dynamic state abstraction (refinement/coarsening)
+#define DYNAMIC_STATE_ABSTRACTION_ENABLED 1
+#define RefinementCheckInterval           50
+#define MaxTransitionLogSize              2000
+#define MinNonDeterminismCount            2
+#define BetaMaxStateGrowth                8
+/// β for coarsening (APE): coarsen when one old state L′ splits into more than β new states
+#define BetaMaxSplitCount                 8
+// α: soft upper bound for "same state, same action" candidate widget count (paper APE; reserved for future use)
+#define AlphaMaxGuiActionsPerModelAction  3
+/// When true: per-round paper order — ActionRefinement(α) then StateCoarsening(β) then StateRefinement; when false: per-K-step batch (merge α + non-determinism)
+#define UsePaperRefinementOrder           0
+/// Skip adding Text when widgets with non-empty text > this count (avoid list/article screens exploding)
+#define MaxTextWidgetCount                20
+/// Skip adding Text when (widgets with non-empty text) / total widgets > this ratio (0–100, e.g. 50 = 50%)
+#define MaxTextWidgetRatioPercent         50
+/// Skip adding Text when unique widgets under (cur|Text) would exceed this (avoid refinement explosion)
+#define MaxUniqueWidgetsAfterText         50
+
+/// Compile-time timestamp (e.g. "Jan 30 2026 08:15:28")
+#define FASTBOT_VERSION __DATE__ " " __TIME__
 
 #endif // UTILS_HPP_
 

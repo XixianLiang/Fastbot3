@@ -7,6 +7,8 @@
 #ifndef ReuseAgent_H_
 #define ReuseAgent_H_
 
+#if 0  // ModelReusableAgent temporarily disabled, use DoubleSarsaAgent
+
 #include "AbstractAgent.h"
 #include "State.h"
 #include "Action.h"
@@ -443,5 +445,6 @@ namespace fastbotx {
 
 }
 
+#endif /* #if 0 ModelReusableAgent temporarily disabled */
 
 #endif /* ReuseAgent_H_ */

@@ -16,8 +16,38 @@
 #include "AbstractAgent.h"
 #include "AgentFactory.h"
 #include "Preference.h"
+#include <unordered_map>
+#include <unordered_set>
+#include <vector>
+#include <set>
 
 namespace fastbotx {
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /// Single transition log entry for non-determinism detection
+    struct TransitionEntry {
+        uintptr_t sourceStateHash{0};
+        uintptr_t actionHash{0};
+        uintptr_t targetStateHash{0};
+        std::string sourceActivity;
+        bool valid{false};
+    };
+
+    /// Per-activity context for refinement/coarsening (previous mask and L′→L split tracking)
+    struct ActivityAbstractionContext {
+        WidgetKeyMask previousMask{DefaultWidgetKeyMask};
+        size_t stateCountAtLastRefinement{0};
+        /// APE coarsening: map old state hash (under L′) → set of new state hashes (under L)
+        std::unordered_map<uintptr_t, std::unordered_set<uintptr_t>> oldStateToNewStates;
+    };
+
+    /// Per-activity last-seen state stats for "skip Text refinement" when text-heavy or would explode
+    struct ActivityLastStateTextStats {
+        size_t widgetsWithNonEmptyText{0};
+        size_t totalWidgets{0};
+        size_t uniqueWidgetsIfAddText{0};
+    };
+#endif
 
     /**
      * @brief Constants namespace for model-related constants
@@ -132,6 +162,17 @@ namespace fastbotx {
         PreferencePtr getPreference() const { return this->_preference; }
 
         /**
+         * @brief Get widget key mask for an activity (dynamic state abstraction).
+         * Returns DefaultWidgetKeyMask if activity not found.
+         */
+        WidgetKeyMask getActivityKeyMask(const std::string &activity) const;
+
+        /**
+         * @brief Set widget key mask for an activity (dynamic state abstraction).
+         */
+        void setActivityKeyMask(const std::string &activity, WidgetKeyMask mask);
+
+        /**
          * @brief Set the package name for network action parameters
          * 
          * @param packageName The package name string
@@ -220,6 +261,21 @@ namespace fastbotx {
          * @return OperatePtr The operation object ready for execution
          */
         OperatePtr convertActionToOperate(ActionPtr action, StatePtr state);
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        /// Record one transition (source, action, target) for non-determinism detection
+        void recordTransition(const AbstractAgentPtr &agent, const StatePtr &targetState);
+        /// Record state under previous mask for APE coarsening (one L′ state → > β new states)
+        void recordStateSplitIfRefined(const std::string &activity, const StatePtr &state);
+        /// Run refinement/coarsening batch if step count reached interval
+        void runRefinementAndCoarseningIfScheduled();
+        /// Detect (source, action) pairs that lead to multiple different targets; return activity names to refine
+        std::vector<std::string> detectNonDeterminism() const;
+        /// Refine activity mask (add Text/ContentDesc/Index); return true if refined
+        bool refineActivity(const std::string &activity);
+        /// Coarsen activity mask if state count exceeded threshold (after refinement)
+        void coarsenActivityIfNeeded(const std::string &activity);
+#endif
         
         /// Smart pointer to the graph object managing all states and actions
         GraphPtr _graph;
@@ -233,6 +289,21 @@ namespace fastbotx {
 
         /// Parameters for communicating with network-based action models
         NetActionParam _netActionParam;
+
+        /// Per-activity widget key mask for dynamic state abstraction
+        mutable std::unordered_map<std::string, WidgetKeyMask> _activityKeyMask;
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        std::vector<TransitionEntry> _transitionLog;
+        size_t _transitionLogWriteIndex{0};
+        size_t _stepCountSinceLastCheck{0};
+        std::unordered_map<std::string, ActivityAbstractionContext> _activityAbstractionContext;
+        std::set<std::pair<std::string, WidgetKeyMask>> _coarseningBlacklist;
+        /// Activities that need refinement due to α (max widgets per model action > α)
+        std::set<std::string> _activitiesNeedingAlphaRefinement;
+        /// Last-seen state stats per activity for "skip Text" when text-heavy or unique-after-Text would explode
+        std::unordered_map<std::string, ActivityLastStateTextStats> _activityLastStateTextStats;
+#endif
 
     };
 

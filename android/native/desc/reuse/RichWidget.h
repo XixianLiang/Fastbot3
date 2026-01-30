@@ -37,6 +37,8 @@ namespace fastbotx {
 
         uintptr_t hash() const override;
 
+        uintptr_t hashWithMask(WidgetKeyMask mask) const override;
+
         uintptr_t getActHashCode() const { return this->_widgetHashcode; }
 
     protected:

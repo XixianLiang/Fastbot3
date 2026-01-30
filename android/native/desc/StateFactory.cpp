@@ -12,9 +12,9 @@
 namespace fastbotx {
 
     StatePtr StateFactory::createState(AlgorithmType /*agentT*/, const stringPtr &activity,
-                                       const ElementPtr &element) {
+                                       const ElementPtr &element, WidgetKeyMask mask) {
         StatePtr state = nullptr;
-        state = ReuseState::create(element, activity);
+        state = ReuseState::create(element, activity, mask);
         return state;
     }
 

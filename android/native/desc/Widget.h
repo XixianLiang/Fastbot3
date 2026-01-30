@@ -64,6 +64,9 @@ namespace fastbotx {
 
         uintptr_t hash() const override;
 
+        /// Hash using only the attributes specified by mask (for dynamic state abstraction).
+        virtual uintptr_t hashWithMask(WidgetKeyMask mask) const;
+
         std::string toString() const override;
 
         std::string toJson() const;
@@ -85,6 +88,14 @@ namespace fastbotx {
         void initFormElement(const ElementPtr &element);
 
         uintptr_t _hashcode{};
+        /// Component hashes for hashWithMask (dynamic state abstraction)
+        uintptr_t _hashClazz{};
+        uintptr_t _hashResourceID{};
+        uintptr_t _hashOperateMask{};
+        uintptr_t _hashScrollType{};
+        uintptr_t _hashText{};
+        uintptr_t _hashContentDesc{};
+        uintptr_t _hashIndex{};
         std::shared_ptr<Widget> _parent;
         std::string _text;
         int _index{};

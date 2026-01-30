@@ -213,6 +213,20 @@ namespace fastbotx {
         return action->getVisitedCount() >= 1;
     }
 
+    size_t State::getMaxWidgetsPerModelAction() const {
+        size_t maxCount = 1;
+        for (const auto &w : this->_widgets) {
+            if (!w) continue;
+            size_t n = 1;
+            auto it = this->_mergedWidgets.find(w->hash());
+            if (it != this->_mergedWidgets.end()) {
+                n += it->second.size();
+            }
+            if (n > maxCount) maxCount = n;
+        }
+        return maxCount;
+    }
+
     RectPtr State::_sameRootBounds = std::make_shared<Rect>();
 
     void State::buildFromElement(WidgetPtr parentWidget, ElementPtr elem) {
@@ -253,6 +267,24 @@ namespace fastbotx {
     uintptr_t State::hash() const {
         return this->_hashcode;
     }
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    uintptr_t State::getHashUnderMask(WidgetKeyMask /*mask*/) const {
+        return this->hash();
+    }
+
+    size_t State::getWidgetsWithNonEmptyTextCount() const {
+        size_t n = 0;
+        for (const auto &w : _widgets) {
+            if (w && !w->getText().empty()) ++n;
+        }
+        return n;
+    }
+
+    size_t State::getUniqueWidgetCountUnderMask(WidgetKeyMask /*mask*/) const {
+        return _widgets.size();
+    }
+#endif
 
     bool State::operator<(const State &state) const {
         return this->hash() < state.hash();

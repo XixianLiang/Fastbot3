@@ -7,6 +7,8 @@
 #ifndef fastbotx_ModelReusableAgent_CPP_
 #define fastbotx_ModelReusableAgent_CPP_
 
+#if 0  // ModelReusableAgent temporarily disabled, use DoubleSarsaAgent
+
 #include "ModelReusableAgent.h"
 #include "Model.h"
 #include <cmath>
@@ -1243,5 +1245,9 @@ namespace fastbotx {
     }
 
 }  // namespace fastbotx
+
+#endif /* #if 0 ModelReusableAgent temporarily disabled */
+
+namespace fastbotx { void _model_reusable_agent_disabled_placeholder() { (void)0; } }
 
 #endif

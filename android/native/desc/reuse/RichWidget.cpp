@@ -112,6 +112,9 @@ namespace fastbotx {
         return getActHashCode();
     }
 
+    uintptr_t RichWidget::hashWithMask(WidgetKeyMask mask) const {
+        return Widget::hashWithMask(mask);
+    }
 
 }
 

@@ -11,6 +11,7 @@
 #include "Base.h"
 #include "Action.h"
 #include <map>
+#include <unordered_map>
 
 namespace fastbotx {
 
@@ -154,6 +155,12 @@ namespace fastbotx {
         const stringPtrSet& getVisitedActivities() const { return this->_visitedActivities; };
 
         /**
+         * @brief Get number of states that belong to the given activity.
+         * Used for dynamic state abstraction (coarsening threshold).
+         */
+        size_t getStateCountByActivity(const std::string &activity) const;
+
+        /**
          * @brief Destructor clears all internal data structures
          */
         virtual ~Graph();
@@ -208,6 +215,10 @@ namespace fastbotx {
         
         /// Current timestamp of the graph (updated when states are added)
         time_t _timeStamp;
+
+        /// Per-activity count of unique states (updated only when a new state is added)
+        /// Used for dynamic state abstraction (coarsening threshold) - O(1) lookup
+        std::unordered_map<std::string, size_t> _activityStateCount;
 
         /// Default distribution pair (0, 0.0) used for initializing new activities
         const static std::pair<int, double> _defaultDistri;
