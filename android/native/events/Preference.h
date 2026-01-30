@@ -10,6 +10,7 @@
 #include <string>
 #include <map>
 #include <vector>
+#include <deque>
 #include <queue>
 #include "Base.h"
 #include "Action.h"
@@ -119,6 +120,11 @@ namespace fastbotx {
         findMatchedElements(std::vector<ElementPtr> &outElements, const XpathPtr &xpathSelector,
                             const ElementPtr &elementXML);
 
+        // Performance optimization: Find first matched element (early termination)
+        // Returns first matching element or nullptr if none found
+        ElementPtr findFirstMatchedElement(const XpathPtr &xpathSelector,
+                                          const ElementPtr &elementXML);
+
         void cachePageTexts(const ElementPtr &rootElement);
 
         void loadConfigs();
@@ -150,10 +156,12 @@ namespace fastbotx {
 
         std::vector<std::string> _inputTexts;
         std::vector<std::string> _fuzzingTexts;
-        std::vector<std::string> _pageTextsCache;
+        std::deque<std::string> _pageTextsCache;
 
         CustomActionPtrVec _blackWidgetActions;
         CustomActionPtrVec _treePrunings;
+        // Performance optimization: Group tree prunings by activity for faster lookup
+        std::map<std::string, CustomActionPtrVec> _treePruningsByActivity;
 
         std::map<std::string, std::string> _resMapping;
         std::map<std::string, std::string> _resMixedMapping;

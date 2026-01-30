@@ -149,5 +149,26 @@ inline void logLongStringInfo(const std::string& longStr) {
 /// Compile-time timestamp (e.g. "Jan 30 2026 08:15:28")
 #define FASTBOT_VERSION __DATE__ " " __TIME__
 
+// Performance optimization: Control raw guitree XML logging
+// Set to 1 to enable detailed line-by-line XML logging (for debugging)
+// Set to 0 to disable (default) for better performance on large dumps
+#ifndef FASTBOT_LOG_RAW_GUITREE
+#define FASTBOT_LOG_RAW_GUITREE 0
+#endif
+
+// Performance optimization: Control xpath matching detailed logging
+// Set to 1 to enable detailed xpath match logging (for debugging)
+// Set to 0 to disable (default) for better performance on large dumps
+#ifndef FASTBOT_LOG_XPATH_MATCH
+#define FASTBOT_LOG_XPATH_MATCH 0
+#endif
+
+// Performance optimization: Control black widget point check logging
+// Set to 1 to enable detailed logging for checkPointIsInBlackRects (for debugging)
+// Set to 0 to disable (default) for better performance (this function is called frequently)
+#ifndef FASTBOT_LOG_BLACK_RECT_CHECK
+#define FASTBOT_LOG_BLACK_RECT_CHECK 0
+#endif
+
 #endif // UTILS_HPP_
 
