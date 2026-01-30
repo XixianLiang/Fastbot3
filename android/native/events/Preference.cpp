@@ -8,10 +8,13 @@
 #include <sstream>
 #include <algorithm>
 #include <regex>
+#include <mutex>
 #include "utils.hpp"
 #include "Preference.h"
 #include "../thirdpart/json/json.hpp"
 
+// Performance optimization: Maximum number of page texts to cache
+#define PageTextsMaxCount 300
 
 namespace fastbotx {
 
@@ -50,31 +53,49 @@ namespace fastbotx {
     Xpath::Xpath()
             : index(-1), operationAND(false) {}
 
+    namespace {
+        const std::regex &getResourceIDRegex() {
+            static const std::regex r("resource-id='(.*?)'");
+            return r;
+        }
+        const std::regex &getTextRegex() {
+            static const std::regex r("text='(.*?)'");
+            return r;
+        }
+        const std::regex &getIndexRegex() {
+            static const std::regex r("index=(\\d+)");
+            return r;
+        }
+        const std::regex &getContentRegex() {
+            static const std::regex r("content-desc='(.*?)'");
+            return r;
+        }
+        const std::regex &getClazzRegex() {
+            static const std::regex r("class='(.*?)'");
+            return r;
+        }
+    }
+
     Xpath::Xpath(const std::string &xpathString)
             : Xpath() {
         if (xpathString.empty())
             return;
         this->_xpathStr = xpathString;
         std::smatch result;
-        std::regex resourceIDRegex("resource-id='(.*?)'");
-        std::regex textRegex("text='(.*?)'");
-        std::regex indexRegex("index=(\\d+)");
-        std::regex contentRegex("content-desc='(.*?)'");
-        std::regex clazzRegex("class='(.*?)'");
-        if (std::regex_search(xpathString, result, resourceIDRegex)) {
-            this->resourceID = *(result.end() - 1);
+        if (std::regex_search(xpathString, result, getResourceIDRegex()) && result.size() > 1) {
+            this->resourceID = result[1].str();
         }
-        if (std::regex_search(xpathString, result, textRegex)) {
-            this->text = *(result.end() - 1);
+        if (std::regex_search(xpathString, result, getTextRegex()) && result.size() > 1) {
+            this->text = result[1].str();
         }
-        if (std::regex_search(xpathString, result, indexRegex)) {
-            this->index = std::stoi(*(result.end() - 1));
+        if (std::regex_search(xpathString, result, getIndexRegex()) && result.size() > 1) {
+            this->index = std::stoi(result[1].str());
         }
-        if (std::regex_search(xpathString, result, contentRegex)) {
-            this->contentDescription = *(result.end() - 1);
+        if (std::regex_search(xpathString, result, getContentRegex()) && result.size() > 1) {
+            this->contentDescription = result[1].str();
         }
-        if (std::regex_search(xpathString, result, clazzRegex)) {
-            this->clazz = *(result.end() - 1);
+        if (std::regex_search(xpathString, result, getClazzRegex()) && result.size() > 1) {
+            this->clazz = result[1].str();
         }
         if ((xpathString.find("and")) != std::string::npos
             && std::count(xpathString.begin(), xpathString.end(), '=') > 1)
@@ -92,9 +113,8 @@ namespace fastbotx {
     }
 
     PreferencePtr Preference::inst() {
-        if (nullptr == _preferenceInst) {
-            _preferenceInst = std::make_shared<Preference>();
-        }
+        static std::once_flag once;
+        std::call_once(once, []() { _preferenceInst = std::make_shared<Preference>(); });
         return _preferenceInst;
     }
 
@@ -169,15 +189,20 @@ namespace fastbotx {
     bool Preference::patchActionBounds(const CustomActionPtr &action, const ElementPtr &rootXML) {
         if (nullptr == action)
             return false;
-        std::vector<ElementPtr> elementVector; // vector for storing elements satisfying xpath selector
-        this->findMatchedElements(elementVector, action->xpath, rootXML);
-        if (!elementVector.empty()) {
-            // the matched elements could be more than one, but we only use the first matched one
-            RectPtr rect = elementVector.at(0)->getBounds();
-            action->bounds.push_back(static_cast<float>(rect->left));
-            action->bounds.push_back(static_cast<float>(rect->top));
-            action->bounds.push_back(static_cast<float>(rect->right));
-            action->bounds.push_back(static_cast<float>(rect->bottom));
+        // Performance optimization: Use findFirstMatchedElement for early termination
+        // Since we only need the first matched element, no need to collect all matches
+        ElementPtr matchedElement = this->findFirstMatchedElement(action->xpath, rootXML);
+        if (matchedElement != nullptr) {
+            RectPtr rect = matchedElement->getBounds();
+            if (rect != nullptr) {
+                action->bounds.push_back(static_cast<float>(rect->left));
+                action->bounds.push_back(static_cast<float>(rect->top));
+                action->bounds.push_back(static_cast<float>(rect->right));
+                action->bounds.push_back(static_cast<float>(rect->bottom));
+            } else {
+                BLOGE("action xpath matched but bounds is null %s", action->xpath->toString().c_str());
+                return false;
+            }
         } else {
             // action->bounds.clear();
             BLOG("action xpath not found %s", action->xpath->toString().c_str());
@@ -197,20 +222,23 @@ namespace fastbotx {
         if (opt->editable && opt->getText().empty()
             && (opt->act == ActionType::CLICK || opt->act == ActionType::LONG_CLICK)) {
             if (this->_randomInputText &&
-                this->_inputTexts.size() > 0) {
-                int randIdx = randomInt(0, (int) this->_inputTexts.size());
+                !this->_inputTexts.empty()) {
+                int n = static_cast<int>(this->_inputTexts.size());
+                int randIdx = randomInt(0, n);
                 std::string &txt = this->_inputTexts[randIdx];
                 opt->setText(txt);
                 strcpy(prelog, "user preset strings");
             } else {
                 float rate = randomInt(0, 100);
                 if (!this->_fuzzingTexts.empty() && rate < 50) {
-                    int randIdx = randomInt(0, (int) this->_fuzzingTexts.size());
+                    int n = static_cast<int>(this->_fuzzingTexts.size());
+                    int randIdx = randomInt(0, n);
                     std::string &txt = this->_fuzzingTexts[randIdx];
                     opt->setText(txt);
                     strcpy(prelog, "fuzzing text");
-                } else if (rate < 85) {
-                    int randIdx = randomInt(0, (int) this->_pageTextsCache.size());
+                } else if (rate < 85 && !this->_pageTextsCache.empty()) {
+                    int n = static_cast<int>(this->_pageTextsCache.size());
+                    int randIdx = randomInt(0, n);
                     std::string &txt = this->_pageTextsCache[randIdx];
                     opt->setText(txt);
                     strcpy(prelog, "page text");
@@ -224,13 +252,8 @@ namespace fastbotx {
     /// \param activity
     /// \param rootXML
     void Preference::resolvePage(const std::string &activity, const ElementPtr &rootXML) {
-        // cache page texts
-        this->cachePageTexts(rootXML);
-
         BDLOG("preference resolve page: %s black widget %zu tree pruning %zu", activity.c_str(),
               this->_blackWidgetActions.size(), this->_treePrunings.size());
-        // deMixResMapping
-        this->deMixResMapping(rootXML);
 
         // get root size
         if (nullptr == this->_rootScreenSize
@@ -248,22 +271,49 @@ namespace fastbotx {
         }
         // recursively resolve black widgets
         this->resolveBlackWidgets(rootXML, activity);
-        // recursively deal all rootXML tree
+        // Performance optimization: deMixResMapping is now merged into resolveElement
+        // This reduces tree traversal from 3 passes to 2 passes (resolveBlackWidgets + resolveElement)
+        // recursively deal all rootXML tree (includes deMixResMapping)
         this->resolveElement(rootXML, activity);
 
     }
 
     void Preference::resolveElement(const ElementPtr &element, const std::string &activity) {
-        // resolve tree pruning
-        if (element)
-            this->resolveTreePruning(element, activity);
-        // pruning Valid Texts
-        if (this->_pruningValidTexts && element)
-            this->pruningValidTexts(element);
-        if (element) {
-            for (const auto &child: element->getChildren()) {
-                this->resolveElement(child, activity);
+        if (!element)
+            return;
+            
+        // Performance optimization: Merge deMixResMapping into resolveElement traversal
+        // This reduces tree traversal from 3 passes to 2 passes
+        // Process resource ID mapping (deMixResMapping logic)
+        if (!this->_resMixedMapping.empty()) {
+            std::string stringOfResourceID = element->getResourceID();
+            if (!stringOfResourceID.empty()) {
+                auto iterator = this->_resMixedMapping.find(stringOfResourceID);
+                if (iterator != this->_resMixedMapping.end()) {
+                    element->reSetResourceID((*iterator).second);
+                    BDLOG("de-mixed %s as %s", stringOfResourceID.c_str(), (*iterator).second.c_str());
+                }
             }
+        }
+            
+        // Performance optimization: Cache page texts during resolveElement traversal
+        // This avoids a separate full tree traversal in cachePageTexts
+        if (!element->getText().empty()) {
+            if (this->_pageTextsCache.size() > PageTextsMaxCount) {
+                for (int i = 0; i < 20 && !this->_pageTextsCache.empty(); i++)
+                    this->_pageTextsCache.pop_front();
+            }
+            this->_pageTextsCache.push_back(element->getText());
+        }
+        
+        // resolve tree pruning
+        this->resolveTreePruning(element, activity);
+        // pruning Valid Texts
+        if (this->_pruningValidTexts)
+            this->pruningValidTexts(element);
+            
+        for (const auto &child: element->getChildren()) {
+            this->resolveElement(child, activity);
         }
     }
 
@@ -290,32 +340,58 @@ namespace fastbotx {
                     bounds[3] = bounds[3] * static_cast<float>(rootHeight);
                 }
                 bool xpathExistsInPage;
-                std::vector<ElementPtr> xpathElements;
+                ElementPtr firstMatchedElement = nullptr;
+                std::vector<ElementPtr> xpathElements; // Still needed for bounds-based matching
                 if (xpath) {
-                    this->findMatchedElements(xpathElements, xpath, rootXML);
-                    BDLOG("find black widget %s  %d", xpath->toString().c_str(),
-                          (int) xpathElements.size());
+                    // Performance optimization: Use findFirstMatchedElement for early termination
+                    // when we only need to check existence
+                    firstMatchedElement = this->findFirstMatchedElement(xpath, rootXML);
+                    if (firstMatchedElement) {
+                        // If we need all matches for bounds-based matching, collect them
+                        if (hasBoundingBox) {
+                            this->findMatchedElements(xpathElements, xpath, rootXML);
+                        }
+                        BDLOG("find black widget %s  found", xpath->toString().c_str());
+                    }
                 }
-                xpathExistsInPage = xpath && !xpathElements.empty();
+                xpathExistsInPage = xpath && (firstMatchedElement != nullptr);
                 std::vector<RectPtr> cachedRects;  // cache black widgets
 
                 if (xpathExistsInPage && !hasBoundingBox) {
-                    BLOG("black widget xpath %s, has no bounds matched %d nodes",
-                         xpath->toString().c_str(), (int) xpathElements.size());
-                    for (const auto &matchedElement: xpathElements) {
-                        BLOG("black widget, delete node: %s depends xpath",
-                             matchedElement->getResourceID().c_str());
-                        cachedRects.push_back(matchedElement->getBounds());
-                        matchedElement->deleteElement();
+                    // Performance: For xpath-only matching without bounds, process all matches
+                    // But we can optimize by using findFirstMatchedElement to check existence first
+                    // Then collect all if needed (current implementation already does this via findMatchedElements)
+                    // Actually, if we only need to delete, we can delete recursively
+                    // But to maintain compatibility, we collect all matches first
+                    if (firstMatchedElement) {
+                        // Collect all matches for deletion (needed for proper cleanup)
+                        this->findMatchedElements(xpathElements, xpath, rootXML);
+                        BLOG("black widget xpath %s, has no bounds matched %d nodes",
+                             xpath->toString().c_str(), (int) xpathElements.size());
+                        for (const auto &matchedElement: xpathElements) {
+                            BLOG("black widget, delete node: %s depends xpath",
+                                 matchedElement->getResourceID().c_str());
+                            RectPtr bounds = matchedElement->getBounds();
+                            if (bounds) {
+                                cachedRects.push_back(bounds);
+                            }
+                            matchedElement->deleteElement();
+                        }
                     }
                 }
                 else if (xpathExistsInPage || (!xpath && hasBoundingBox)) {
+                    // For bounds-based matching, we need all xpath matches (already collected above)
+                    if (xpathExistsInPage && xpathElements.empty() && firstMatchedElement) {
+                        // If we have first match but haven't collected all, collect them now
+                        this->findMatchedElements(xpathElements, xpath, rootXML);
+                    }
                     RectPtr rejectRect = std::make_shared<Rect>(bounds[0], bounds[1], bounds[2],
                                                                 bounds[3]);
                     cachedRects.push_back(rejectRect);
                     std::vector<ElementPtr> elementsInRejectRect;
                     rootXML->recursiveElements([&rejectRect](const ElementPtr &child) -> bool {
-                        return rejectRect->contains(child->getBounds()->center());
+                        RectPtr b = child->getBounds();
+                        return b && rejectRect->contains(b->center());
                     }, elementsInRejectRect);
                     BLOG("black widget xpath %s, with bounds matched %d nodes",
                          xpath ? xpath->toString().c_str() : "none",
@@ -334,12 +410,11 @@ namespace fastbotx {
     }
 
     bool Preference::checkPointIsInBlackRects(const std::string &activity, int pointX, int pointY) {
-        bool isInsideBlackList;
+        bool isInsideBlackList = false;
         auto iter = this->_cachedBlackWidgetRects.find(activity);
-        isInsideBlackList = iter != this->_cachedBlackWidgetRects.end();
-        if (isInsideBlackList) {
+        if (iter != this->_cachedBlackWidgetRects.end()) {
             const Point p(pointX, pointY);
-            for (const auto &rect: iter->second) {
+            for (const auto &rect : iter->second) {
                 if (rect->contains(p)) {
                     isInsideBlackList = true;
                     break;
@@ -352,12 +427,42 @@ namespace fastbotx {
     }
 
     void Preference::resolveTreePruning(const ElementPtr &elem, const std::string &activity) {
-        if (!this->_treePrunings.empty()) {
+        // Performance optimization: Use activity-grouped tree prunings for faster lookup
+        // Only iterate through prunings for the current activity instead of all prunings
+        auto activityIt = this->_treePruningsByActivity.find(activity);
+        if (activityIt != this->_treePruningsByActivity.end()) {
+            const CustomActionPtrVec &pruningsForActivity = activityIt->second;
+            for (const auto &prun: pruningsForActivity) {
+                XpathPtr xpath = prun->xpath;
+                if (!xpath)
+                    continue;
+                if (elem->matchXpathSelector(xpath)) {
+                    BLOG("pruning node %s for xpath: %s", elem->getResourceID().c_str(),
+                         xpath->toString().c_str());
+                    bool resetResid = 0 != InvalidProperty.compare(prun->resourceID);
+                    bool resetContent = 0 != InvalidProperty.compare(prun->contentDescription);
+                    bool resettext = 0 != InvalidProperty.compare(prun->text);
+                    bool resetclassname = 0 != InvalidProperty.compare(prun->classname);
+
+                    if (resetResid)
+                        elem->reSetResourceID(prun->resourceID);
+                    if (resetContent)
+                        elem->reSetContentDesc(prun->contentDescription);
+                    if (resettext)
+                        elem->reSetText(prun->text);
+                    if (resetclassname)
+                        elem->reSetClassname(prun->classname);
+                }
+            }
+        }
+        
+        // Fallback: If activity-grouped map is empty, use original vector (for backward compatibility)
+        // This should not happen if loadTreePruning is called correctly
+        if (this->_treePruningsByActivity.empty() && !this->_treePrunings.empty()) {
             for (const auto &prun: this->_treePrunings) {
                 if (prun->activity != activity)
                     continue;
                 XpathPtr xpath = prun->xpath;
-                std::vector<ElementPtr> xpathElemts;
                 if (!xpath)
                     continue;
                 if (elem->matchXpathSelector(xpath)) {
@@ -432,6 +537,25 @@ namespace fastbotx {
         }
     }
 
+    ElementPtr Preference::findFirstMatchedElement(const XpathPtr &xpathSelector,
+                                                   const ElementPtr &elementXML) {
+        if (!elementXML) {
+            return nullptr;
+        }
+        // Check current element
+        if (elementXML->matchXpathSelector(xpathSelector)) {
+            return elementXML;
+        }
+        // Recursively check children (early termination on first match)
+        for (const auto &child: elementXML->getChildren()) {
+            ElementPtr result = findFirstMatchedElement(xpathSelector, child);
+            if (result != nullptr) {
+                return result;
+            }
+        }
+        return nullptr;
+    }
+
     void Preference::deMixResMapping(const ElementPtr &rootXML) {
         if (!rootXML || this->_resMixedMapping.empty())
             return;
@@ -459,12 +583,14 @@ namespace fastbotx {
         for (std::string line: lines) {
             if (line.find(".R.id.") == std::string::npos)
                 continue;
-            size_t startPos = 0;
-            if ((startPos = line.find("0x") != std::string::npos)
-                && ((startPos = line.find(':')) != std::string::npos)) {
-                line = line.substr(startPos + 1);
+            // Parse format like "0x7f0a0012: id/foo -> :id/bar": take substring after first colon after "0x"
+            size_t pos0x = line.find("0x");
+            if (pos0x != std::string::npos) {
+                size_t posColon = line.find(':', pos0x);
+                if (posColon != std::string::npos)
+                    line = line.substr(posColon + 1);
             }
-            startPos = 0;
+            size_t startPos = 0;
             stringReplaceAll(line, " ", "");
             stringReplaceAll(line, ".R.id.", ":id/");
             startPos = line.find("->");
@@ -548,14 +674,14 @@ namespace fastbotx {
         }
     }
 
-#define PageTextsMaxCount 300
-
     void Preference::cachePageTexts(const ElementPtr &rootElement) {
+        if (!rootElement)
+            return;
         if (this->_pageTextsCache.size() > PageTextsMaxCount) {
-            this->_pageTextsCache.erase(this->_pageTextsCache.begin(),
-                                        this->_pageTextsCache.begin() + 20);
+            for (int i = 0; i < 20 && !this->_pageTextsCache.empty(); i++)
+                this->_pageTextsCache.pop_front();
         }
-        if (rootElement && !rootElement->getText().empty()) {
+        if (!rootElement->getText().empty()) {
             this->_pageTextsCache.push_back(rootElement->getText());
         }
         for (const auto &childElement: rootElement->getChildren()) {
@@ -686,6 +812,8 @@ namespace fastbotx {
             return;
         try {
             ::nlohmann::json actions = ::nlohmann::json::parse(fileContent);
+            // Performance optimization: Clear and rebuild activity-grouped map
+            this->_treePruningsByActivity.clear();
             for (const ::nlohmann::json &action: actions) {
                 CustomActionPtr act = std::make_shared<CustomAction>();
                 std::string xpathStr = getJsonValue<std::string>(action, "xpath", "");
@@ -697,6 +825,9 @@ namespace fastbotx {
                                                                     InvalidProperty);
                 act->classname = getJsonValue<std::string>(action, "classname", InvalidProperty);
                 this->_treePrunings.push_back(act);
+                
+                // Performance optimization: Group by activity for faster lookup
+                this->_treePruningsByActivity[act->activity].push_back(act);
             }
         } catch (nlohmann::json::exception &ex) {
             BLOGE("parse tree pruning error happened: id,%d: %s", ex.id, ex.what());

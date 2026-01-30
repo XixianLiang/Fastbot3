@@ -18,7 +18,9 @@ namespace fastbotx {
     Element::Element()
             : _enabled(false), _checked(false), _checkable(false), _clickable(false),
               _focusable(false), _scrollable(false), _longClickable(false), _childCount(0),
-              _focused(false), _index(0), _password(false), _selected(false), _isEditable(false) {
+              _focused(false), _index(0), _password(false), _selected(false), _isEditable(false),
+              _cachedScrollType(ScrollType::NONE), _scrollTypeCached(false),
+              _cachedHash(0), _hashCached(false) {
         _children.clear();
         this->_bounds = Rect::RectZero;
     }
@@ -79,6 +81,9 @@ namespace fastbotx {
         bool isClassNameEqual = (!xpathSelector->clazz.empty() &&
                                  this->getClassname() == xpathSelector->clazz);
         bool isIndexEqual = xpathSelector->index > -1 && this->getIndex() == xpathSelector->index;
+        
+        // Performance optimization: Only log detailed xpath matching when enabled
+#if FASTBOT_LOG_XPATH_MATCH
         BDLOG("begin find xpathSelector :\n "
               "XPathSelector:\n resourceID: %s text: %s contentDescription: %s clazz: %s index: %d \n"
               "UIPageElement:\n resourceID: %s text: %s contentDescription: %s clazz: %s index: %d \n"
@@ -98,20 +103,28 @@ namespace fastbotx {
               isContentEqual,
               isClassNameEqual,
               isIndexEqual);
+#endif
         if (xpathSelector->operationAND) {
+            // Performance optimization: AND mode with early exit
+            // Fix bug: previous code had `match = isClassNameEqual` which overwrote the initial true
             match = true;
-            if (!xpathSelector->clazz.empty())
-                match = isClassNameEqual;
-            if (!xpathSelector->contentDescription.empty())
-                match = match && isContentEqual;
-            if (!xpathSelector->text.empty())
-                match = match && isTextEqual;
-            if (!xpathSelector->resourceID.empty())
-                match = match && isResourceIDEqual;
-            if (xpathSelector->index != -1)
-                match = match && isIndexEqual;
-        } else
+            // Early exit: if any required field doesn't match, return false immediately
+            if (!xpathSelector->clazz.empty() && !isClassNameEqual) {
+                match = false;
+            } else if (!xpathSelector->contentDescription.empty() && !isContentEqual) {
+                match = false;
+            } else if (!xpathSelector->text.empty() && !isTextEqual) {
+                match = false;
+            } else if (!xpathSelector->resourceID.empty() && !isResourceIDEqual) {
+                match = false;
+            } else if (xpathSelector->index != -1 && !isIndexEqual) {
+                match = false;
+            }
+        } else {
+            // Performance optimization: OR mode with early exit
+            // Return true as soon as any field matches
             match = isResourceIDEqual || isTextEqual || isContentEqual || isClassNameEqual;
+        }
         return match;
     }
 
@@ -135,8 +148,8 @@ namespace fastbotx {
     void Element::recursiveElements(const std::function<bool(ElementPtr)> &func,
                                     std::vector<ElementPtr> &result) const {
         if (func != nullptr) {
-            // Performance: Reserve capacity if we can estimate result size
-            // (Not done here as it's hard to estimate, but could be optimized further)
+            // Performance: Reserve to reduce reallocations when many children match
+            result.reserve(result.size() + this->_children.size());
             for (const auto &child: this->_children) {
                 // Check if current child matches
                 if (func(child)) {
@@ -193,27 +206,26 @@ namespace fastbotx {
     ElementPtr Element::createFromXml(const std::string &xmlContent) {
         tinyxml2::XMLDocument doc;
         
-        // Performance: Reserve capacity for string vector to reduce reallocations
-        // Estimate: typically 1 line per 100-200 chars, but be conservative
+        // Raw guitree log for debugging: log XML line by line (same format as logcat)
+        // Performance optimization: Only log when FASTBOT_LOG_RAW_GUITREE is enabled
+#if FASTBOT_LOG_RAW_GUITREE
         std::vector<std::string> strings;
         strings.reserve(xmlContent.size() / 100 + 1);
-        
-        // Split XML content by newlines for logging (debug only)
         int startIndex = 0, endIndex = 0;
         for (size_t i = 0; i <= xmlContent.size(); i++) {
-            // If we reached the end of the string or a newline character
             if (i >= xmlContent.size() || xmlContent[i] == '\n') {
                 endIndex = static_cast<int>(i);
-                // Performance: Use string view or direct substring to avoid copy
                 strings.emplace_back(xmlContent, startIndex, endIndex - startIndex);
                 startIndex = endIndex + 1;
             }
         }
-        
-        // Log XML content line by line (debug mode only)
-        for (const auto& line: strings) {
+        for (const auto &line : strings) {
             BLOG("The content of XML is: %s", line.c_str());
         }
+#else
+        // Only log size summary when detailed logging is disabled
+        BLOG("guitree size=%zu", xmlContent.size());
+#endif
         
         // Parse XML content
         tinyxml2::XMLError errXml = doc.Parse(xmlContent.c_str());
@@ -225,9 +237,9 @@ namespace fastbotx {
 
         ElementPtr elementPtr = std::make_shared<Element>();
 
-        // Track if any element is clickable during parsing
+        // Track if any element is clickable during parsing. Root has no parent (nullptr).
         _allClickableFalse = true;
-        elementPtr->fromXml(doc, elementPtr);
+        elementPtr->fromXml(doc, nullptr);
         
         // If no elements are clickable, make all clickable as fallback
         // This ensures the UI can still be interacted with
@@ -246,9 +258,9 @@ namespace fastbotx {
     }
 
     ElementPtr Element::createFromXml(const tinyxml2::XMLDocument &doc) {
-        ElementPtr elementPtr = std::make_shared<Element>(); // Use the empty element as the FAKE root element
+        ElementPtr elementPtr = std::make_shared<Element>(); // Root element has no parent
         _allClickableFalse = true;
-        elementPtr->fromXml(doc, elementPtr);
+        elementPtr->fromXml(doc, nullptr);
         if (_allClickableFalse) {
             elementPtr->recursiveDoElements([](const ElementPtr &elm) {
                 elm->_clickable = true;
@@ -268,7 +280,8 @@ namespace fastbotx {
 
     std::string Element::toJson() const {
         nlohmann::json j;
-        j["bounds"] = this->getBounds()->toString().c_str();
+        RectPtr bounds = this->getBounds();
+        j["bounds"] = bounds ? bounds->toString().c_str() : "";
         j["index"] = this->getIndex();
         j["class"] = this->getClassname().c_str();
         j["resource-id"] = this->getResourceID().c_str();
@@ -288,7 +301,8 @@ namespace fastbotx {
 
     void Element::recursiveToXML(tinyxml2::XMLElement *xml, const Element *elm) const {
         BDLOG("add a xml %p %p", xml, elm);
-        xml->SetAttribute("bounds", elm->getBounds()->toString().c_str());
+        RectPtr bounds = elm->getBounds();
+        xml->SetAttribute("bounds", bounds ? bounds->toString().c_str() : "");
         BDLOG("add a xml 111");
         xml->SetAttribute("index", elm->getIndex());
         xml->SetAttribute("class", elm->getClassname().c_str());
@@ -341,6 +355,8 @@ namespace fastbotx {
     void Element::fromXMLNode(const tinyxml2::XMLElement *xmlNode, const ElementPtr &parentOfNode) {
         if (nullptr == xmlNode)
             return;
+        if (parentOfNode)
+            this->_parent = parentOfNode;
 //    BLOG("This Node is %s", std::string(xmlNode->GetText()).c_str());
         int indexOfNode = 0;
         tinyxml2::XMLError err = xmlNode->QueryIntAttribute("index", &indexOfNode);
@@ -350,37 +366,116 @@ namespace fastbotx {
         const char *boundingBoxStr = "get attribute failed";
         err = xmlNode->QueryStringAttribute("bounds", &boundingBoxStr);
         if (err == tinyxml2::XML_SUCCESS) {
-            int xl, yl, xr, yr;
-            if (sscanf(boundingBoxStr, "[%d,%d][%d,%d]", &xl, &yl, &xr, &yr) == 4) {
+            // Performance optimization: Lightweight bounds parser instead of sscanf
+            // Format: "[xl,yl][xr,yr]" - e.g., "[100,200][300,400]"
+            int xl = 0, yl = 0, xr = 0, yr = 0;
+            bool parseSuccess = false;
+            
+            // Fast parsing: find positions of brackets and commas
+            const char *p = boundingBoxStr;
+            if (*p == '[') {
+                p++; // skip '['
+                // Parse xl
+                xl = 0;
+                bool negative = false;
+                if (*p == '-') {
+                    negative = true;
+                    p++;
+                }
+                while (*p >= '0' && *p <= '9') {
+                    xl = xl * 10 + (*p - '0');
+                    p++;
+                }
+                if (negative) xl = -xl;
+                
+                if (*p == ',') {
+                    p++; // skip ','
+                    // Parse yl
+                    yl = 0;
+                    negative = false;
+                    if (*p == '-') {
+                        negative = true;
+                        p++;
+                    }
+                    while (*p >= '0' && *p <= '9') {
+                        yl = yl * 10 + (*p - '0');
+                        p++;
+                    }
+                    if (negative) yl = -yl;
+                    
+                    if (*p == ']' && *(p+1) == '[') {
+                        p += 2; // skip ']['
+                        // Parse xr
+                        xr = 0;
+                        negative = false;
+                        if (*p == '-') {
+                            negative = true;
+                            p++;
+                        }
+                        while (*p >= '0' && *p <= '9') {
+                            xr = xr * 10 + (*p - '0');
+                            p++;
+                        }
+                        if (negative) xr = -xr;
+                        
+                        if (*p == ',') {
+                            p++; // skip ','
+                            // Parse yr
+                            yr = 0;
+                            negative = false;
+                            if (*p == '-') {
+                                negative = true;
+                                p++;
+                            }
+                            while (*p >= '0' && *p <= '9') {
+                                yr = yr * 10 + (*p - '0');
+                                p++;
+                            }
+                            if (negative) yr = -yr;
+                            
+                            if (*p == ']') {
+                                parseSuccess = true;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            if (parseSuccess) {
                 this->_bounds = std::make_shared<Rect>(xl, yl, xr, yr);
                 if (this->_bounds->isEmpty())
                     this->_bounds = Rect::RectZero;
             }
         }
+        // Performance optimization: Use move semantics and avoid unnecessary copies
+        // tinyxml2 returns const char* which points to internal buffer, so we need to copy
+        // But we can optimize by checking if string is empty before copying
         const char *text = "attribute text get failed";  // need copy
         err = xmlNode->QueryStringAttribute("text", &text);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_text = std::string(text); // copy
+        if (err == tinyxml2::XML_SUCCESS && text && *text != '\0') {
+            this->_text = std::string(text); // copy only if non-empty
         }
         const char *resource_id = "attribute resource_id get failed";  // need copy
         err = xmlNode->QueryStringAttribute("resource-id", &resource_id);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_resourceID = std::string(resource_id); // copy
+        if (err == tinyxml2::XML_SUCCESS && resource_id && *resource_id != '\0') {
+            this->_resourceID = std::string(resource_id); // copy only if non-empty
         }
         const char *tclassname = "attribute class name get failed";  // need copy
         err = xmlNode->QueryStringAttribute("class", &tclassname);
-        if (err == tinyxml2::XML_SUCCESS) {
+        if (err == tinyxml2::XML_SUCCESS && tclassname && *tclassname != '\0') {
+            // Performance: For common class names, we could use string interning
+            // For now, just copy (full interning would require a global string pool)
             this->_classname = std::string(tclassname); // copy
         }
         const char *pkgname = "attribute package name get failed";  // need copy
         err = xmlNode->QueryStringAttribute("package", &pkgname);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_packageName = std::string(pkgname); // copy
+        if (err == tinyxml2::XML_SUCCESS && pkgname && *pkgname != '\0') {
+            this->_packageName = std::string(pkgname); // copy only if non-empty
         }
         const char *content_desc = "attribute content description get failed";  // need copy
         err = xmlNode->QueryStringAttribute("content-desc", &content_desc);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_contentDesc = std::string(content_desc); // copy
+        if (err == tinyxml2::XML_SUCCESS && content_desc && *content_desc != '\0') {
+            this->_contentDesc = std::string(content_desc); // copy only if non-empty
         }
         bool checkable = false;
         err = xmlNode->QueryBoolAttribute("checkable", &checkable);
@@ -450,18 +545,33 @@ namespace fastbotx {
             this->_enabled = true;
         }
 
+        // Performance optimization: Pre-compute and cache scroll type during parsing
+        // This avoids repeated string comparisons in getScrollType()
+        this->_cachedScrollType = this->_computeScrollType();
+        this->_scrollTypeCached = true;
+
+        // Performance optimization: Pre-count children to avoid multiple vector reallocations
         int childrenCountOfCurrentNode = 0;
         if (!xmlNode->NoChildren()) {
+            // First pass: count children to pre-allocate vector capacity
+            for (const tinyxml2::XMLElement *childNode = xmlNode->FirstChildElement();
+                 nullptr != childNode; childNode = childNode->NextSiblingElement()) {
+                childrenCountOfCurrentNode++;
+            }
+            
+            // Pre-allocate vector capacity to avoid reallocations during emplace_back
+            if (childrenCountOfCurrentNode > 0) {
+                this->_children.reserve(childrenCountOfCurrentNode);
+            }
+            
+            // Second pass: create and populate children
             for (const tinyxml2::XMLElement *childNode = xmlNode->FirstChildElement();
                  nullptr != childNode; childNode = childNode->NextSiblingElement()) {
                 const tinyxml2::XMLElement *nextXMLElement = childNode;
                 ElementPtr childElement = std::make_shared<Element>();
                 this->_children.emplace_back(childElement);
-                childrenCountOfCurrentNode++;
-                // generate XML for deeper children, pass the current xmlNode as their parent
-                childElement->fromXMLNode(nextXMLElement, childElement);
-                // update the parent of this current child
-                childElement->_parent = parentOfNode;
+                // Pass shared_from_this() as parent so child's _parent points to this node
+                childElement->fromXMLNode(nextXMLElement, shared_from_this());
             }
         }
         this->_childCount = childrenCountOfCurrentNode;
@@ -475,7 +585,7 @@ namespace fastbotx {
         return this->_isEditable;
     }
 
-    ScrollType Element::getScrollType() const {
+    ScrollType Element::_computeScrollType() const {
         if (!this->_scrollable) {
             return ScrollType::NONE;
         }
@@ -498,6 +608,17 @@ namespace fastbotx {
         // for ios
 //    return ScrollType::NONE;
         return ScrollType::ALL;
+    }
+
+    ScrollType Element::getScrollType() const {
+        // Performance optimization: Return cached value if available
+        if (this->_scrollTypeCached) {
+            return this->_cachedScrollType;
+        }
+        // Fallback: compute and cache (should not happen in normal flow)
+        this->_cachedScrollType = this->_computeScrollType();
+        this->_scrollTypeCached = true;
+        return this->_cachedScrollType;
     }
 
     Element::~Element() {
@@ -523,6 +644,13 @@ namespace fastbotx {
      * @note Hash computation includes order information for children when recursive=true
      */
     long Element::hash(bool recursive) {
+        // Performance optimization: Return cached hash if available and recursive flag matches
+        // Note: We cache only recursive hash (recursive=true) as it's the most expensive
+        // Non-recursive hash is cheap and rarely reused, so we don't cache it
+        if (recursive && this->_hashCached) {
+            return this->_cachedHash;
+        }
+        
         uintptr_t hashcode = 0x1;
         
         // Compute individual property hashes with different bit shifts for better distribution
@@ -547,6 +675,10 @@ namespace fastbotx {
                 // Include order information in hash to distinguish different child orders
                 hashcode ^= 0x7398c + (std::hash<size_t>{}(i) << 8);
             }
+            
+            // Cache the computed hash for future use
+            this->_cachedHash = static_cast<long>(hashcode);
+            this->_hashCached = true;
         }
         
         return static_cast<long>(hashcode);

@@ -117,6 +117,10 @@ namespace fastbotx {
         int mergedWidgetCount = sharedPtr->mergeWidgetAndStoreMergedOnes(mergedWidgets);
         if (mergedWidgetCount != 0) {
             BDLOG("build state merged  %d widget", mergedWidgetCount);
+            // Performance optimization: Pre-allocate vector capacity before assign
+            // This avoids multiple reallocations during assign operation
+            sharedPtr->_widgets.clear();
+            sharedPtr->_widgets.reserve(mergedWidgets.size());
             // Use merged widgets (deduplicated) instead of original widgets
             sharedPtr->_widgets.assign(mergedWidgets.begin(), mergedWidgets.end());
             
@@ -229,6 +233,25 @@ namespace fastbotx {
 
     RectPtr State::_sameRootBounds = std::make_shared<Rect>();
 
+    namespace {
+        // Helper function to estimate widget count from element tree
+        // Counts elements that are likely to become widgets (clickable, scrollable, checkable, etc.)
+        size_t estimateWidgetCount(const ElementPtr &elem) {
+            if (!elem) return 0;
+            size_t count = 0;
+            // Count this element if it's actionable
+            if (elem->getClickable() || elem->getScrollable() || elem->getCheckable() 
+                || elem->getLongClickable() || elem->isEditText()) {
+                count = 1;
+            }
+            // Recursively count children
+            for (const auto &child : elem->getChildren()) {
+                count += estimateWidgetCount(child);
+            }
+            return count;
+        }
+    }
+
     void State::buildFromElement(WidgetPtr parentWidget, ElementPtr elem) {
         // Handle root element bounds
         if (elem != nullptr && elem->getParent().expired()) {
@@ -246,6 +269,13 @@ namespace fastbotx {
                     // Different bounds, use current bounds
                     this->_rootBounds = elemBounds;
                 }
+            }
+            
+            // Performance optimization: Pre-allocate widgets vector capacity for root element
+            // Estimate widget count to avoid multiple reallocations during recursive build
+            size_t estimatedCount = estimateWidgetCount(elem);
+            if (estimatedCount > 0) {
+                this->_widgets.reserve(estimatedCount);
             }
         }
         
