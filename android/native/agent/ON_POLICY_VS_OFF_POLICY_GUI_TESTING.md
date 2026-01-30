@@ -1,3 +1,7 @@
+/**
+ * @authors Zhao Zhang
+ */
+
 # On-Policy vs Off-Policy 在GUI测试中的含义
 
 ## 执行摘要
@@ -599,8 +603,3 @@ ActionPtr ModelReusableAgent::findBestAction(const StatePtr& state) {
 - Prioritized Experience Replay（提高样本效率）
 
 ---
-
-**文档版本**: 1.0  
-**创建日期**: 2026-01-25  
-**作者**: AI Assistant  
-**审核状态**: 待审核

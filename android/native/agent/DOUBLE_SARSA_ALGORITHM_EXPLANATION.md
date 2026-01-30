@@ -1,3 +1,7 @@
+/**
+ * @authors Zhao Zhang
+ */
+
 # Double SARSA 算法详解与优势分析
 
 ## 执行摘要
@@ -478,9 +482,3 @@ Double SARSA 通过减少过估计偏差、提高稳定性和鲁棒性，能够�
 
 3. Sutton, R. S., & Barto, A. G. (2018). *Reinforcement Learning: An Introduction* (2nd ed.). MIT Press.
 
----
-
-**文档版本**：1.0  
-**最后更新**：2026-01-25  
-**作者**：AI Assistant  
-**状态**：✅ 完整

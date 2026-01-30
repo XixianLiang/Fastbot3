@@ -1,6 +1,10 @@
+/**
+ * @authors Zhao Zhang
+ */
+
 # State 抽象技术档案
 
-本文档基于当前 Fastbot Native 实现，说明动态 State 抽象的含义、维度、初始配置、细化/聚合时机及 Q 值保存方式，并配有流程图。
+本文基于当前 Fastbot Native 实现，说明动态 State 抽象的含义、维度、初始配置、细化/聚合时机及 Q 值保存方式。
 
 ---
 
@@ -398,8 +402,3 @@ flowchart LR
 ```
 
 ---
-
-## 10. 文档与设计参考
-
-- 详细设计与正确性推导：`DYNAMIC_STATE_ABSTRACTION_DESIGN.md`（同目录）
-- Coarsen 逻辑与修复说明：`../model/COARSEN_REVIEW.md`
