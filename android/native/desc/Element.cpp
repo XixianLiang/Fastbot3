@@ -11,9 +11,20 @@
 #include "Element.h"
 #include "../thirdpart/tinyxml2/tinyxml2.h"
 #include "../thirdpart/json/json.hpp"
+#include <cstdio>
 
 
 namespace fastbotx {
+
+    /// Parse one integer (optional '-', then digits) and advance p past it. Used for bounds "[xl,yl][xr,yr]".
+    static int parseIntAndAdvance(const char *&p) {
+        bool neg = (*p == '-');
+        if (neg) ++p;
+        int v = 0;
+        while (*p >= '0' && *p <= '9')
+            v = v * 10 + (*p++ - '0');
+        return neg ? -v : v;
+    }
 
     Element::Element()
             : _enabled(false), _checked(false), _checkable(false), _clickable(false),
@@ -309,10 +320,15 @@ namespace fastbotx {
     }
 
     void Element::recursiveToXML(tinyxml2::XMLElement *xml, const Element *elm) const {
-        BDLOG("add a xml %p %p", xml, elm);
         RectPtr bounds = elm->getBounds();
-        xml->SetAttribute("bounds", bounds ? bounds->toString().c_str() : "");
-        BDLOG("add a xml 111");
+        if (bounds) {
+            char boundsBuf[48];
+            std::snprintf(boundsBuf, sizeof(boundsBuf), "[%d,%d][%d,%d]",
+                          bounds->left, bounds->top, bounds->right, bounds->bottom);
+            xml->SetAttribute("bounds", boundsBuf);
+        } else {
+            xml->SetAttribute("bounds", "");
+        }
         xml->SetAttribute("index", elm->getIndex());
         xml->SetAttribute("class", elm->getClassname().c_str());
         xml->SetAttribute("resource-id", elm->getResourceID().c_str());
@@ -329,8 +345,8 @@ namespace fastbotx {
         xml->SetAttribute("password", elm->_password ? "true" : "false");
         xml->SetAttribute("scroll-type", "none");
 
-        BDLOG("add a xml 1111");
-        for (const auto &child: elm->getChildren()) {
+        const auto &children = elm->getChildren();
+        for (const auto &child : children) {
             tinyxml2::XMLElement *xmlChild = xml->InsertNewChildElement("node");
             xml->LinkEndChild(xmlChild);
             recursiveToXML(xmlChild, child.get());
@@ -372,88 +388,26 @@ namespace fastbotx {
         if (err == tinyxml2::XML_SUCCESS) {
             this->_index = indexOfNode;
         }
-        const char *boundingBoxStr = "get attribute failed";
-        err = xmlNode->QueryStringAttribute("bounds", &boundingBoxStr);
-        if (err == tinyxml2::XML_SUCCESS) {
-            // Performance optimization: Lightweight bounds parser instead of sscanf
-            // Format: "[xl,yl][xr,yr]" - e.g., "[100,200][300,400]"
-            int xl = 0, yl = 0, xr = 0, yr = 0;
-            bool parseSuccess = false;
-            
-            // Fast parsing: find positions of brackets and commas
-            const char *p = boundingBoxStr;
-            if (*p == '[') {
-                p++; // skip '['
-                // Parse xl
-                xl = 0;
-                bool negative = false;
-                if (*p == '-') {
-                    negative = true;
-                    p++;
-                }
-                while (*p >= '0' && *p <= '9') {
-                    xl = xl * 10 + (*p - '0');
-                    p++;
-                }
-                if (negative) xl = -xl;
-                
-                if (*p == ',') {
-                    p++; // skip ','
-                    // Parse yl
-                    yl = 0;
-                    negative = false;
-                    if (*p == '-') {
-                        negative = true;
-                        p++;
-                    }
-                    while (*p >= '0' && *p <= '9') {
-                        yl = yl * 10 + (*p - '0');
-                        p++;
-                    }
-                    if (negative) yl = -yl;
-                    
-                    if (*p == ']' && *(p+1) == '[') {
-                        p += 2; // skip ']['
-                        // Parse xr
-                        xr = 0;
-                        negative = false;
-                        if (*p == '-') {
-                            negative = true;
-                            p++;
-                        }
-                        while (*p >= '0' && *p <= '9') {
-                            xr = xr * 10 + (*p - '0');
-                            p++;
-                        }
-                        if (negative) xr = -xr;
-                        
-                        if (*p == ',') {
-                            p++; // skip ','
-                            // Parse yr
-                            yr = 0;
-                            negative = false;
-                            if (*p == '-') {
-                                negative = true;
-                                p++;
-                            }
-                            while (*p >= '0' && *p <= '9') {
-                                yr = yr * 10 + (*p - '0');
-                                p++;
-                            }
-                            if (negative) yr = -yr;
-                            
-                            if (*p == ']') {
-                                parseSuccess = true;
-                            }
+        const char *boundingBoxStr = nullptr;
+        if (xmlNode->QueryStringAttribute("bounds", &boundingBoxStr) == tinyxml2::XML_SUCCESS && boundingBoxStr && *boundingBoxStr == '[') {
+            const char *p = boundingBoxStr + 1;
+            int xl = parseIntAndAdvance(p);
+            if (*p == ',') {
+                ++p;
+                int yl = parseIntAndAdvance(p);
+                if (p[0] == ']' && p[1] == '[') {
+                    p += 2;
+                    int xr = parseIntAndAdvance(p);
+                    if (*p == ',') {
+                        ++p;
+                        int yr = parseIntAndAdvance(p);
+                        if (*p == ']') {
+                            this->_bounds = std::make_shared<Rect>(xl, yl, xr, yr);
+                            if (this->_bounds->isEmpty())
+                                this->_bounds = Rect::RectZero;
                         }
                     }
                 }
-            }
-            
-            if (parseSuccess) {
-                this->_bounds = std::make_shared<Rect>(xl, yl, xr, yr);
-                if (this->_bounds->isEmpty())
-                    this->_bounds = Rect::RectZero;
             }
         }
         // Performance optimization: Use move semantics and avoid unnecessary copies
@@ -486,58 +440,17 @@ namespace fastbotx {
         if (err == tinyxml2::XML_SUCCESS && content_desc && *content_desc != '\0') {
             this->_contentDesc = std::string(content_desc); // copy only if non-empty
         }
-        bool checkable = false;
-        err = xmlNode->QueryBoolAttribute("checkable", &checkable);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_checkable = checkable;
-        }
-        bool clickable = false;
-        err = xmlNode->QueryBoolAttribute("clickable", &clickable);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_clickable = clickable;
-        }
-        if (clickable)
-            _allClickableFalse = false;
-        bool checked = false;
-        err = xmlNode->QueryBoolAttribute("checked", &checked);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_checked = checked;
-        }
-        bool enabled = false;
-        err = xmlNode->QueryBoolAttribute("enabled", &enabled);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_enabled = enabled;
-        }
-        bool focused = false;
-        err = xmlNode->QueryBoolAttribute("focused", &focused);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_focused = focused;
-        }
-        bool focusable = false;
-        err = xmlNode->QueryBoolAttribute("focusable", &focusable);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_focusable = focusable;
-        }
-        bool scrollable = false;
-        err = xmlNode->QueryBoolAttribute("scrollable", &scrollable);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_scrollable = scrollable;
-        }
-        bool longclickable = false;
-        err = xmlNode->QueryBoolAttribute("long-clickable", &longclickable);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_longClickable = longclickable;
-        }
-        bool password = false;
-        err = xmlNode->QueryBoolAttribute("password", &password);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_password = password;
-        }
-        bool selected = false;
-        err = xmlNode->QueryBoolAttribute("selected", &selected);
-        if (err == tinyxml2::XML_SUCCESS) {
-            this->_selected = selected;
-        }
+        bool b = false;
+        if (xmlNode->QueryBoolAttribute("checkable", &b) == tinyxml2::XML_SUCCESS) this->_checkable = b;
+        if (xmlNode->QueryBoolAttribute("clickable", &b) == tinyxml2::XML_SUCCESS) { this->_clickable = b; if (b) _allClickableFalse = false; }
+        if (xmlNode->QueryBoolAttribute("checked", &b) == tinyxml2::XML_SUCCESS) this->_checked = b;
+        if (xmlNode->QueryBoolAttribute("enabled", &b) == tinyxml2::XML_SUCCESS) this->_enabled = b;
+        if (xmlNode->QueryBoolAttribute("focused", &b) == tinyxml2::XML_SUCCESS) this->_focused = b;
+        if (xmlNode->QueryBoolAttribute("focusable", &b) == tinyxml2::XML_SUCCESS) this->_focusable = b;
+        if (xmlNode->QueryBoolAttribute("scrollable", &b) == tinyxml2::XML_SUCCESS) this->_scrollable = b;
+        if (xmlNode->QueryBoolAttribute("long-clickable", &b) == tinyxml2::XML_SUCCESS) this->_longClickable = b;
+        if (xmlNode->QueryBoolAttribute("password", &b) == tinyxml2::XML_SUCCESS) this->_password = b;
+        if (xmlNode->QueryBoolAttribute("selected", &b) == tinyxml2::XML_SUCCESS) this->_selected = b;
 
         this->_isEditable = "android.widget.EditText" == this->_classname;
         if (FORCE_EDITTEXT_CLICK_TRUE && this->_isEditable) {
@@ -554,36 +467,21 @@ namespace fastbotx {
             this->_enabled = true;
         }
 
-        // Performance optimization: Pre-compute and cache scroll type during parsing
-        // This avoids repeated string comparisons in getScrollType()
         this->_cachedScrollType = this->_computeScrollType();
         this->_scrollTypeCached = true;
 
-        // Performance optimization: Pre-count children to avoid multiple vector reallocations
-        int childrenCountOfCurrentNode = 0;
+        // Performance: Only call shared_from_this() and reserve when node has children (most nodes are leaves).
         if (!xmlNode->NoChildren()) {
-            // First pass: count children to pre-allocate vector capacity
+            this->_children.reserve(8);
+            const ElementPtr self = shared_from_this();
             for (const tinyxml2::XMLElement *childNode = xmlNode->FirstChildElement();
-                 nullptr != childNode; childNode = childNode->NextSiblingElement()) {
-                childrenCountOfCurrentNode++;
-            }
-            
-            // Pre-allocate vector capacity to avoid reallocations during emplace_back
-            if (childrenCountOfCurrentNode > 0) {
-                this->_children.reserve(childrenCountOfCurrentNode);
-            }
-            
-            // Second pass: create and populate children
-            for (const tinyxml2::XMLElement *childNode = xmlNode->FirstChildElement();
-                 nullptr != childNode; childNode = childNode->NextSiblingElement()) {
-                const tinyxml2::XMLElement *nextXMLElement = childNode;
+                 childNode != nullptr; childNode = childNode->NextSiblingElement()) {
                 ElementPtr childElement = std::make_shared<Element>();
                 this->_children.emplace_back(childElement);
-                // Pass shared_from_this() as parent so child's _parent points to this node
-                childElement->fromXMLNode(nextXMLElement, shared_from_this());
+                childElement->fromXMLNode(childNode, self);
             }
         }
-        this->_childCount = childrenCountOfCurrentNode;
+        this->_childCount = static_cast<int>(this->_children.size());
     }
 
     bool Element::isWebView() const {
