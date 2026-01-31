@@ -50,7 +50,8 @@ namespace fastbotx {
 
         std::shared_ptr<Rect> getBounds() const { return this->_bounds; }
 
-        std::set<ActionType> getActions() const { return this->_actions; }
+        /// Returns const reference to avoid copying the set on every call (performance).
+        const std::set<ActionType> &getActions() const { return this->_actions; }
 
         std::string getText() const { return this->_text; }
 

@@ -171,35 +171,25 @@ namespace fastbotx {
      * - Skips widgets with null bounds
      */
     void ReuseState::buildActionForState() {
-        // Performance: Pre-allocate capacity to avoid vector reallocations
-        // Estimate action count: sum of all widget actions + 1 for back action
-        size_t estimatedActionCount = 1; // Reserve space for back action
-        for (const auto &widget: _widgets) {
-            if (widget->getBounds() != nullptr) {
-                estimatedActionCount += widget->getActions().size();
-            }
-        }
-        _actions.reserve(estimatedActionCount);
-        
-        for (const auto &widget: _widgets) {
-            if (widget->getBounds() == nullptr) {
+        // Performance: Cache activity string (shared_ptr copy) once instead of per action
+        stringPtr activityStr = getActivityString();
+        // Performance: Heuristic reserve to avoid first-pass count; typical ~2–4 actions per widget
+        _actions.reserve(_widgets.size() * 4 + 1);
+
+        for (const auto &widget : _widgets) {
+            RectPtr bounds = widget->getBounds();
+            if (bounds == nullptr) {
                 BLOGE("NULL Bounds happened");
                 continue;
             }
-            // Create action for each action type supported by this widget
-            for (ActionType action: widget->getActions()) {
-                // Performance: Use make_shared for single memory allocation
-                // (constructor is public, so make_shared can be used)
-                ActivityNameActionPtr activityNameAction = std::make_shared<ActivityNameAction>(
-                        getActivityString(), widget, action);
-                // Performance: emplace_back() constructs in-place, avoiding copy
-                _actions.emplace_back(activityNameAction);
+            // getActions() returns const ref — no set copy per widget
+            const std::set<ActionType> &actions = widget->getActions();
+            for (ActionType action : actions) {
+                _actions.emplace_back(std::make_shared<ActivityNameAction>(activityStr, widget, action));
             }
         }
-        
-        // Always add back action for navigation
-        _backAction = std::make_shared<ActivityNameAction>(getActivityString(), nullptr,
-                                                           ActionType::BACK);
+
+        _backAction = std::make_shared<ActivityNameAction>(activityStr, nullptr, ActionType::BACK);
         _actions.emplace_back(_backAction);
     }
 
