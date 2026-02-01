@@ -411,10 +411,16 @@ public class MonkeySourceApeNative extends MonkeySourceApeBase implements Monkey
         Action fuzzingAction = null;
         AccessibilityNodeInfo info = null;
         int repeat = refectchInfoCount;
+        long tGetTop = 0, tGetRoot = 0, tGetRootSlow = 0, tDumpBinary = 0, tDumpXml = 0;
+        boolean usedGetRootSlow = false;
+
         // PERFORMANCE_OPTIMIZATION_ITEMS §2.4: get topActivityName once, loop only retries getRootInActiveWindow.
+        long t0 = System.currentTimeMillis();
         topActivityName = this.getTopActivityComponentName();
+        tGetTop = System.currentTimeMillis() - t0;
 
         // try to get AccessibilityNodeInfo quickly for several times.
+        long t1 = System.currentTimeMillis();
         while (repeat-- > 0) {
             info = getRootInActiveWindow();
             if (info == null || topActivityName == null) {
@@ -427,11 +433,15 @@ public class MonkeySourceApeNative extends MonkeySourceApeBase implements Monkey
                 return;
             break;
         }
+        tGetRoot = System.currentTimeMillis() - t1;
 
         // If node is null, try to get AccessibilityNodeInfo slow for only once
         if (info == null) {
             topActivityName = this.getTopActivityComponentName();
+            long tSlow0 = System.currentTimeMillis();
             info = getRootInActiveWindowSlow();
+            tGetRootSlow = System.currentTimeMillis() - tSlow0;
+            usedGetRootSlow = true;
             if (info != null) {
                 if (mVerbose > 0) Logger.println("// Event id: " + mEventId);
                 if(dealWithSystemUI(info))
@@ -442,15 +452,27 @@ public class MonkeySourceApeNative extends MonkeySourceApeBase implements Monkey
         // If node is not null, build tree and recycle this resource.
         if (info!=null){
             // Performance opt1: try compact binary first; fall back to XML if buffer too small or fail
-            ensureXmlBufferCapacity(512 * 1024);  // 512KB for large trees; dumpNodeRecBinary returns -1 if full
+            // Larger buffer (1MB) reduces dumpBinary failure rate vs 512KB (see FASTBOT1_LOG_ANALYSIS §9).
+            ensureXmlBufferCapacity(1024 * 1024);  // 1MB for large trees; dumpNodeRecBinary returns -1 if full
+            mXmlBuffer.clear();  // critical: remaining() must be capacity; otherwise limit was last write size
+            long tBin0 = System.currentTimeMillis();
             int binaryWritten = TreeBuilder.dumpToBinary(info, mXmlBuffer);
+            tDumpBinary = System.currentTimeMillis() - tBin0;
+            if (mVerbose > 0) {
+                Logger.println("// dumpBinary: " + tDumpBinary + " ms" + (binaryWritten <= 0 ? " (buffer full or fail)" : ""));
+            }
             if (binaryWritten > 0) {
                 mXmlBuffer.position(0);
                 mXmlBuffer.limit(binaryWritten);
                 operate = AiClient.getActionFromBuffer(topActivityName != null ? topActivityName.getClassName() : "", mXmlBuffer);
             }
             if (operate == null) {
+                if (mVerbose > 0) {
+                    Logger.println("// event time: fallback to XML (binaryWritten=" + binaryWritten + ")");
+                }
+                long tXml0 = System.currentTimeMillis();
                 stringOfGuiTree = TreeBuilder.dumpDocumentStrWithOutTree(info);
+                tDumpXml = System.currentTimeMillis() - tXml0;
                 if (mVerbose > 3) Logger.println("//" + stringOfGuiTree);
             }
             info.recycle();
@@ -582,7 +604,15 @@ public class MonkeySourceApeNative extends MonkeySourceApeBase implements Monkey
             generateEventsForAction(fuzzingAction);
         }
 
-        if (mVerbose > 0) Logger.println(" event time:" + Long.toString(System.currentTimeMillis() - start));
+        if (mVerbose > 0) {
+            long total = System.currentTimeMillis() - start;
+            Logger.println(" event time:" + Long.toString(total));
+            if (tGetRootSlow > 0 || tDumpXml > 50 || total > 200) {
+                Logger.println("// event time breakdown: getTop=" + tGetTop + " getRoot=" + tGetRoot
+                        + (usedGetRootSlow ? " getRootSlow=" + tGetRootSlow : "")
+                        + " dumpBinary=" + tDumpBinary + " dumpXml=" + tDumpXml + " ms");
+            }
+        }
     }
 
     private File checkOutputDir() {

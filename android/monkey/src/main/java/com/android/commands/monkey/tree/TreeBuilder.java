@@ -245,29 +245,39 @@ public class TreeBuilder {
         byte[] pkg = toUtf8Bytes(safeCharSeqToString(node.getPackageName()));
         byte[] cd = toUtf8Bytes(safeCharSeqToString(node.getContentDescription()));
         int numStrings = (text.length > 0 ? 1 : 0) + (rid.length > 0 ? 1 : 0) + (clazz.length > 0 ? 1 : 0) + (pkg.length > 0 ? 1 : 0) + (cd.length > 0 ? 1 : 0);
+        int totalStringBytes = (text.length > 0 ? 3 + text.length : 0) + (rid.length > 0 ? 3 + rid.length : 0)
+                + (clazz.length > 0 ? 3 + clazz.length : 0) + (pkg.length > 0 ? 3 + pkg.length : 0) + (cd.length > 0 ? 3 + cd.length : 0);
+        if (buf.remaining() < totalStringBytes) return -1;  // require all strings to fit; avoid inconsistent binary
         buf.put((byte) numStrings);
-        if (text.length > 0 && buf.remaining() >= 3 + text.length) { buf.put((byte) TAG_TEXT); buf.putShort((short) text.length); buf.put(text); }
-        if (rid.length > 0 && buf.remaining() >= 3 + rid.length) { buf.put((byte) TAG_RID); buf.putShort((short) rid.length); buf.put(rid); }
-        if (clazz.length > 0 && buf.remaining() >= 3 + clazz.length) { buf.put((byte) TAG_CLASS); buf.putShort((short) clazz.length); buf.put(clazz); }
-        if (pkg.length > 0 && buf.remaining() >= 3 + pkg.length) { buf.put((byte) TAG_PKG); buf.putShort((short) pkg.length); buf.put(pkg); }
-        if (cd.length > 0 && buf.remaining() >= 3 + cd.length) { buf.put((byte) TAG_CD); buf.putShort((short) cd.length); buf.put(cd); }
+        if (text.length > 0) { buf.put((byte) TAG_TEXT); buf.putShort((short) text.length); buf.put(text); }
+        if (rid.length > 0) { buf.put((byte) TAG_RID); buf.putShort((short) rid.length); buf.put(rid); }
+        if (clazz.length > 0) { buf.put((byte) TAG_CLASS); buf.putShort((short) clazz.length); buf.put(clazz); }
+        if (pkg.length > 0) { buf.put((byte) TAG_PKG); buf.putShort((short) pkg.length); buf.put(pkg); }
+        if (cd.length > 0) { buf.put((byte) TAG_CD); buf.putShort((short) cd.length); buf.put(cd); }
+        if (buf.remaining() < 2) return -1;  // need 2 bytes for numChildren
         int childCount = node.getChildCount();
         int written = 0;
         for (int i = 0; i < childCount && buf.remaining() >= 2; i++) {
             AccessibilityNodeInfo child = node.getChild(i);
-            if (child != null && child.isVisibleToUser()) {
-                written++;
+            if (child != null) {
+                if (child.isVisibleToUser()) written++;
+                child.recycle();  // recycle immediately to avoid leak (count-only pass)
             }
         }
-        if (buf.remaining() < 2) return -1;  // need 2 bytes for numChildren
+        if (buf.remaining() < 2) return -1;
         buf.putShort((short) written);
         int idx = 0;
         for (int i = 0; i < childCount; i++) {
             AccessibilityNodeInfo child = node.getChild(i);
-            if (child != null && child.isVisibleToUser()) {
-                if (dumpNodeRecBinary(child, buf, idx, depth + 1) < 0) return -1;
-                child.recycle();
-                idx++;
+            if (child != null) {
+                try {
+                    if (child.isVisibleToUser()) {
+                        if (dumpNodeRecBinary(child, buf, idx, depth + 1) < 0) return -1;
+                        idx++;
+                    }
+                } finally {
+                    child.recycle();  // always recycle: visible after recurse, invisible immediately
+                }
             }
         }
         return buf.position();

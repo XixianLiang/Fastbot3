@@ -31,15 +31,18 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageStats;
 import android.content.pm.ResolveInfo;
+import android.util.DisplayMetrics;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManagerGlobal;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.IPowerManager;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.provider.MediaStore;
+import android.view.InputEvent;
 import android.view.IWindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodInfo;
@@ -61,9 +64,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.lang.reflect.Method;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static com.android.commands.monkey.utils.Config.bytestStatusBarHeight;
 import static com.android.commands.monkey.utils.Config.clearPackage;
 import static com.android.commands.monkey.utils.Config.enableStopPackage;
 import static com.android.commands.monkey.utils.Config.grantAllPermission;
@@ -110,31 +115,61 @@ public class AndroidDevice {
         iWindowManager = mWm;
         iPackageManager = mPm;
         IME_ADB_KEYBOARD = keyboard;
-
-        inputMethodManager = (InputMethodManager) ContextUtils.getSystemContext().getSystemService(Context.INPUT_METHOD_SERVICE);
         packageManager = ContextUtils.getSystemContext().getPackageManager();
-        iDevicePolicyManager = IDevicePolicyManager.Stub.asInterface(ServiceManager.getService("device_policy"));
+        // Performance: non-startup services (IStatusBarService, IInputMethodManager, etc.) are lazy-loaded (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §5).
+    }
+
+    /** Lazy-loaded; use this instead of direct field access. */
+    public static IDevicePolicyManager getIDevicePolicyManager() {
         if (iDevicePolicyManager == null) {
-            System.err.println("** Error: Unable to connect to deveice policy manager; is the system " + "running?");
+            iDevicePolicyManager = IDevicePolicyManager.Stub.asInterface(ServiceManager.getService("device_policy"));
+            if (iDevicePolicyManager == null) {
+                System.err.println("** Error: Unable to connect to device policy manager; is the system running?");
+            }
         }
+        return iDevicePolicyManager;
+    }
 
-        iStatusBarService = IStatusBarService.Stub.asInterface(ServiceManager.getService("statusbar"));
+    /** Lazy-loaded; use this instead of direct field access. */
+    public static IStatusBarService getIStatusBarService() {
         if (iStatusBarService == null) {
-            System.err.println("** Error: Unable to connect to status bar service; is the system " + "running?");
+            iStatusBarService = IStatusBarService.Stub.asInterface(ServiceManager.getService("statusbar"));
+            if (iStatusBarService == null) {
+                System.err.println("** Error: Unable to connect to status bar service; is the system running?");
+            }
         }
+        return iStatusBarService;
+    }
 
-        iInputMethodManager = IInputMethodManager.Stub.asInterface(ServiceManager.getService("input_method"));
+    /** Lazy-loaded; use this instead of direct field access. */
+    public static IInputMethodManager getIInputMethodManager() {
         if (iInputMethodManager == null) {
-            System.err.println(
-                    "** Error: Unable to connect to input method manager service; is the system " + "running?");
+            iInputMethodManager = IInputMethodManager.Stub.asInterface(ServiceManager.getService("input_method"));
+            if (iInputMethodManager == null) {
+                System.err.println("** Error: Unable to connect to input method manager service; is the system running?");
+            }
         }
+        return iInputMethodManager;
+    }
 
-        AndroidDevice.useADBKeyboard = enableADBKeyboard();
+    /** Lazy-loaded; use this instead of direct field access. Sets useADBKeyboard on first call. */
+    public static InputMethodManager getInputMethodManager() {
+        if (inputMethodManager == null) {
+            inputMethodManager = (InputMethodManager) ContextUtils.getSystemContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            useADBKeyboard = enableADBKeyboard();
+        }
+        return inputMethodManager;
+    }
 
-        iPowerManager = IPowerManager.Stub.asInterface(ServiceManager.getService("power"));
+    /** Lazy-loaded; use this instead of direct field access. */
+    public static IPowerManager getIPowerManager() {
         if (iPowerManager == null) {
-            System.err.println("** Error: Unable to connect to power manager service; is the system " + "running?");
+            iPowerManager = IPowerManager.Stub.asInterface(ServiceManager.getService("power"));
+            if (iPowerManager == null) {
+                System.err.println("** Error: Unable to connect to power manager service; is the system running?");
+            }
         }
+        return iPowerManager;
     }
 
     /**
@@ -142,7 +177,7 @@ public class AndroidDevice {
      * @return If ADBKeyboard IME exists and enabled, return true, false otherwise.
      */
     private static boolean enableADBKeyboard() {
-        List<InputMethodInfo> inputMethods = AndroidDevice.inputMethodManager.getEnabledInputMethodList();
+        List<InputMethodInfo> inputMethods = getInputMethodManager().getEnabledInputMethodList();
         if (inputMethods != null) {
             for (InputMethodInfo imi : inputMethods) {
                 Logger.println("InputMethod ID: " + imi.getId());
@@ -175,6 +210,123 @@ public class AndroidDevice {
     /** Invalidate display bounds cache (e.g. after rotation). */
     public static void invalidateDisplayBoundsCache() {
         sDisplayBoundsCached = false;
+    }
+
+    // Performance: cache status bar / bottom bar heights; invalidate on rotation (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §4).
+    private static int sStatusBarHeight;
+    private static int sBottomBarHeight;
+    private static boolean sDisplayBarHeightsCached = false;
+
+    /** Returns cached status bar height; refreshed on first call or after invalidateDisplayBarHeights(). */
+    public static int getStatusBarHeight() {
+        if (!sDisplayBarHeightsCached) {
+            refreshDisplayBarHeights();
+        }
+        return sStatusBarHeight;
+    }
+
+    /** Returns cached bottom bar Y (display height - status bar height); refreshed on first call or after invalidateDisplayBarHeights(). */
+    public static int getBottomBarHeight() {
+        if (!sDisplayBarHeightsCached) {
+            refreshDisplayBarHeights();
+        }
+        return sBottomBarHeight;
+    }
+
+    private static void refreshDisplayBarHeights() {
+        android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(0);
+        Point size = new Point();
+        display.getSize(size);
+        int w = size.x;
+        int h = size.y;
+        sStatusBarHeight = bytestStatusBarHeight;
+        if (sStatusBarHeight == 0) {
+            DisplayMetrics dm = ContextUtils.getSystemContext().getResources().getDisplayMetrics();
+            if (w == 1080 && h > 2100) {
+                sStatusBarHeight = (int) (40f * dm.density);
+            } else if (w == 1200 && h == 1824) {
+                sStatusBarHeight = (int) (30f * dm.density);
+            } else if (w == 1440 && h == 2696) {
+                sStatusBarHeight = (int) (30f * dm.density);
+            } else {
+                sStatusBarHeight = (int) (24f * dm.density);
+            }
+            sStatusBarHeight += 15;
+        }
+        sBottomBarHeight = h - sStatusBarHeight;
+        sDisplayBarHeightsCached = true;
+    }
+
+    /** Invalidate display bar heights cache (e.g. after rotation). */
+    public static void invalidateDisplayBarHeights() {
+        sDisplayBarHeightsCached = false;
+    }
+
+    /** Default display id (primary display). Multi-display: use setInputEventDisplayId when displayId != 0 (API 29+). */
+    public static final int DEFAULT_DISPLAY_ID = 0;
+
+    /**
+     * Whether input events are supported for the given display (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.1).
+     * Primary display (0) always; secondary displays only on API 29+.
+     */
+    public static boolean supportsInputEvents(int displayId) {
+        return displayId == DEFAULT_DISPLAY_ID || Build.VERSION.SDK_INT >= 29;
+    }
+
+    /**
+     * Set display id on input event for multi-display (API 29+). No-op for primary (0).
+     * Returns false if displayId != 0 and SDK &lt; 29 or reflection fails.
+     */
+    public static boolean setInputEventDisplayId(InputEvent event, int displayId) {
+        if (event == null || displayId == DEFAULT_DISPLAY_ID) {
+            return true;
+        }
+        if (Build.VERSION.SDK_INT < 29 || !supportsInputEvents(displayId)) {
+            return false;
+        }
+        try {
+            Method setDisplayId = event.getClass().getMethod("setDisplayId", int.class);
+            setDisplayId.invoke(event, displayId);
+            return true;
+        } catch (Exception e) {
+            Logger.warningPrintln("setInputEventDisplayId failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Whether the given display is interactive (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.3).
+     * API 34+ uses isDisplayInteractive(displayId); otherwise isInteractive().
+     */
+    public static boolean isDisplayInteractive(int displayId) {
+        IPowerManager pm = getIPowerManager();
+        if (pm == null) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= 34) {
+            try {
+                Method m = pm.getClass().getMethod("isDisplayInteractive", int.class);
+                Object r = m.invoke(pm, displayId);
+                return Boolean.TRUE.equals(r);
+            } catch (Exception e) {
+                Logger.warningPrintln("isDisplayInteractive(displayId) failed, fallback to isInteractive: " + e.getMessage());
+            }
+        }
+        try {
+            return pm.isInteractive();
+        } catch (RemoteException e) {
+            Logger.warningPrintln("isInteractive() failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Placeholder for display power on/off (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.4).
+     * Full implementation would use SurfaceControl/setDisplayPowerMode per API and vendor.
+     */
+    public static boolean setDisplayPower(int displayId, boolean on) {
+        Logger.println("setDisplayPower(displayId=" + displayId + ", on=" + on + ") not implemented; use 'input keyevent 26' to wake.");
+        return false;
     }
 
     public static ComponentName getTopActivityComponentName() {
@@ -224,16 +376,16 @@ public class AndroidDevice {
             Logger.errorPrintln("adb executing \"dumpsys input_method | grep mInputShown\" wrong!");
         }
         Logger.println("mInputShown not found, getInputMethodWindowVisibleHeight is used.");
-        int height = AndroidDevice.inputMethodManager.getInputMethodWindowVisibleHeight();
+        int height = getInputMethodManager().getInputMethodWindowVisibleHeight();
         return height != 0;
     }
 
     public static void checkInteractive() {
         try {
-            if (!iPowerManager.isInteractive()) {
+            if (!isDisplayInteractive(DEFAULT_DISPLAY_ID)) {
                 Logger.format("Power Manager says we are NOT interactive");
                 int ret = Runtime.getRuntime().exec(new String[]{"input", "keyevent", "26"}).waitFor();
-                Logger.format("Wakeup ret code %d %s", ret, (iPowerManager.isInteractive() ? "Interactive" : "Not interactive"));
+                Logger.format("Wakeup ret code %d %s", ret, (isDisplayInteractive(DEFAULT_DISPLAY_ID) ? "Interactive" : "Not interactive"));
             } else {
                 Logger.format("Power Manager says we are interactive");
             }
@@ -469,7 +621,7 @@ public class AndroidDevice {
 
     public static boolean switchToLastInputMethod() {
         try {
-            iInputMethodManager.switchToLastInputMethod(null);
+            getIInputMethodManager().switchToLastInputMethod(null);
             return true;
         } catch (RemoteException e) {
             Logger.warningPrintln("Fail to switch to last input method");

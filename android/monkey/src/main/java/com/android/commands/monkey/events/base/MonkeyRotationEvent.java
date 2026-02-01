@@ -17,9 +17,7 @@
 package com.android.commands.monkey.events.base;
 
 import android.app.IActivityManager;
-import android.os.Build;
 import android.os.RemoteException;
-import android.view.Display;
 import android.view.IWindowManager;
 import android.view.Surface;
 
@@ -34,8 +32,60 @@ import java.lang.reflect.Method;
  * Monkey screen rotation event.
  * Accepts either rotation degrees (0, 90, 180, 270) or Surface rotation constants (0, 1, 2, 3).
  * IWindowManager requires rotation constant, not degree.
+ * Multi-version probe + cache for freeze/thaw (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.2).
  */
 public class MonkeyRotationEvent extends MonkeyEvent {
+
+    private static final int DEFAULT_DISPLAY = 0;
+    private static final String ROTATION_CALLER = "com.bytedance.fastbot";
+
+    /** Cached freeze: -1 = not resolved, 3 = freezeDisplayRotation(displayId, rotation, caller), 2 = (displayId, rotation), 1 = freezeRotation(rotation). */
+    private static Method sFreezeMethod;
+    private static int sFreezeVersion = -1;
+
+    /** Cached thaw: -1 = not resolved, 2 = thawDisplayRotation(displayId, caller), 1 = thawDisplayRotation(displayId), 0 = thawRotation(). */
+    private static Method sThawMethod;
+    private static int sThawVersion = -1;
+
+    private static synchronized void resolveFreezeMethod(IWindowManager iwm) {
+        if (sFreezeVersion >= 0) {
+            return;
+        }
+        Class<?> iwmClass = iwm.getClass();
+        try {
+            sFreezeMethod = iwmClass.getMethod("freezeDisplayRotation", int.class, int.class, String.class);
+            sFreezeVersion = 3;
+            return;
+        } catch (NoSuchMethodException ignored) {
+        }
+        try {
+            sFreezeMethod = iwmClass.getMethod("freezeDisplayRotation", int.class, int.class);
+            sFreezeVersion = 2;
+            return;
+        } catch (NoSuchMethodException ignored) {
+        }
+        sFreezeVersion = 1; // use iwm.freezeRotation(rotation)
+    }
+
+    private static synchronized void resolveThawMethod(IWindowManager iwm) {
+        if (sThawVersion >= 0) {
+            return;
+        }
+        Class<?> iwmClass = iwm.getClass();
+        try {
+            sThawMethod = iwmClass.getMethod("thawDisplayRotation", int.class, String.class);
+            sThawVersion = 2;
+            return;
+        } catch (NoSuchMethodException ignored) {
+        }
+        try {
+            sThawMethod = iwmClass.getMethod("thawDisplayRotation", int.class);
+            sThawVersion = 1;
+            return;
+        } catch (NoSuchMethodException ignored) {
+        }
+        sThawVersion = 0; // use iwm.thawRotation()
+    }
 
     public final int mRotationDegree;
     public final boolean mPersist;
@@ -88,14 +138,18 @@ public class MonkeyRotationEvent extends MonkeyEvent {
             Logger.println(":Sending rotation degree=" + mRotationDegree + " (constant=" + rotationConstant + "), persist=" + mPersist);
         }
 
-        // inject rotation event
+        // inject rotation event (multi-version probe + cache)
         try {
-
-            if (Build.VERSION.SDK_INT >= 35){
-                try{
-                    Class<?> iwmClass = iwm.getClass();
-                    Method freezeMethod = iwmClass.getMethod("freezeDisplayRotation", int.class, int.class, String.class);
-                    freezeMethod.invoke(iwm, Display.DEFAULT_DISPLAY, rotationConstant, "com.bytedance.fastbot");
+            resolveFreezeMethod(iwm);
+            if (sFreezeVersion == 1) {
+                iwm.freezeRotation(rotationConstant);
+            } else {
+                try {
+                    if (sFreezeVersion == 3) {
+                        sFreezeMethod.invoke(iwm, DEFAULT_DISPLAY, rotationConstant, ROTATION_CALLER);
+                    } else {
+                        sFreezeMethod.invoke(iwm, DEFAULT_DISPLAY, rotationConstant);
+                    }
                 } catch (InvocationTargetException e) {
                     Throwable cause = e.getCause();
                     if (cause instanceof IllegalArgumentException) {
@@ -103,19 +157,21 @@ public class MonkeyRotationEvent extends MonkeyEvent {
                         return MonkeyEvent.INJECT_FAIL;
                     }
                     throw new RuntimeException(e);
-                } catch (IllegalAccessException | NoSuchMethodException e) {
+                } catch (IllegalAccessException e) {
                     throw new RuntimeException(e);
                 }
             }
-            else {
-                iwm.freezeRotation(rotationConstant);
-            }
             if (!mPersist) {
-                if (Build.VERSION.SDK_INT >= 35){
-                    try{
-                        Class<?> iwmClass = iwm.getClass();
-                        Method thawMethod = iwmClass.getMethod("thawDisplayRotation", int.class, String.class);
-                        thawMethod.invoke(iwm, Display.DEFAULT_DISPLAY, "com.bytedance.fastbot");
+                resolveThawMethod(iwm);
+                if (sThawVersion == 0) {
+                    iwm.thawRotation();
+                } else {
+                    try {
+                        if (sThawVersion == 2) {
+                            sThawMethod.invoke(iwm, DEFAULT_DISPLAY, ROTATION_CALLER);
+                        } else {
+                            sThawMethod.invoke(iwm, DEFAULT_DISPLAY);
+                        }
                     } catch (InvocationTargetException e) {
                         Throwable cause = e.getCause();
                         if (cause instanceof IllegalArgumentException) {
@@ -123,14 +179,13 @@ public class MonkeyRotationEvent extends MonkeyEvent {
                             return MonkeyEvent.INJECT_FAIL;
                         }
                         throw new RuntimeException(e);
-                    } catch (IllegalAccessException | NoSuchMethodException e) {
+                    } catch (IllegalAccessException e) {
                         throw new RuntimeException(e);
                     }
-                } else {
-                    iwm.thawRotation();
                 }
             }
             AndroidDevice.invalidateDisplayBoundsCache();  // display size may have changed
+            AndroidDevice.invalidateDisplayBarHeights();   // status bar / bottom bar heights may have changed
             return MonkeyEvent.INJECT_SUCCESS;
         } catch (RemoteException ex) {
             return MonkeyEvent.INJECT_ERROR_REMOTE_EXCEPTION;
