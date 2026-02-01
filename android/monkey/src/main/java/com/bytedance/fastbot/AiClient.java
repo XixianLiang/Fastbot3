@@ -9,8 +9,11 @@ import android.os.Build;
 import android.os.SystemClock;
 
 import com.android.commands.monkey.fastbot.client.Operate;
+import com.android.commands.monkey.fastbot.client.OperateResult;
 import com.android.commands.monkey.utils.Logger;
 
+import java.nio.ByteBuffer;
+import java.nio.charset.StandardCharsets;
 import java.util.Arrays;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
@@ -132,8 +135,55 @@ public class AiClient {
         singleton.jdasdbil(resmapping);
     }
 
-    public static Operate getAction(String acvitty, String pageDesc) {
-        return singleton.b1bhkadf(acvitty, pageDesc);
+    public static Operate getAction(String activity, String pageDesc) {
+        return singleton.b1bhkadf(activity, pageDesc);
+    }
+
+    /**
+     * Report current activity for coverage tracking (performance: coverage in C++, PERF §3.4).
+     */
+    public static void reportActivity(String activity) {
+        if (activity != null && singleton.loaded) {
+            singleton.reportActivityNative(activity);
+        }
+    }
+
+    /**
+     * Get coverage summary from native: {"stepsCount":N,"testedActivities":["a1",...]}
+     */
+    public static String getCoverageJson() {
+        if (!singleton.loaded) return "{}";
+        String s = singleton.getCoverageJsonNative();
+        return s != null ? s : "{}";
+    }
+
+    /**
+     * Get next fuzz action JSON from native (performance §3.3). Returns one fuzz action as JSON;
+     * simplify=true picks from rotation/app_switch/drag/pinch/click only.
+     */
+    public static String getNextFuzzAction(int displayWidth, int displayHeight, boolean simplify) {
+        if (!singleton.loaded) return null;
+        return singleton.getNextFuzzActionNative(displayWidth, displayHeight, simplify);
+    }
+
+    /**
+     * Get action from XML supplied as Direct ByteBuffer (performance: avoids JNI string copy).
+     * Tries structured result first to avoid JSON parse (opt4); falls back to JSON if needed.
+     */
+    public static Operate getActionFromBuffer(String activity, ByteBuffer xmlBuffer) {
+        if (xmlBuffer == null || !xmlBuffer.isDirect() || xmlBuffer.remaining() <= 0) {
+            return null;
+        }
+        int byteLength = xmlBuffer.remaining();
+        OperateResult r = singleton.getActionFromBufferNativeStructured(activity, xmlBuffer, byteLength);
+        if (r != null) {
+            return Operate.fromOperateResult(r);
+        }
+        String operateStr = singleton.getActionFromBufferNative(activity, xmlBuffer, byteLength);
+        if (operateStr == null || operateStr.length() < 1) {
+            return null;
+        }
+        return Operate.fromJson(operateStr);
     }
 
     private native void jdasdbil(String b9);
@@ -142,11 +192,49 @@ public class AiClient {
     private native void fgdsaf5d(int b7, String b2, int t);
     private native boolean nkksdhdk(String a0, float p1, float p2);
 
+    /**
+     * Batch check: multiple points in one JNI call (performance optimization).
+     * @param activity current activity name
+     * @param xCoords x coordinates, same length as yCoords
+     * @param yCoords y coordinates
+     * @return array of booleans, true if point is in black rect (shielded), null if error or native not loaded
+     */
+    private native boolean[] checkPointsInShieldNative(String activity, float[] xCoords, float[] yCoords);
+
+    /**
+     * Get action from XML in Direct ByteBuffer (performance: avoid GetStringUTFChars copy, PERF §3.1).
+     * @param activity current activity name
+     * @param xmlBuffer direct ByteBuffer containing UTF-8 XML bytes; position/limit define the region
+     * @param byteLength number of bytes to read (must be buffer limit/remaining, not capacity)
+     * @return Operate JSON string, or null/empty on error
+     */
+    private native String getActionFromBufferNative(String activity, ByteBuffer xmlBuffer, int byteLength);
+
+    /** Structured result to avoid JSON parse (SECURITY_AND_OPTIMIZATION §7 opt4). Returns null on error. */
+    private native OperateResult getActionFromBufferNativeStructured(String activity, ByteBuffer xmlBuffer, int byteLength);
+
+    private native void reportActivityNative(String activity);
+    private native String getCoverageJsonNative();
+    private native String getNextFuzzActionNative(int displayWidth, int displayHeight, boolean simplify);
+
     public static native String getNativeVersion();
 
-    public static boolean checkPointIsShield(String activity, PointF point)
-    {
+    public static boolean checkPointIsShield(String activity, PointF point) {
         return singleton.nkksdhdk(activity, point.x, point.y);
+    }
+
+    /**
+     * Batch check points for black rect (shield). Reduces JNI round-trips from up to N to 1.
+     * @param activity current activity name
+     * @param xCoords x coordinates
+     * @param yCoords y coordinates (same length as xCoords)
+     * @return array of booleans (true = in shield), or null if error; length same as input
+     */
+    public static boolean[] checkPointsInShield(String activity, float[] xCoords, float[] yCoords) {
+        if (!singleton.loaded || xCoords == null || yCoords == null || xCoords.length != yCoords.length) {
+            return null;
+        }
+        return singleton.checkPointsInShieldNative(activity, xCoords, yCoords);
     }
 
     public Operate b1bhkadf(String activity, String pageDesc) {

@@ -47,13 +47,11 @@ public class MonkeyEventQueue extends LinkedList<MonkeyEvent> {
             long throttle = mThrottle;
             if (mRandomizeThrottle && (mThrottle > 0)) {
                 throttle = mRandom.nextLong();
-                if (throttle < 0) {
-                    throttle = -throttle;
-                }
+                if (throttle < 0) throttle = -throttle;
                 throttle %= mThrottle;
                 ++throttle;
             }
-            super.add(new MonkeyThrottleEvent(throttle));
+            super.add(MonkeyThrottleEvent.obtain(throttle));
         }
     }
 }

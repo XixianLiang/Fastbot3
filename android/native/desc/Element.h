@@ -219,6 +219,17 @@ namespace fastbotx {
 
         static std::shared_ptr<Element> createFromXml(const tinyxml2::XMLDocument &doc);
 
+        /** Create tree from compact binary (SECURITY_AND_OPTIMIZATION §7 opt1). Magic "FB\\0\\1" then nodes. */
+        static std::shared_ptr<Element> createFromBinary(const char *buf, size_t len);
+
+        /** Parse one node from binary buffer; used by createFromBinary. */
+        static std::shared_ptr<Element> parseBinaryNode(const char *buf, size_t len, size_t *offset,
+                                                        const std::shared_ptr<Element> &parent);
+
+        /** Instance helper: fill this node from binary buffer; used by parseBinaryNode. */
+        bool parseBinaryNodeSelf(const char *buf, size_t len, size_t *offset,
+                                 const std::shared_ptr<Element> &parent);
+
         long hash(bool recursive = true);
 
         std::string validText;

@@ -12,6 +12,7 @@
 #include "../thirdpart/tinyxml2/tinyxml2.h"
 #include "../thirdpart/json/json.hpp"
 #include <cstdio>
+#include <cstring>
 
 
 namespace fastbotx {
@@ -24,6 +25,23 @@ namespace fastbotx {
         while (*p >= '0' && *p <= '9')
             v = v * 10 + (*p++ - '0');
         return neg ? -v : v;
+    }
+
+    /// Try short then long attribute name (SECURITY_AND_OPTIMIZATION §7 - Java outputs rid/cd/bnd etc.)
+    static bool queryStringAttr(const tinyxml2::XMLElement *node, const char *shortName, const char *longName, const char *&out) {
+        if (node->QueryStringAttribute(shortName, &out) == tinyxml2::XML_SUCCESS && out && *out != '\0') return true;
+        if (node->QueryStringAttribute(longName, &out) == tinyxml2::XML_SUCCESS && out && *out != '\0') return true;
+        return false;
+    }
+    static bool queryIntAttr(const tinyxml2::XMLElement *node, const char *shortName, const char *longName, int &out) {
+        if (node->QueryIntAttribute(shortName, &out) == tinyxml2::XML_SUCCESS) return true;
+        if (node->QueryIntAttribute(longName, &out) == tinyxml2::XML_SUCCESS) return true;
+        return false;
+    }
+    static bool queryBoolAttr(const tinyxml2::XMLElement *node, const char *shortName, const char *longName, bool &out) {
+        if (node->QueryBoolAttribute(shortName, &out) == tinyxml2::XML_SUCCESS) return true;
+        if (node->QueryBoolAttribute(longName, &out) == tinyxml2::XML_SUCCESS) return true;
+        return false;
     }
 
     Element::Element()
@@ -289,6 +307,87 @@ namespace fastbotx {
         return elementPtr;
     }
 
+    // Binary format (little-endian): magic "FB\0\1" (4), then node: bounds(16), index(2), flags(2), num_strings(1), [tag(1) len(2) data(len)]*, num_children(2), children*
+    static const char BINARY_MAGIC[] = {'F', 'B', 0, 1};
+    enum { TAG_TEXT = 0, TAG_RID = 1, TAG_CLASS = 2, TAG_PKG = 3, TAG_CD = 4 };
+    static bool readBytes(const char *buf, size_t len, size_t *offset, void *out, size_t n) {
+        if (*offset + n > len) return false;
+        memcpy(out, buf + *offset, n);
+        *offset += n;
+        return true;
+    }
+
+    ElementPtr Element::parseBinaryNode(const char *buf, size_t len, size_t *offset, const ElementPtr &parent) {
+        if (*offset + 21 > len) return nullptr;  // min header
+        ElementPtr elm = std::make_shared<Element>();
+        if (!elm->parseBinaryNodeSelf(buf, len, offset, parent)) return nullptr;
+        return elm;
+    }
+
+    bool Element::parseBinaryNodeSelf(const char *buf, size_t len, size_t *offset, const ElementPtr &parent) {
+        int32_t left, top, right, bottom;
+        int16_t idx;
+        uint16_t flags;
+        uint8_t numStrings;
+        if (!readBytes(buf, len, offset, &left, 4) || !readBytes(buf, len, offset, &top, 4) ||
+            !readBytes(buf, len, offset, &right, 4) || !readBytes(buf, len, offset, &bottom, 4) ||
+            !readBytes(buf, len, offset, &idx, 2) || !readBytes(buf, len, offset, &flags, 2) ||
+            !readBytes(buf, len, offset, &numStrings, 1)) return false;
+        if (parent) _parent = parent;
+        _index = idx;
+        _bounds = std::make_shared<Rect>(left, top, right, bottom);
+        _checkable = (flags & 1) != 0;
+        _checked = (flags & 2) != 0;
+        _clickable = (flags & 4) != 0;
+        if (_clickable) _allClickableFalse = false;
+        _enabled = (flags & 8) != 0;
+        _focusable = (flags & 16) != 0;
+        _focused = (flags & 32) != 0;
+        _scrollable = (flags & 64) != 0;
+        _longClickable = (flags & 128) != 0;
+        _password = (flags & 256) != 0;
+        _selected = (flags & 512) != 0;
+        for (uint8_t i = 0; i < numStrings && *offset + 3 <= len; i++) {
+            uint8_t tag;
+            uint16_t slen;
+            if (!readBytes(buf, len, offset, &tag, 1) || !readBytes(buf, len, offset, &slen, 2) || *offset + slen > len) break;
+            std::string s(buf + *offset, slen);
+            *offset += slen;
+            if (tag == TAG_TEXT) _text = std::move(s);
+            else if (tag == TAG_RID) _resourceID = std::move(s);
+            else if (tag == TAG_CLASS) _classname = std::move(s);
+            else if (tag == TAG_PKG) _packageName = std::move(s);
+            else if (tag == TAG_CD) _contentDesc = std::move(s);
+        }
+        uint16_t numChildren;
+        if (!readBytes(buf, len, offset, &numChildren, 2)) return true;
+        _children.reserve(numChildren > 32 ? 32 : numChildren);
+        for (uint16_t c = 0; c < numChildren; c++) {
+            ElementPtr child = Element::parseBinaryNode(buf, len, offset, shared_from_this());
+            if (!child) break;
+            _children.push_back(child);
+        }
+        _childCount = static_cast<int>(_children.size());
+        _isEditable = (_classname == "android.widget.EditText");
+        if (_isEditable) _longClickable = _clickable = _enabled = true;
+        _cachedScrollType = _computeScrollType();
+        _scrollTypeCached = true;
+        return true;
+    }
+
+    ElementPtr Element::createFromBinary(const char *buf, size_t len) {
+        if (len < 4 || memcmp(buf, BINARY_MAGIC, 4) != 0) return nullptr;
+        size_t offset = 4;
+        Element::_allClickableFalse = true;
+        ElementPtr root = Element::parseBinaryNode(buf, len, &offset, nullptr);
+        if (!root) return nullptr;
+        if (Element::_allClickableFalse) {
+            root->recursiveDoElements([](const ElementPtr &elm) { elm->_clickable = true; });
+        }
+        root->_scrollable = true;
+        return root;
+    }
+
     void Element::fromJson(const std::string &/*jsonData*/) {
         //nlohmann::json
     }
@@ -382,14 +481,11 @@ namespace fastbotx {
             return;
         if (parentOfNode)
             this->_parent = parentOfNode;
-//    BLOG("This Node is %s", std::string(xmlNode->GetText()).c_str());
         int indexOfNode = 0;
-        tinyxml2::XMLError err = xmlNode->QueryIntAttribute("index", &indexOfNode);
-        if (err == tinyxml2::XML_SUCCESS) {
+        if (queryIntAttr(xmlNode, "idx", "index", indexOfNode))
             this->_index = indexOfNode;
-        }
         const char *boundingBoxStr = nullptr;
-        if (xmlNode->QueryStringAttribute("bounds", &boundingBoxStr) == tinyxml2::XML_SUCCESS && boundingBoxStr && *boundingBoxStr == '[') {
+        if (queryStringAttr(xmlNode, "bnd", "bounds", boundingBoxStr) && boundingBoxStr && *boundingBoxStr == '[') {
             const char *p = boundingBoxStr + 1;
             int xl = parseIntAndAdvance(p);
             if (*p == ',') {
@@ -410,47 +506,27 @@ namespace fastbotx {
                 }
             }
         }
-        // Performance optimization: Use move semantics and avoid unnecessary copies
-        // tinyxml2 returns const char* which points to internal buffer, so we need to copy
-        // But we can optimize by checking if string is empty before copying
-        const char *text = "attribute text get failed";  // need copy
-        err = xmlNode->QueryStringAttribute("text", &text);
-        if (err == tinyxml2::XML_SUCCESS && text && *text != '\0') {
-            this->_text = std::string(text); // copy only if non-empty
-        }
-        const char *resource_id = "attribute resource_id get failed";  // need copy
-        err = xmlNode->QueryStringAttribute("resource-id", &resource_id);
-        if (err == tinyxml2::XML_SUCCESS && resource_id && *resource_id != '\0') {
-            this->_resourceID = std::string(resource_id); // copy only if non-empty
-        }
-        const char *tclassname = "attribute class name get failed";  // need copy
-        err = xmlNode->QueryStringAttribute("class", &tclassname);
-        if (err == tinyxml2::XML_SUCCESS && tclassname && *tclassname != '\0') {
-            // Performance: For common class names, we could use string interning
-            // For now, just copy (full interning would require a global string pool)
-            this->_classname = std::string(tclassname); // copy
-        }
-        const char *pkgname = "attribute package name get failed";  // need copy
-        err = xmlNode->QueryStringAttribute("package", &pkgname);
-        if (err == tinyxml2::XML_SUCCESS && pkgname && *pkgname != '\0') {
-            this->_packageName = std::string(pkgname); // copy only if non-empty
-        }
-        const char *content_desc = "attribute content description get failed";  // need copy
-        err = xmlNode->QueryStringAttribute("content-desc", &content_desc);
-        if (err == tinyxml2::XML_SUCCESS && content_desc && *content_desc != '\0') {
-            this->_contentDesc = std::string(content_desc); // copy only if non-empty
-        }
+        const char *text = nullptr;
+        if (queryStringAttr(xmlNode, "t", "text", text)) this->_text = std::string(text);
+        const char *resource_id = nullptr;
+        if (queryStringAttr(xmlNode, "rid", "resource-id", resource_id)) this->_resourceID = std::string(resource_id);
+        const char *tclassname = nullptr;
+        if (queryStringAttr(xmlNode, "class", "class", tclassname)) this->_classname = std::string(tclassname);
+        const char *pkgname = nullptr;
+        if (queryStringAttr(xmlNode, "pkg", "package", pkgname)) this->_packageName = std::string(pkgname);
+        const char *content_desc = nullptr;
+        if (queryStringAttr(xmlNode, "cd", "content-desc", content_desc)) this->_contentDesc = std::string(content_desc);
         bool b = false;
-        if (xmlNode->QueryBoolAttribute("checkable", &b) == tinyxml2::XML_SUCCESS) this->_checkable = b;
-        if (xmlNode->QueryBoolAttribute("clickable", &b) == tinyxml2::XML_SUCCESS) { this->_clickable = b; if (b) _allClickableFalse = false; }
-        if (xmlNode->QueryBoolAttribute("checked", &b) == tinyxml2::XML_SUCCESS) this->_checked = b;
-        if (xmlNode->QueryBoolAttribute("enabled", &b) == tinyxml2::XML_SUCCESS) this->_enabled = b;
-        if (xmlNode->QueryBoolAttribute("focused", &b) == tinyxml2::XML_SUCCESS) this->_focused = b;
-        if (xmlNode->QueryBoolAttribute("focusable", &b) == tinyxml2::XML_SUCCESS) this->_focusable = b;
-        if (xmlNode->QueryBoolAttribute("scrollable", &b) == tinyxml2::XML_SUCCESS) this->_scrollable = b;
-        if (xmlNode->QueryBoolAttribute("long-clickable", &b) == tinyxml2::XML_SUCCESS) this->_longClickable = b;
-        if (xmlNode->QueryBoolAttribute("password", &b) == tinyxml2::XML_SUCCESS) this->_password = b;
-        if (xmlNode->QueryBoolAttribute("selected", &b) == tinyxml2::XML_SUCCESS) this->_selected = b;
+        if (queryBoolAttr(xmlNode, "ck", "checkable", b)) this->_checkable = b;
+        if (queryBoolAttr(xmlNode, "clk", "clickable", b)) { this->_clickable = b; if (b) _allClickableFalse = false; }
+        if (queryBoolAttr(xmlNode, "cked", "checked", b)) this->_checked = b;
+        if (queryBoolAttr(xmlNode, "en", "enabled", b)) this->_enabled = b;
+        if (queryBoolAttr(xmlNode, "fcd", "focused", b)) this->_focused = b;
+        if (queryBoolAttr(xmlNode, "foc", "focusable", b)) this->_focusable = b;
+        if (queryBoolAttr(xmlNode, "scl", "scrollable", b)) this->_scrollable = b;
+        if (queryBoolAttr(xmlNode, "lclk", "long-clickable", b)) this->_longClickable = b;
+        if (queryBoolAttr(xmlNode, "pwd", "password", b)) this->_password = b;
+        if (queryBoolAttr(xmlNode, "sel", "selected", b)) this->_selected = b;
 
         this->_isEditable = "android.widget.EditText" == this->_classname;
         if (FORCE_EDITTEXT_CLICK_TRUE && this->_isEditable) {

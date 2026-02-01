@@ -39,7 +39,7 @@ public class Config {
     /**
      * fastbot version
      */
-    public static final String fastbotversion = "2.3.23.0810.1705-git";
+    public static final String fastbotversion = "3.0.26.0201.0457-git";
     /**
      * enable debug log, disable by default
      */
@@ -81,10 +81,10 @@ public class Config {
      */
     public static final long swipeDuration = Config.getLong("max.swipeDuration", 200);
     /**
-     * get retry settings for guitree
+     * get retry settings for guitree (SECURITY_AND_OPTIMIZATION §7: fewer retries = less Binder/blocking)
      */
     public static final long refectchInfoWaitingInterval = Config.getLong("max.refectchInfoWaitingInterval", 50);
-    public static final int refectchInfoCount = Config.getInteger("max.refectchInfoCount", 4);
+    public static final int refectchInfoCount = Config.getInteger("max.refectchInfoCount", 2);
     /**
      * generator fuzzing event
      */

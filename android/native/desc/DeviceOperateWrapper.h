@@ -72,6 +72,10 @@ namespace fastbotx {
 
         const std::string &getText() const { return this->_text; }
 
+        bool getRawInput() const { return this->rawInput; }
+
+        const std::string &getJAction() const { return this->jAction; }
+
         std::string toString() const;
 
         virtual ~DeviceOperateWrapper() = default;

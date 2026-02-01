@@ -1,5 +1,5 @@
-/*
- * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
+/**
+ * @author Zhao Zhang
  */
 
 package com.android.commands.monkey.events;
@@ -24,7 +24,11 @@ import com.android.commands.monkey.utils.Config;
 import com.android.commands.monkey.utils.Logger;
 import com.android.commands.monkey.utils.RandomHelper;
 
+import org.json.JSONException;
+import org.json.JSONObject;
+
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -77,6 +81,41 @@ public class CustomEventFuzzer {
         // Only examine SYS_KEYS
         for (int i = 0; i < SYS_KEYS.length; ++i) {
             PHYSICAL_KEY_EXISTS[SYS_KEYS[i]] = KeyCharacterMap.deviceHasKey(SYS_KEYS[i]);
+        }
+    }
+
+    /**
+     * Parse one fuzz action JSON from native (performance §3.3). Returns single-element list or empty on error.
+     */
+    public static List<CustomEvent> fromNativeFuzzJson(String json) {
+        if (json == null || json.isEmpty()) return Collections.emptyList();
+        try {
+            JSONObject j = new JSONObject(json);
+            String type = j.optString("type", "");
+            CustomEvent ev = null;
+            switch (type) {
+                case "click":
+                    ev = ClickEvent.fromJSONObject(j);
+                    break;
+                case "rotation":
+                    ev = RotationEvent.fromJSONObject(j);
+                    break;
+                case "app_switch":
+                    ev = SwitchEvent.fromJSONObject(j);
+                    break;
+                case "drag":
+                    ev = DragEvent.fromJSONObject(j);
+                    break;
+                case "pinch":
+                    ev = PinchOrZoomEvent.fromJSONObject(j);
+                    break;
+                default:
+                    return Collections.emptyList();
+            }
+            return ev != null ? Collections.singletonList(ev) : Collections.<CustomEvent>emptyList();
+        } catch (JSONException e) {
+            Logger.warningPrintln("fromNativeFuzzJson parse error: " + e.getMessage());
+            return Collections.emptyList();
         }
     }
 

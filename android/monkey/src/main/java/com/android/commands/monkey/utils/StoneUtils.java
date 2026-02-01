@@ -19,7 +19,8 @@ public class StoneUtils {
     private static final String TAG = StoneUtils.class.getSimpleName();
 
     /**
-     * Execute shell command
+     * Execute shell command (single string). WARNING: on many systems this is passed to the
+     * system shell; do not pass user-controlled or untrusted input. Prefer {@link #executeShellCommand(String[])}.
      * @param command shell command to execute
      * @return output of the execution result.
      */
@@ -37,6 +38,43 @@ public class StoneUtils {
         } catch (Exception e) {
             Logger.errorPrintln("executeShellCommand() error! command: "+command);
             Logger.errorPrintln(e.getMessage());
+        } finally {
+            if (br != null) {
+                try {
+                    br.close();
+                } catch (IOException e) {
+                    e.printStackTrace();
+                }
+            }
+            if (proc != null) {
+                proc.destroy();
+            }
+        }
+        return sb.toString();
+    }
+
+    /**
+     * Execute command with explicit argument array (no shell parsing). Safe for untrusted arguments
+     * when the program name is trusted.
+     * @param cmdarray program and arguments, e.g. {"ime", "set", "com.pkg/.IME"}
+     * @return output of the execution result, or empty string on failure.
+     */
+    public static String executeShellCommand(String[] cmdarray) {
+        if (cmdarray == null || cmdarray.length == 0) {
+            return "";
+        }
+        StringBuilder sb = new StringBuilder();
+        BufferedReader br = null;
+        Process proc = null;
+        try {
+            proc = Runtime.getRuntime().exec(cmdarray);
+            br = new BufferedReader(new InputStreamReader(proc.getInputStream()));
+            String line;
+            while ((line = br.readLine()) != null) {
+                sb.append(line).append("\n");
+            }
+        } catch (Exception e) {
+            Logger.errorPrintln("executeShellCommand(String[]) error: " + e.getMessage());
         } finally {
             if (br != null) {
                 try {

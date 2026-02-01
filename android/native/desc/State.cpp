@@ -394,7 +394,8 @@ namespace fastbotx {
         oss << "{state: " << this->hash() << "\n    widgets: \n";
         for (auto const &widget: this->_widgets) {
             if (widget != nullptr) {
-                oss << "   " << widget->toString() << "\n";
+                std::string ws = widget->toString();
+                if (!ws.empty()) oss << "   " << ws << "\n";
             } else {
                 oss << "   [null widget]\n";
             }

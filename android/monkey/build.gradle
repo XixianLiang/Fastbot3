@@ -62,20 +62,12 @@ android {
         targetCompatibility = JavaVersion.VERSION_1_8
     }
 
-    externalNativeBuild {
-        cmake {
-            path("../native/CMakeLists.txt")
-            version = "3.18.1"
-        }
-    }
-
+    // native .so 由 android/native/build_native.sh 单独构建，此处不配置 CMake，避免依赖 SDK 中 CMake 版本
     packagingOptions {
         jniLibs {
             useLegacyPackaging false
         }
     }
-    ndkVersion '25.2.9519653'
-
 }
 
 repositories {

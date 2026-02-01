@@ -43,7 +43,7 @@ public class SwitchEvent extends AbstractCustomEvent {
         MonkeyKeyEvent appSwitchDown = new MonkeyKeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_APP_SWITCH);
         MonkeyKeyEvent appSwitchUp = new MonkeyKeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_APP_SWITCH);
         MonkeyKeyEvent postDown, postUp;
-        MonkeyThrottleEvent throttle = new MonkeyThrottleEvent(500);
+        MonkeyThrottleEvent throttle = MonkeyThrottleEvent.obtain(500);
         if (home) {
             postDown = new MonkeyKeyEvent(KeyEvent.ACTION_DOWN, KeyEvent.KEYCODE_HOME);
             postUp = new MonkeyKeyEvent(KeyEvent.ACTION_UP, KeyEvent.KEYCODE_HOME);

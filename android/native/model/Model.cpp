@@ -11,6 +11,7 @@
 #include "StateFactory.h"
 #include "../Base.h"
 #include "../utils.hpp"
+#include "../thirdpart/json/json.hpp"
 #include <algorithm>
 #include <ctime>
 #include <iostream>
@@ -68,11 +69,12 @@ namespace fastbotx {
         // Print state header with hash code
         BDLOG("{state: %lu", static_cast<unsigned long>(state->hash()));
         
-        // Print each widget on a separate line for better readability
+        // Print each widget on a separate line for better readability; skip empty (e.g. toXPath returns "" when details cleared)
         BDLOG("widgets:");
         const auto &widgets = state->getWidgets();
         for (const auto &widget : widgets) {
             std::string widgetStr = widget->toString();
+            if (widgetStr.empty()) continue;
             // If widget string is too long, split it across multiple log lines
             if (widgetStr.length() > 3000) {
                 logLongStringInfo("   " + widgetStr);
@@ -774,6 +776,25 @@ namespace fastbotx {
         }
     }
 #endif
+
+    void Model::reportActivity(const std::string &activity) {
+        if (activity.empty()) return;
+        std::lock_guard<std::mutex> lock(_coverageMutex);
+        _visitedActivities.insert(activity);
+        _coverageStepCount++;
+    }
+
+    std::string Model::getCoverageJson() const {
+        std::lock_guard<std::mutex> lock(_coverageMutex);
+        nlohmann::json j;
+        j["stepsCount"] = _coverageStepCount;
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto &a : _visitedActivities) {
+            arr.push_back(a);
+        }
+        j["testedActivities"] = arr;
+        return j.dump();
+    }
 
     /**
      * @brief Destructor for Model class

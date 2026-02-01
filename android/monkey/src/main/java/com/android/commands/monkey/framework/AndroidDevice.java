@@ -155,16 +155,26 @@ public class AndroidDevice {
         return false;
     }
 
+    // Performance: cache display bounds to avoid Binder + allocation on every call (PERFORMANCE_OPTIMIZATION_ITEMS §2.1).
+    private static final Rect sDisplayBoundsCache = new Rect();
+    private static final Point sDisplaySizeCache = new Point();
+    private static boolean sDisplayBoundsCached = false;
+
+    /** Returns cached display bounds; callers must not mutate. Refreshed on first call. */
     public static Rect getDisplayBounds() {
+        if (sDisplayBoundsCached) {
+            return sDisplayBoundsCache;
+        }
         android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(android.view.Display.DEFAULT_DISPLAY);
-        Point size = new Point();
-        display.getSize(size);
-        Rect bounds = new Rect();
-        bounds.top = 0;
-        bounds.left = 0;
-        bounds.right = size.x;
-        bounds.bottom = size.y;
-        return bounds;
+        display.getSize(sDisplaySizeCache);
+        sDisplayBoundsCache.set(0, 0, sDisplaySizeCache.x, sDisplaySizeCache.y);
+        sDisplayBoundsCached = true;
+        return sDisplayBoundsCache;
+    }
+
+    /** Invalidate display bounds cache (e.g. after rotation). */
+    public static void invalidateDisplayBoundsCache() {
+        sDisplayBoundsCached = false;
     }
 
     public static ComponentName getTopActivityComponentName() {

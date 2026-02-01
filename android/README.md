@@ -2,7 +2,7 @@
 
 ## Introduction
 
-> Fastbot is a model-based testing tool for modeling GUI transitions to discover app stability problems. It combines machine learning and reinforcement learning techniques to assist discovery in a more intelligent way.
+> Fastbot3 is a model-based testing tool for modeling GUI transitions to discover app stability problems. It combines machine learning and reinforcement learning techniques to assist discovery in a more intelligent way.
 
 
 ***More detail see at [Fastbot architecture](https://mp.weixin.qq.com/s/QhzqBFZygkIS6C69__smyQ)
@@ -54,13 +54,14 @@
 
 ### Prerequisites
 
+* **Java**: Gradle 7.6 supports **Java 8–19** only. If you see `Unsupported class file major version 69`, your JDK is too new (e.g. Java 25). Use JDK 17 or 11: `export JAVA_HOME=$(/usr/libexec/java_home -v 17)` (macOS), or install OpenJDK 17 and point `JAVA_HOME` to it.
 * **Gradle**: Required for building the Java part. Recommended to manage versions via [sdkman](https://sdkman.io/):
   ```shell
   curl -s "https://get.sdkman.io" | bash
   sdk install gradle 7.6.2
   gradle wrapper
   ```
-* **NDK & CMake**: Required for building the C++ native (.so) part. You need to set **NDK_ROOT** (or **ANDROID_NDK_HOME**) to your NDK path; the build script uses `$NDK_ROOT/build/cmake/android.toolchain.cmake`. Recommended: NDK r21 or later. For step-by-step installation (Android Studio, sdkmanager, or manual), see **[NDK 安装指南 / NDK Install Guide](./native/NDK_INSTALL_GUIDE.md)**.
+* **NDK & CMake**: Required for building the C++ native (.so) part. You need to set **NDK_ROOT** (or **ANDROID_NDK_HOME**) to your NDK path; the build script uses `$NDK_ROOT/build/cmake/android.toolchain.cmake`. Recommended: NDK r21 or later. For step-by-step installation (Android Studio, sdkmanager, or manual), see **[NDK 安装指南 / NDK Install Guide](./native/NDK_INSTALL_GUIDE.md)**. If you see *CMake 'X.Y.Z' was not found in SDK*, either install that version via SDK Manager → SDK Tools → CMake (e.g. 3.22.1 or 3.18.1), or set the same version in `monkey/build.gradle` → `externalNativeBuild.cmake.version` to match the CMake version you have installed.
 
 ### Build Java (monkeyq.jar)
 
@@ -70,14 +71,23 @@ From the **android** project root:
 ./gradlew clean makeJar
 ```
 
-Then generate the dex jar (adjust `dx` path to your SDK build-tools):
+Then generate the dex jar. Newer SDKs use **d8** (dx was removed); the script auto-detects:
 
 ```shell
-# Example path; use your ANDROID_HOME and build-tools version
-$ANDROID_HOME/build-tools/28.0.3/dx --dex --min-sdk-version=22 --output=monkeyq.jar monkey/build/libs/monkey.jar
+# Script uses latest build-tools and d8 (or dx if present)
+sh build_monkeyq.sh
 ```
 
-Or use the helper script if available:
+Manual step (use **d8** in recent build-tools, or **dx** in older ones):
+
+```shell
+# d8 (recommended when dx is not in your build-tools)
+$ANDROID_HOME/build-tools/<version>/d8 --min-api 22 --output=monkeyq.jar monkey/build/libs/monkey.jar
+# or dx (older SDK)
+$ANDROID_HOME/build-tools/<version>/dx --dex --min-sdk-version=22 --output=monkeyq.jar monkey/build/libs/monkey.jar
+```
+
+Or use the helper script (preferred):
 
 ```shell
 sh build_monkeyq.sh

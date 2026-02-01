@@ -16,6 +16,7 @@
 #include "AbstractAgent.h"
 #include "AgentFactory.h"
 #include "Preference.h"
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -195,6 +196,16 @@ namespace fastbotx {
          */
         int getNetActionTaskID() const { return this->_netActionParam.netActionTaskid; }
 
+        /**
+         * @brief Report current activity for coverage tracking (performance: coverage in C++, PERF §3.4)
+         */
+        void reportActivity(const std::string &activity);
+
+        /**
+         * @brief Get coverage summary as JSON: {"stepsCount":N,"testedActivities":["a1",...]}
+         */
+        std::string getCoverageJson() const;
+
         virtual ~Model();
 
     protected:
@@ -289,6 +300,11 @@ namespace fastbotx {
 
         /// Parameters for communicating with network-based action models
         NetActionParam _netActionParam;
+
+        /// Coverage tracking: visited activities and step count (performance optimization)
+        std::unordered_set<std::string> _visitedActivities;
+        int _coverageStepCount{0};
+        mutable std::mutex _coverageMutex;
 
         /// Per-activity widget key mask for dynamic state abstraction
         mutable std::unordered_map<std::string, WidgetKeyMask> _activityKeyMask;

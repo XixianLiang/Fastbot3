@@ -63,6 +63,11 @@ public abstract class MonkeyEvent {
         this.eventId = id;
     }
 
+    /** For pooled events (e.g. MonkeyThrottleEvent) so they can be reused. */
+    protected void resetEventId() {
+        this.eventId = -1;
+    }
+
     /**
      * @return event type
      */

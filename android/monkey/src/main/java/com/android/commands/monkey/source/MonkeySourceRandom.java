@@ -596,7 +596,7 @@ public class MonkeySourceRandom implements MonkeyEventSource {
         if (throttle < 0) {
             throttle = -throttle;
         }
-        addEvent(new MonkeyThrottleEvent(throttle));
+        addEvent(MonkeyThrottleEvent.obtain(throttle));
     }
 
     private void getTotalAcitivities() {
