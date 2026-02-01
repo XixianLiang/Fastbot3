@@ -133,7 +133,8 @@ public class MonkeyKeyEvent extends MonkeyEvent {
                     mScanCode, KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
         }
 
-        int displayId = AndroidDevice.DEFAULT_DISPLAY_ID;
+        // SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1: use focused display so key goes to correct display in multi-display.
+        int displayId = AndroidDevice.getFocusedDisplayId();
         if (displayId != 0 && !AndroidDevice.supportsInputEvents(displayId)) {
             return MonkeyEvent.INJECT_FAIL;
         }

@@ -195,21 +195,67 @@ public class AndroidDevice {
     private static final Point sDisplaySizeCache = new Point();
     private static boolean sDisplayBoundsCached = false;
 
-    /** Returns cached display bounds; callers must not mutate. Refreshed on first call. */
+    /** Returns cached display bounds for default display; callers must not mutate. Refreshed on first call. */
     public static Rect getDisplayBounds() {
-        if (sDisplayBoundsCached) {
+        return getDisplayBounds(DEFAULT_DISPLAY_ID);
+    }
+
+    /**
+     * Returns display bounds for the given display (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1).
+     * For default display (0) uses cache; for other displays queries DisplayManagerGlobal each time.
+     * Callers must not mutate the returned Rect.
+     */
+    public static Rect getDisplayBounds(int displayId) {
+        if (displayId == DEFAULT_DISPLAY_ID) {
+            if (sDisplayBoundsCached) {
+                return sDisplayBoundsCache;
+            }
+            android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(android.view.Display.DEFAULT_DISPLAY);
+            display.getSize(sDisplaySizeCache);
+            sDisplayBoundsCache.set(0, 0, sDisplaySizeCache.x, sDisplaySizeCache.y);
+            sDisplayBoundsCached = true;
             return sDisplayBoundsCache;
         }
-        android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(android.view.Display.DEFAULT_DISPLAY);
-        display.getSize(sDisplaySizeCache);
-        sDisplayBoundsCache.set(0, 0, sDisplaySizeCache.x, sDisplaySizeCache.y);
-        sDisplayBoundsCached = true;
-        return sDisplayBoundsCache;
+        try {
+            android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(displayId);
+            if (display != null) {
+                Point size = new Point();
+                display.getSize(size);
+                Rect out = new Rect(0, 0, size.x, size.y);
+                return out;
+            }
+        } catch (Exception e) {
+            Logger.warningPrintln("getDisplayBounds(displayId=" + displayId + ") failed: " + e.getMessage());
+        }
+        return getDisplayBounds(DEFAULT_DISPLAY_ID);
     }
 
     /** Invalidate display bounds cache (e.g. after rotation). */
     public static void invalidateDisplayBoundsCache() {
         sDisplayBoundsCached = false;
+    }
+
+    /**
+     * Maps a point from source coordinate space to target display bounds (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1).
+     * Like scrcpy PositionMapper: when coordinates come from another resolution/rotation (e.g. remote view),
+     * scale and clamp so (x,y) corresponds to the device display space. Returns mapped point; null if source is empty.
+     */
+    public static Point mapPointToDisplay(float x, float y, int sourceWidth, int sourceHeight, Rect targetBounds) {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || targetBounds == null) {
+            return null;
+        }
+        int tw = targetBounds.width();
+        int th = targetBounds.height();
+        if (tw <= 0 || th <= 0) {
+            return null;
+        }
+        float scaleX = (float) tw / sourceWidth;
+        float scaleY = (float) th / sourceHeight;
+        int mx = (int) (x * scaleX);
+        int my = (int) (y * scaleY);
+        mx = Math.max(targetBounds.left, Math.min(targetBounds.right - 1, mx));
+        my = Math.max(targetBounds.top, Math.min(targetBounds.bottom - 1, my));
+        return new Point(mx, my);
     }
 
     // Performance: cache status bar / bottom bar heights; invalidate on rotation (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §4).
@@ -264,6 +310,50 @@ public class AndroidDevice {
 
     /** Default display id (primary display). Multi-display: use setInputEventDisplayId when displayId != 0 (API 29+). */
     public static final int DEFAULT_DISPLAY_ID = 0;
+
+    /** Cached focused display id from top task; invalidate on demand. */
+    private static int sFocusedDisplayIdCache = DEFAULT_DISPLAY_ID;
+    private static boolean sFocusedDisplayIdCached = false;
+
+    /**
+     * Returns the display id of the top/focused task (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1).
+     * Used so touch/key events are injected to the correct display in multi-display.
+     * Uses RunningTaskInfo.displayId (API 24+) via reflection; falls back to DEFAULT_DISPLAY_ID.
+     */
+    public static int getFocusedDisplayId() {
+        if (sFocusedDisplayIdCached) {
+            return sFocusedDisplayIdCache;
+        }
+        try {
+            List<RunningTaskInfo> taskInfo = APIAdapter.getTasks(AndroidDevice.iActivityManager, Integer.MAX_VALUE);
+            if (taskInfo != null && !taskInfo.isEmpty()) {
+                RunningTaskInfo task = taskInfo.get(0);
+                for (Class<?> c = task.getClass(); c != null; c = c.getSuperclass()) {
+                    try {
+                        java.lang.reflect.Field field = c.getDeclaredField("displayId");
+                        field.setAccessible(true);
+                        int displayId = field.getInt(task);
+                        if (displayId >= 0) {
+                            sFocusedDisplayIdCache = displayId;
+                        }
+                        break;
+                    } catch (NoSuchFieldException e) {
+                        // try superclass (e.g. TaskInfo)
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Logger.warningPrintln("getFocusedDisplayId failed: " + e.getMessage());
+        }
+        sFocusedDisplayIdCached = true;
+        Logger.println("displayId=" + sFocusedDisplayIdCache);
+        return sFocusedDisplayIdCache;
+    }
+
+    /** Invalidate focused display id cache (e.g. after activity/display change). */
+    public static void invalidateFocusedDisplayIdCache() {
+        sFocusedDisplayIdCached = false;
+    }
 
     /**
      * Whether input events are supported for the given display (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.1).

@@ -341,7 +341,7 @@ public class CustomEventFuzzer {
     }
 
     private static void generateClickEvent(List<CustomEvent> events, long waitTime) {
-        Rect displayBounds = AndroidDevice.getDisplayBounds();
+        Rect displayBounds = AndroidDevice.getDisplayBounds(AndroidDevice.getFocusedDisplayId());
         int x = RandomHelper.nextInt(displayBounds.right);
         int y = RandomHelper.nextInt(displayBounds.bottom);
         events.add(new ClickEvent(new PointF(x, y), waitTime));
@@ -349,7 +349,7 @@ public class CustomEventFuzzer {
 
 
     private static void generateWifiEvent(List<CustomEvent> events) {
-        Rect displayBounds = AndroidDevice.getDisplayBounds();
+        Rect displayBounds = AndroidDevice.getDisplayBounds(AndroidDevice.getFocusedDisplayId());
         int x = RandomHelper.nextInt(displayBounds.right);
         int y = RandomHelper.nextInt(displayBounds.bottom);
         events.add(new WifiEvent());
@@ -381,7 +381,7 @@ public class CustomEventFuzzer {
     }
 
     private static void generatePinchOrZoomEvent(List<CustomEvent> events) {
-        Rect displayBounds = AndroidDevice.getDisplayBounds();
+        Rect displayBounds = AndroidDevice.getDisplayBounds(AndroidDevice.getFocusedDisplayId());
         int width = displayBounds.right;
         int height = displayBounds.bottom;
         int count = RandomHelper.nextInt(10);
@@ -410,7 +410,7 @@ public class CustomEventFuzzer {
     }
 
     private static void generateDragEvent(List<CustomEvent> events) {
-        Rect displayBounds = AndroidDevice.getDisplayBounds();
+        Rect displayBounds = AndroidDevice.getDisplayBounds(AndroidDevice.getFocusedDisplayId());
         int width = displayBounds.right;
         int height = displayBounds.bottom;
         int count = RandomHelper.nextInt(10);

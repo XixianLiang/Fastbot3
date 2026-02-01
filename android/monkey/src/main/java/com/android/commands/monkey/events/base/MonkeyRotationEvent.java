@@ -186,6 +186,7 @@ public class MonkeyRotationEvent extends MonkeyEvent {
             }
             AndroidDevice.invalidateDisplayBoundsCache();  // display size may have changed
             AndroidDevice.invalidateDisplayBarHeights();   // status bar / bottom bar heights may have changed
+            AndroidDevice.invalidateFocusedDisplayIdCache(); // top task / display may have changed
             return MonkeyEvent.INJECT_SUCCESS;
         } catch (RemoteException ex) {
             return MonkeyEvent.INJECT_ERROR_REMOTE_EXCEPTION;

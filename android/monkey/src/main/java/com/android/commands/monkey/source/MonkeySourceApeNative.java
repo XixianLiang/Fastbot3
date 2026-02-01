@@ -381,7 +381,7 @@ public class MonkeySourceApeNative extends MonkeySourceApeBase implements Monkey
         if(packageName.equals("com.android.systemui")) {
 
             if (mVerbose > 0) Logger.println("get notification window or other system windows");
-            Rect bounds = AndroidDevice.getDisplayBounds();
+            Rect bounds = AndroidDevice.getDisplayBounds(AndroidDevice.getFocusedDisplayId());
             // press home
             generateKeyEvent(KeyEvent.KEYCODE_HOME);
             //scroll up
@@ -652,8 +652,8 @@ public class MonkeySourceApeNative extends MonkeySourceApeBase implements Monkey
             events = CustomEventFuzzer.generateFuzzingEvents();
             return new FuzzAction(events);
         } else {
-            // Prefer native fuzz for simplify (performance §3.3); reuse list (§8.3)
-            Rect bounds = AndroidDevice.getDisplayBounds();
+            // Prefer native fuzz for simplify (performance §3.3); reuse list (§8.3). Use focused display bounds (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1).
+            Rect bounds = AndroidDevice.getDisplayBounds(AndroidDevice.getFocusedDisplayId());
             int w = bounds.width();
             int h = bounds.height();
             mReusableFuzzEvents.clear();

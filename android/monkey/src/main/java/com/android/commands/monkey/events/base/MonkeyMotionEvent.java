@@ -17,6 +17,7 @@
 package com.android.commands.monkey.events.base;
 
 import android.app.IActivityManager;
+import android.graphics.Rect;
 import android.hardware.input.InputManager;
 import android.os.SystemClock;
 import android.util.SparseArray;
@@ -85,8 +86,14 @@ public abstract class MonkeyMotionEvent extends MonkeyEvent {
     }
 
     public MonkeyMotionEvent addPointer(int id, float x, float y, float pressure, float size) {
+        // SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1: clip to focused display bounds so (x,y) is in device display space.
+        Rect bounds = AndroidDevice.getDisplayBounds(AndroidDevice.getFocusedDisplayId());
         int statusBarHeight = AndroidDevice.getStatusBarHeight();
         int bottomBarHeight = AndroidDevice.getBottomBarHeight();
+        if (bounds != null) {
+            int maxY = bounds.height() - 1;
+            if (bottomBarHeight > maxY) bottomBarHeight = maxY;
+        }
         MotionEvent.PointerCoords c = new MotionEvent.PointerCoords();
         c.x = x;
         if (y <= statusBarHeight) {
@@ -226,7 +233,8 @@ public abstract class MonkeyMotionEvent extends MonkeyEvent {
             Logger.println(msg.toString());
         }
         try {
-            int displayId = AndroidDevice.DEFAULT_DISPLAY_ID;
+            // SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1: use focused display so touch goes to correct display in multi-display.
+            int displayId = AndroidDevice.getFocusedDisplayId();
             if (displayId != 0 && !AndroidDevice.supportsInputEvents(displayId)) {
                 return MonkeyEvent.INJECT_FAIL;
             }
