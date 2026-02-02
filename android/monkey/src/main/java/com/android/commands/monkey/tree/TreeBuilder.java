@@ -46,8 +46,18 @@ public class TreeBuilder {
         }
     }
 
-    private static final ThreadLocal<Rect> sBinaryDumpRect = ThreadLocal.withInitial(Rect::new);
-    private static final ThreadLocal<Rect> sXmlDumpRect = ThreadLocal.withInitial(Rect::new);  // PERFORMANCE_OPTIMIZATION_ITEMS §4.3
+    private static final ThreadLocal<Rect> sBinaryDumpRect = new ThreadLocal<Rect>() {
+        @Override
+        protected Rect initialValue() {
+            return new Rect();
+        }
+    };
+    private static final ThreadLocal<Rect> sXmlDumpRect = new ThreadLocal<Rect>() {
+        @Override
+        protected Rect initialValue() {
+            return new Rect();
+        }
+    };  // PERFORMANCE_OPTIMIZATION_ITEMS §4.3
 
     /** Returns EMPTY_BYTES for empty string to avoid per-node small allocation (PERFORMANCE_OPTIMIZATION_ITEMS §3.5). */
     private static byte[] toUtf8Bytes(String s) {

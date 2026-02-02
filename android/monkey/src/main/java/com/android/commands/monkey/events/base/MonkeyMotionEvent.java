@@ -43,24 +43,30 @@ public abstract class MonkeyMotionEvent extends MonkeyEvent {
     /** Max pointers for reuse arrays (PointerProperties + PointerCoords obtain). */
     private static final int MAX_POINTERS = 10;
 
-    private static final ThreadLocal<MotionEvent.PointerProperties[]> sPointerProperties = ThreadLocal.withInitial(() -> {
-        MotionEvent.PointerProperties[] p = new MotionEvent.PointerProperties[MAX_POINTERS];
-        for (int i = 0; i < MAX_POINTERS; i++) {
-            MotionEvent.PointerProperties prop = new MotionEvent.PointerProperties();
-            prop.id = 0;
-            prop.toolType = MotionEvent.TOOL_TYPE_FINGER;
-            p[i] = prop;
+    private static final ThreadLocal<MotionEvent.PointerProperties[]> sPointerProperties = new ThreadLocal<MotionEvent.PointerProperties[]>() {
+        @Override
+        protected MotionEvent.PointerProperties[] initialValue() {
+            MotionEvent.PointerProperties[] p = new MotionEvent.PointerProperties[MAX_POINTERS];
+            for (int i = 0; i < MAX_POINTERS; i++) {
+                MotionEvent.PointerProperties prop = new MotionEvent.PointerProperties();
+                prop.id = 0;
+                prop.toolType = MotionEvent.TOOL_TYPE_FINGER;
+                p[i] = prop;
+            }
+            return p;
         }
-        return p;
-    });
+    };
 
-    private static final ThreadLocal<MotionEvent.PointerCoords[]> sPointerCoords = ThreadLocal.withInitial(() -> {
-        MotionEvent.PointerCoords[] c = new MotionEvent.PointerCoords[MAX_POINTERS];
-        for (int i = 0; i < MAX_POINTERS; i++) {
-            c[i] = new MotionEvent.PointerCoords();
+    private static final ThreadLocal<MotionEvent.PointerCoords[]> sPointerCoords = new ThreadLocal<MotionEvent.PointerCoords[]>() {
+        @Override
+        protected MotionEvent.PointerCoords[] initialValue() {
+            MotionEvent.PointerCoords[] c = new MotionEvent.PointerCoords[MAX_POINTERS];
+            for (int i = 0; i < MAX_POINTERS; i++) {
+                c[i] = new MotionEvent.PointerCoords();
+            }
+            return c;
         }
-        return c;
-    });
+    };
 
     // statusBarHeight / bottomBarHeight from AndroidDevice (cached, invalidated on rotation).
 
