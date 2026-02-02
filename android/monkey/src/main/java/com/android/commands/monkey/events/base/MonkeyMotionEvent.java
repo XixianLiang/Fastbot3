@@ -22,6 +22,7 @@ import android.hardware.input.InputManager;
 import android.os.SystemClock;
 import android.util.SparseArray;
 import android.view.IWindowManager;
+import android.view.InputDevice;
 import android.view.MotionEvent;
 
 import com.android.commands.monkey.events.MonkeyEvent;
@@ -35,14 +36,23 @@ import com.android.commands.monkey.utils.Logger;
 /**
  * Monkey motion event (touch / optional future mouse).
  * Performance: reuse PointerProperties[] and PointerCoords[] to avoid allocation per getEvent() (see SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §3).
- * Future mouse (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.5): for SOURCE_MOUSE on API 23+, send ACTION_DOWN then ACTION_BUTTON_PRESS; on release ACTION_BUTTON_RELEASE then ACTION_UP; use InputManager.setActionButton(MotionEvent, actionButton) via reflection.
+ * Future mouse: for SOURCE_MOUSE on API 23+, send ACTION_DOWN then ACTION_BUTTON_PRESS; on release ACTION_BUTTON_RELEASE then ACTION_UP; use InputManager.setActionButton(MotionEvent, actionButton) via reflection.
  */
 public abstract class MonkeyMotionEvent extends MonkeyEvent {
 
-    /** Max pointers for reuse arrays (obtain(long, long, int, int, int[], PointerCoords[], ...)). */
+    /** Max pointers for reuse arrays (PointerProperties + PointerCoords obtain). */
     private static final int MAX_POINTERS = 10;
 
-    private static final ThreadLocal<int[]> sPointerIds = ThreadLocal.withInitial(() -> new int[MAX_POINTERS]);
+    private static final ThreadLocal<MotionEvent.PointerProperties[]> sPointerProperties = ThreadLocal.withInitial(() -> {
+        MotionEvent.PointerProperties[] p = new MotionEvent.PointerProperties[MAX_POINTERS];
+        for (int i = 0; i < MAX_POINTERS; i++) {
+            MotionEvent.PointerProperties prop = new MotionEvent.PointerProperties();
+            prop.id = 0;
+            prop.toolType = MotionEvent.TOOL_TYPE_FINGER;
+            p[i] = prop;
+        }
+        return p;
+    });
 
     private static final ThreadLocal<MotionEvent.PointerCoords[]> sPointerCoords = ThreadLocal.withInitial(() -> {
         MotionEvent.PointerCoords[] c = new MotionEvent.PointerCoords[MAX_POINTERS];
@@ -86,7 +96,6 @@ public abstract class MonkeyMotionEvent extends MonkeyEvent {
     }
 
     public MonkeyMotionEvent addPointer(int id, float x, float y, float pressure, float size) {
-        // SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1: clip to focused display bounds so (x,y) is in device display space.
         Rect bounds = AndroidDevice.getDisplayBounds(AndroidDevice.getFocusedDisplayId());
         int statusBarHeight = AndroidDevice.getStatusBarHeight();
         int bottomBarHeight = AndroidDevice.getBottomBarHeight();
@@ -167,17 +176,20 @@ public abstract class MonkeyMotionEvent extends MonkeyEvent {
 
     /**
      * @return instance of a motion event
-     * Reuses ThreadLocal int[] and PointerCoords[] to avoid allocation per call.
+     * use PointerProperties + PointerCoords obtain, set toolType (FINGER/MOUSE).
+     * Reuses ThreadLocal PointerProperties[] and PointerCoords[] to avoid allocation per call.
      */
     /* private */ MotionEvent getEvent() {
         int pointerCount = mPointers.size();
         if (pointerCount > MAX_POINTERS) {
             pointerCount = MAX_POINTERS;
         }
-        int[] pointerIds = sPointerIds.get();
+        MotionEvent.PointerProperties[] props = sPointerProperties.get();
         MotionEvent.PointerCoords[] coords = sPointerCoords.get();
+        int toolType = (mSource == InputDevice.SOURCE_MOUSE) ? MotionEvent.TOOL_TYPE_MOUSE : MotionEvent.TOOL_TYPE_FINGER;
         for (int i = 0; i < pointerCount; i++) {
-            pointerIds[i] = mPointers.keyAt(i);
+            props[i].id = mPointers.keyAt(i);
+            props[i].toolType = toolType;
             MotionEvent.PointerCoords src = mPointers.valueAt(i);
             coords[i].x = src.x;
             coords[i].y = src.y;
@@ -185,8 +197,9 @@ public abstract class MonkeyMotionEvent extends MonkeyEvent {
             coords[i].size = src.size;
         }
         long eventTime = mEventTime < 0 ? SystemClock.uptimeMillis() : mEventTime;
-        return MotionEvent.obtain(mDownTime, eventTime, mAction, pointerCount, pointerIds, coords,
-                mMetaState, mXPrecision, mYPrecision, mDeviceId, mEdgeFlags, mSource, mFlags);
+        int buttonState = 0;
+        return MotionEvent.obtain(mDownTime, eventTime, mAction, pointerCount, props, coords,
+                mMetaState, buttonState, mXPrecision, mYPrecision, mDeviceId, mEdgeFlags, mSource, mFlags);
     }
 
     @Override
@@ -233,7 +246,7 @@ public abstract class MonkeyMotionEvent extends MonkeyEvent {
             Logger.println(msg.toString());
         }
         try {
-            // SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1: use focused display so touch goes to correct display in multi-display.
+            // use focused display so touch goes to correct display in multi-display.
             int displayId = AndroidDevice.getFocusedDisplayId();
             if (displayId != 0 && !AndroidDevice.supportsInputEvents(displayId)) {
                 return MonkeyEvent.INJECT_FAIL;
