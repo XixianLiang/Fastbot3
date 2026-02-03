@@ -145,6 +145,16 @@ adb -s <device_serial> shell CLASSPATH=/sdcard/monkeyq.jar:/sdcard/framework.jar
 
 > For more details, see [中文手册](./handbook-cn.md).
 
+#### Optional: ADBKeyBoard (Chinese/emoji input)
+
+If you use **activate_fastbot.sh** and want IME text input (e.g. Chinese), the script pushes and installs **ADBKeyBoard** from `test/ADBKeyBoard.apk`. The APK **must target SDK 24+**; otherwise you will see `INSTALL_FAILED_DEPRECATED_SDK_VERSION`. Replace `android/test/ADBKeyBoard.apk` with a compatible build, e.g. from [senzhk/ADBKeyBoard releases](https://github.com/senzhk/ADBKeyBoard/releases) (e.g. **v2.4-dev** → `keyboardservice-debug.apk`), and save it as `android/test/ADBKeyBoard.apk`.
+
+**If log shows "Input (...) is successfully sent: true" but nothing appears in the input field:**
+
+1. **IME package must match** – The monkey uses `com.android.adbkeyboard/.AdbIME` by default. If you installed `keyboardservice-debug.apk` from senzhk/ADBKeyBoard, it uses the same package; other forks may use a different package. Run `adb shell ime list -s` and ensure your IME is enabled and set: `adb shell ime set <your.ime/.Component>`.
+2. **Current IME** – After tapping the input field, the app may switch back to the system keyboard. The monkey switches to ADBKeyBoard before sending; check the log line `Current IME: ...` to confirm it is your ADBKeyBoard component. If it is not, the focused field is bound to another IME and will not receive the text.
+3. **Focus** – The touch that focuses the input must happen before the IME event; the 600 ms delay after switching IME gives the system time to bind the connection. If the field loses focus (e.g. dialog closes), the text will not show.
+
 #### Required parameters
 
 | Parameter | Description |

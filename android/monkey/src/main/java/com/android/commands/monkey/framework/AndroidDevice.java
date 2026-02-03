@@ -31,6 +31,7 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageStats;
 import android.content.pm.ResolveInfo;
+import android.util.Base64;
 import android.util.DisplayMetrics;
 import android.graphics.Point;
 import android.graphics.Rect;
@@ -103,12 +104,18 @@ public class AndroidDevice {
     private static Set<String> blacklistPermissions = new HashSet<String>();
     /**
      * https://github.com/senzhk/ADBKeyBoard
+     * ADB_INPUT_TEXT may not pass UTF-8 correctly via adb shell on Oreo/P;
+     * ADB_INPUT_B64 sends Base64(UTF-8(text)) for reliable Chinese/emoji input.
      */
     private static String IME_MESSAGE = "ADB_INPUT_TEXT";
+    private static String IME_MESSAGE_B64 = "ADB_INPUT_B64";
     private static String IME_CHARS = "ADB_INPUT_CHARS";
     private static String IME_KEYCODE = "ADB_INPUT_CODE";
     private static String IME_EDITORCODE = "ADB_EDITOR_CODE";
     private static String IME_ADB_KEYBOARD;
+
+    /** Default path on device for ADBKeyBoard APK when using auto-install (e.g. push via activate_fastbot.sh). */
+    private static final String ADBKEYBOARD_APK_PATH = "/data/local/tmp/ADBKeyBoard.apk";
 
     public static void initializeAndroidDevice(IActivityManager mAm, IWindowManager mWm, IPackageManager mPm, String keyboard) {
         iActivityManager = mAm;
@@ -173,19 +180,74 @@ public class AndroidDevice {
     }
 
     /**
-     * Try to get all enabled keyboards, and find ADBKeyboard
-     * @return If ADBKeyboard IME exists and enabled, return true, false otherwise.
+     * Try to get all enabled keyboards, and find ADBKeyboard. If ADBKeyBoard is not installed, tries
+     * to install from {@link #ADBKEYBOARD_APK_PATH} (pm install -r). If installed but not enabled,
+     * tries "ime enable &lt;id&gt;". Requires shell permission (e.g. when monkey runs via adb shell).
+     *
+     * @return If ADBKeyboard IME exists and is enabled (or was auto-installed/enabled), return true.
      */
     private static boolean enableADBKeyboard() {
-        List<InputMethodInfo> inputMethods = getInputMethodManager().getEnabledInputMethodList();
-        if (inputMethods != null) {
-            for (InputMethodInfo imi : inputMethods) {
+        InputMethodManager imm = getInputMethodManager();
+        List<InputMethodInfo> enabled = imm.getEnabledInputMethodList();
+        if (enabled != null) {
+            for (InputMethodInfo imi : enabled) {
                 Logger.println("InputMethod ID: " + imi.getId());
                 if (IME_ADB_KEYBOARD.equals(imi.getId())) {
                     Logger.println("Find Keyboard: " + IME_ADB_KEYBOARD);
                     return true;
                 }
             }
+        }
+        List<InputMethodInfo> all = imm.getInputMethodList();
+        boolean installed = false;
+        if (all != null) {
+            for (InputMethodInfo imi : all) {
+                if (IME_ADB_KEYBOARD.equals(imi.getId())) {
+                    installed = true;
+                    break;
+                }
+            }
+        }
+        if (!installed) {
+            Logger.println("ADBKeyBoard not installed, trying: pm install -r " + ADBKEYBOARD_APK_PATH);
+            try {
+                int ret = executeCommandAndWaitFor(new String[]{"pm", "install", "-r", ADBKEYBOARD_APK_PATH});
+                if (ret == 0) {
+                    all = imm.getInputMethodList();
+                    if (all != null) {
+                        for (InputMethodInfo imi : all) {
+                            if (IME_ADB_KEYBOARD.equals(imi.getId())) {
+                                installed = true;
+                                Logger.println("ADBKeyBoard auto-installed successfully.");
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                Logger.warningPrintln("Auto-install ADBKeyBoard failed: " + e.getMessage());
+            }
+            if (!installed) {
+                return false;
+            }
+        }
+        // Installed but not enabled: try ime enable
+        Logger.println("ADBKeyBoard installed but not enabled, trying: ime enable " + IME_ADB_KEYBOARD);
+        try {
+            int ret = executeCommandAndWaitFor(new String[]{"ime", "enable", IME_ADB_KEYBOARD});
+            if (ret == 0) {
+                List<InputMethodInfo> enabledAfter = imm.getEnabledInputMethodList();
+                if (enabledAfter != null) {
+                    for (InputMethodInfo imi2 : enabledAfter) {
+                        if (IME_ADB_KEYBOARD.equals(imi2.getId())) {
+                            Logger.println("ADBKeyBoard auto-enabled successfully.");
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Logger.warningPrintln("Auto-enable ADBKeyBoard failed: " + e.getMessage());
         }
         return false;
     }
@@ -441,33 +503,27 @@ public class AndroidDevice {
         return null;
     }
 
+    /**
+     * Best-effort check: whether the soft keyboard (IME) is currently visible.
+     * Uses only InputMethodManager.getInputMethodWindowVisibleHeight() to avoid
+     * dumpsys format differences across Android versions and OEMs.
+     * When the process has no IME client (e.g. monkey run as app_process), this
+     * throws on the server side and we return false.
+     * <p>
+     * There is no other reliable cross-process API: getInputMethodWindowVisibleHeight
+     * requires an IME client; dumpsys output format varies by OS/OEM. Prefer
+     * {@code action.isEditText()} from the model (GUI tree / native) when available—
+     * that is the only stable signal for "focus is on an input field" from monkey.
+     */
     public static boolean isVirtualKeyboardOpened() {
         try {
-            String[] cmd = {
-                    "/bin/sh",
-                    "-c",
-                    "dumpsys input_method | grep mInputShown"
-            };
-            Process process =  Runtime.getRuntime().exec(cmd);
-            BufferedReader stdInput = new BufferedReader(new
-                    InputStreamReader(process.getInputStream()));
-            String s;
-            Pattern pattern = Pattern.compile("minputshown=true", Pattern.CASE_INSENSITIVE);
-            while ((s = stdInput.readLine()) != null) {
-                Logger.println(s = s.toLowerCase(Locale.ENGLISH));
-                Matcher matcher = pattern.matcher(s);
-                boolean matchFound = matcher.find();
-                if(matchFound) {
-                    Logger.println("mInputShown found.");
-                    return true;
-                }
-            }
-        }catch (IOException ioException){
-            Logger.errorPrintln("adb executing \"dumpsys input_method | grep mInputShown\" wrong!");
+            int height = getInputMethodManager().getInputMethodWindowVisibleHeight();
+            return height != 0;
+        } catch (IllegalArgumentException e) {
+            // No IME client (e.g. app_process): server throws "unknown client".
+            Logger.warningPrintln("getInputMethodWindowVisibleHeight failed (no IME client): " + e.getMessage());
+            return false;
         }
-        Logger.println("mInputShown not found, getInputMethodWindowVisibleHeight is used.");
-        int height = getInputMethodManager().getInputMethodWindowVisibleHeight();
-        return height != 0;
     }
 
     public static void checkInteractive() {
@@ -779,9 +835,22 @@ public class AndroidDevice {
         sendIMEIntent(intent);
     }
 
+    /** Package part of {@link #IME_ADB_KEYBOARD} (e.g. com.android.adbkeyboard) for explicit broadcast. */
+    private static String getImePackage() {
+        if (IME_ADB_KEYBOARD == null) {
+            return null;
+        }
+        int slash = IME_ADB_KEYBOARD.indexOf('/');
+        return slash > 0 ? IME_ADB_KEYBOARD.substring(0, slash) : null;
+    }
+
     public static boolean sendIMEIntent(Intent intent) {
         try {
             if (checkAndSetInputMethod()) {
+                String pkg = getImePackage();
+                if (pkg != null) {
+                    intent.setPackage(pkg);
+                }
                 return broadcastIntent(intent);
             }
             return false;
@@ -848,12 +917,53 @@ public class AndroidDevice {
         return ret;
     }
 
+    /**
+     * Send text via ADBKeyBoard IME. Uses ADB_INPUT_B64 for any non-ASCII character
+     * (Chinese, emoji, etc.) so that Unicode is reliably delivered; uses ADB_INPUT_TEXT
+     * for pure ASCII. Requires ADBKeyBoard (senzhk/ADBKeyBoard) to be installed and
+     * <b>enabled</b> in Settings → Languages & input → Keyboards (or: adb shell ime enable
+     * com.android.adbkeyboard/.AdbIME). If not enabled, returns false.
+     */
     public static boolean sendText(String text) {
+        if (text == null) {
+            return false;
+        }
+        if (containsNonAscii(text)) {
+            return sendTextViaB64(text);
+        }
         Intent intent = new Intent();
         intent.setAction(IME_MESSAGE);
         intent.putExtra("msg", text);
         return sendIMEIntent(intent);
-        // sendIMEActionGo();
+    }
+
+    private static boolean containsNonAscii(CharSequence text) {
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) > 127) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Send text via ADBKeyBoard ADB_INPUT_B64 (Base64-encoded UTF-8). Use this for
+     * Chinese, emoji, and any Unicode when ADB_INPUT_TEXT might not preserve encoding.
+     */
+    public static boolean sendTextViaB64(String text) {
+        if (text == null) {
+            return false;
+        }
+        try {
+            byte[] utf8 = text.getBytes("UTF-8");
+            String b64 = Base64.encodeToString(utf8, Base64.NO_WRAP);
+            Intent intent = new Intent();
+            intent.setAction(IME_MESSAGE_B64);
+            intent.putExtra("msg", b64);
+            return sendIMEIntent(intent);
+        } catch (java.io.UnsupportedEncodingException e) {
+            return false;
+        }
     }
 
     /**

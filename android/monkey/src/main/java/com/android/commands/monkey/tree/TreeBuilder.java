@@ -57,7 +57,7 @@ public class TreeBuilder {
         protected Rect initialValue() {
             return new Rect();
         }
-    };  // PERFORMANCE_OPTIMIZATION_ITEMS §4.3
+    };  
 
     /** Returns EMPTY_BYTES for empty string to avoid per-node small allocation (PERFORMANCE_OPTIMIZATION_ITEMS §3.5). */
     private static byte[] toUtf8Bytes(String s) {
@@ -217,6 +217,9 @@ public class TreeBuilder {
 
     /**
      * Write tree to ByteBuffer in compact binary format (little-endian). C++ Element::createFromBinary reads this.
+     * Note: Java-side serialization can be slower than dumpDocumentStrWithOutTree (XML) because dumpNodeRecBinary
+     * does two passes over children (count visible, then dump); see FASTBOT1_LOG_ANALYSIS §2.3.
+     *
      * @param rootInfo root node
      * @param buffer direct ByteBuffer, position advanced by bytes written
      * @return bytes written, or -1 if buffer too small
@@ -266,6 +269,7 @@ public class TreeBuilder {
         if (cd.length > 0) { buf.put((byte) TAG_CD); buf.putShort((short) cd.length); buf.put(cd); }
         if (buf.remaining() < 2) return -1;  // need 2 bytes for numChildren
         int childCount = node.getChildCount();
+        // First pass: count visible children (causes double traversal vs XML path; see FASTBOT1_LOG_ANALYSIS §2.3).
         int written = 0;
         for (int i = 0; i < childCount && buf.remaining() >= 2; i++) {
             AccessibilityNodeInfo child = node.getChild(i);

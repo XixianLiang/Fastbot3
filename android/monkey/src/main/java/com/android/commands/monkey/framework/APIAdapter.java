@@ -168,11 +168,14 @@ public class APIAdapter {
     public static List<RunningTaskInfo> getTasks(IActivityManager iAm, int maxNum) {
         Method method = getTasksMethod;
         if (method == null) {
-            Class<?> clazz = iAm.getClass();
+            // Use IActivityManager.class so getMethod() finds the interface method; iAm.getClass()
+            // returns the Binder proxy class and getMethod() may not find getTasks() on it,
+            // causing a spurious NoSuchMethodException on first call (then second signature succeeds).
+            Class<?> clazz = IActivityManager.class;
             String name = "getTasks";
-            method = findMethod(clazz, name, int.class, int.class);
+            method = findMethod(clazz, name, int.class);
             if (method == null) {
-                method = findMethod(clazz, name, int.class);
+                method = findMethod(clazz, name, int.class, int.class);
             }
             if (method == null) {
                 Logger.println("Cannot resolve method: " + name);

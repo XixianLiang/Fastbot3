@@ -456,7 +456,10 @@ public abstract class MonkeySourceApeBase {
     protected void doInput(ModelAction action) {
         String inputText = action.getInputText();
         boolean useAdbInput = action.isUseAdbInput();
-        if (inputText != null && !inputText.equals("")) {
+        // Only send IME/text input when the action target is an editable widget (EditText).
+        // Otherwise e.g. clicking a button ("获取短信验证码") would focus the button and
+        // commitText() would go nowhere, so nothing appears in the UI.
+        if (inputText != null && !inputText.equals("") && action.isEditText()) {
             if (mVerbose > 0) Logger.println("Input text is " + inputText);
             if (action.isClearText()) {
                 generateClearEvent(action.getBoundingBox());
@@ -474,6 +477,8 @@ public abstract class MonkeySourceApeBase {
                 if (mVerbose > 0) Logger.println("MonkeyCommandEvent added " + inputText);
                 addEvent(new MonkeyCommandEvent("input text " + inputText));
             }
+        } else if (inputText != null && !inputText.equals("")) {
+            if (mVerbose > 0) Logger.println("Skip IME input for non-edit widget: " + inputText);
         } else {
             if (lastInputTimestamp == timestamp) {
                 Logger.warningPrintln("checkVirtualKeyboard: Input only once.");
