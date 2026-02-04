@@ -217,8 +217,7 @@ public class TreeBuilder {
 
     /**
      * Write tree to ByteBuffer in compact binary format (little-endian). C++ Element::createFromBinary reads this.
-     * Note: Java-side serialization can be slower than dumpDocumentStrWithOutTree (XML) because dumpNodeRecBinary
-     * does two passes over children (count visible, then dump); see FASTBOT1_LOG_ANALYSIS §2.3.
+     * Single-pass over children: writes numChildren placeholder, dumps children while counting, then back-patches.
      *
      * @param rootInfo root node
      * @param buffer direct ByteBuffer, position advanced by bytes written
@@ -267,34 +266,29 @@ public class TreeBuilder {
         if (clazz.length > 0) { buf.put((byte) TAG_CLASS); buf.putShort((short) clazz.length); buf.put(clazz); }
         if (pkg.length > 0) { buf.put((byte) TAG_PKG); buf.putShort((short) pkg.length); buf.put(pkg); }
         if (cd.length > 0) { buf.put((byte) TAG_CD); buf.putShort((short) cd.length); buf.put(cd); }
-        if (buf.remaining() < 2) return -1;  // need 2 bytes for numChildren
+        if (buf.remaining() < 2) return -1;  // need 2 bytes for numChildren (placeholder; back-patch later)
+        int posNumChildren = buf.position();
+        buf.putShort((short) 0);  // placeholder; single-pass: count while dumping, then back-patch
         int childCount = node.getChildCount();
-        // First pass: count visible children (causes double traversal vs XML path; see FASTBOT1_LOG_ANALYSIS §2.3).
         int written = 0;
-        for (int i = 0; i < childCount && buf.remaining() >= 2; i++) {
-            AccessibilityNodeInfo child = node.getChild(i);
-            if (child != null) {
-                if (child.isVisibleToUser()) written++;
-                child.recycle();  // recycle immediately to avoid leak (count-only pass)
-            }
-        }
-        if (buf.remaining() < 2) return -1;
-        buf.putShort((short) written);
-        int idx = 0;
         for (int i = 0; i < childCount; i++) {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
                 try {
                     if (child.isVisibleToUser()) {
-                        if (dumpNodeRecBinary(child, buf, idx, depth + 1) < 0) return -1;
-                        idx++;
+                        if (dumpNodeRecBinary(child, buf, written, depth + 1) < 0) return -1;
+                        written++;
                     }
                 } finally {
-                    child.recycle();  // always recycle: visible after recurse, invisible immediately
+                    child.recycle();
                 }
             }
         }
-        return buf.position();
+        int savedPos = buf.position();
+        buf.position(posNumChildren);
+        buf.putShort((short) written);
+        buf.position(savedPos);
+        return savedPos;
     }
 
     /**

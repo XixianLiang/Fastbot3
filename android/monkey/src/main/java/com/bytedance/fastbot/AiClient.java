@@ -111,7 +111,7 @@ public class AiClient {
     }
 
     private static String getAiPath(boolean fromAPK) {
-        if(Build.VERSION.SDK_INT<=Build.VERSION_CODES.LOLLIPOP_MR1) {
+        if(Build.VERSION.SDK_INT <= com.android.commands.monkey.utils.AndroidVersions.API_22_ANDROID_5_1) {
             return getAiPathLocally();
         }else {
             if (fromAPK) {

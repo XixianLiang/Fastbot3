@@ -451,29 +451,38 @@ public class MonkeySourceApeNative extends MonkeySourceApeBase implements Monkey
 
         // If node is not null, build tree and recycle this resource.
         if (info!=null){
-            // Performance opt1: try compact binary first; fall back to XML if buffer too small or fail
-            // Larger buffer (1MB) reduces dumpBinary failure rate vs 512KB (see FASTBOT1_LOG_ANALYSIS §9).
-            ensureXmlBufferCapacity(1024 * 1024);  // 1MB for large trees; dumpNodeRecBinary returns -1 if full
-            mXmlBuffer.clear();  // critical: remaining() must be capacity; otherwise limit was last write size
-            long tBin0 = System.currentTimeMillis();
-            int binaryWritten = TreeBuilder.dumpToBinary(info, mXmlBuffer);
-            tDumpBinary = System.currentTimeMillis() - tBin0;
-            if (mVerbose > 0) {
-                Logger.println("// dumpBinary: " + tDumpBinary + " ms" + (binaryWritten <= 0 ? " (buffer full or fail)" : ""));
-            }
-            if (binaryWritten > 0) {
-                mXmlBuffer.position(0);
-                mXmlBuffer.limit(binaryWritten);
-                operate = AiClient.getActionFromBuffer(topActivityName != null ? topActivityName.getClassName() : "", mXmlBuffer);
-            }
-            if (operate == null) {
-                if (mVerbose > 0) {
-                    Logger.println("// event time: fallback to XML (binaryWritten=" + binaryWritten + ")");
-                }
+            boolean useXmlOnly = "xml".equalsIgnoreCase(Config.treeDumpMode);
+            if (useXmlOnly) {
+                // max.treeDumpMode=xml: skip binary, always dump XML (e.g. for perf comparison or compatibility).
                 long tXml0 = System.currentTimeMillis();
                 stringOfGuiTree = TreeBuilder.dumpDocumentStrWithOutTree(info);
                 tDumpXml = System.currentTimeMillis() - tXml0;
+                if (mVerbose > 0) Logger.println("// dumpXml: " + tDumpXml + " ms (treeDumpMode=xml)");
                 if (mVerbose > 3) Logger.println("//" + stringOfGuiTree);
+            } else {
+                // Default: try compact binary first; fall back to XML if buffer too small or fail.
+                ensureXmlBufferCapacity(1024 * 1024);  // 1MB for large trees; dumpNodeRecBinary returns -1 if full
+                mXmlBuffer.clear();  // critical: remaining() must be capacity; otherwise limit was last write size
+                long tBin0 = System.currentTimeMillis();
+                int binaryWritten = TreeBuilder.dumpToBinary(info, mXmlBuffer);
+                tDumpBinary = System.currentTimeMillis() - tBin0;
+                if (mVerbose > 0) {
+                    Logger.println("// dumpBinary: " + tDumpBinary + " ms" + (binaryWritten <= 0 ? " (buffer full or fail)" : ""));
+                }
+                if (binaryWritten > 0) {
+                    mXmlBuffer.position(0);
+                    mXmlBuffer.limit(binaryWritten);
+                    operate = AiClient.getActionFromBuffer(topActivityName != null ? topActivityName.getClassName() : "", mXmlBuffer);
+                }
+                if (operate == null) {
+                    if (mVerbose > 0) {
+                        Logger.println("// event time: fallback to XML (binaryWritten=" + binaryWritten + ")");
+                    }
+                    long tXml0 = System.currentTimeMillis();
+                    stringOfGuiTree = TreeBuilder.dumpDocumentStrWithOutTree(info);
+                    tDumpXml = System.currentTimeMillis() - tXml0;
+                    if (mVerbose > 3) Logger.println("//" + stringOfGuiTree);
+                }
             }
             info.recycle();
         }

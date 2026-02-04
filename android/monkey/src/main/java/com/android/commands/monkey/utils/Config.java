@@ -86,6 +86,11 @@ public class Config {
     public static final long refectchInfoWaitingInterval = Config.getLong("max.refectchInfoWaitingInterval", 50);
     public static final int refectchInfoCount = Config.getInteger("max.refectchInfoCount", 2);
     /**
+     * tree dump mode: "binary" (default, try binary then fallback to XML) or "xml" (always dump XML, skip binary).
+     * Config: max.treeDumpMode = binary | xml
+     */
+    public static final String treeDumpMode = Config.get("max.treeDumpMode", "xml");
+    /**
      * generator fuzzing event
      */
     public static final double fuzzingRate = Config.getDouble("max.fuzzingRate", 0.01D);

@@ -76,6 +76,7 @@ import com.android.commands.monkey.utils.MonkeyUtils;
 import com.android.commands.monkey.utils.RandomHelper;
 import com.android.commands.monkey.utils.UUIDHelper;
 import com.android.commands.monkey.utils.Utils;
+import com.android.commands.monkey.utils.AndroidVersions;
 import com.bytedance.fastbot.AiClient;
 
 import java.io.File;
@@ -97,6 +98,8 @@ public abstract class MonkeySourceApeBase {
 
     protected static final long CLICK_WAIT_TIME = 0L;
     protected static final long LONG_CLICK_WAIT_TIME = 1000L;
+    /** Number of random click events to generate when action bounds are invalid (e.g. zero-area rect). */
+    protected static final int INVALID_BOUNDS_RANDOM_CLICK_COUNT = 3;
 
     protected final MonkeyEventQueue mQ;
     protected Random mRandom;
@@ -346,7 +349,7 @@ public abstract class MonkeySourceApeBase {
     protected void attemptToSendTextByKeyEvents(String inputText) {
         char[] szRes = inputText.toCharArray();
         KeyCharacterMap charMap;
-        if (Build.VERSION.SDK_INT >= 11) {
+        if (Build.VERSION.SDK_INT >= AndroidVersions.API_11_ANDROID_3_0) {
             if (sKeyCharMapVirtual == null) sKeyCharMapVirtual = KeyCharacterMap.load(KeyCharacterMap.VIRTUAL_KEYBOARD);
             charMap = sKeyCharMapVirtual;
         } else {
@@ -404,6 +407,7 @@ public abstract class MonkeySourceApeBase {
         }
         if (!bounds.contains((int) p1.x, (int) p1.y)) {
             Logger.warningFormat("Invalid bounds: %s", bounds);
+            generateRandomClickEventsWithin(AndroidDevice.getDisplayBounds(), waitTime, INVALID_BOUNDS_RANDOM_CLICK_COUNT);
             return;
         }
         p1 = shieldBlackRect(p1);
@@ -413,6 +417,32 @@ public abstract class MonkeySourceApeBase {
             addEvent(new MonkeyWaitEvent(waitTime));
         }
         addEvent(new MonkeyTouchEvent(MotionEvent.ACTION_UP).setDownTime(downAt).addPointer(0, p1.x, p1.y).setIntermediateNote(false));
+    }
+
+    /**
+     * Generate several random click events within the given bounds (e.g. display bounds).
+     * Used as fallback when action bounds are invalid (e.g. zero-area rect).
+     */
+    protected void generateRandomClickEventsWithin(Rect bounds, long waitTime, int count) {
+        if (bounds == null || bounds.width() <= 0 || bounds.height() <= 0) {
+            bounds = AndroidDevice.getDisplayBounds();
+        }
+        int w = bounds.width();
+        int h = bounds.height();
+        if (w <= 0 || h <= 0) {
+            return;
+        }
+        for (int i = 0; i < count; i++) {
+            int x = bounds.left + getRandom().nextInt(w);
+            int y = bounds.top + getRandom().nextInt(h);
+            PointF p = shieldBlackRect(new PointF(x, y));
+            long downAt = SystemClock.uptimeMillis();
+            addEvent(new MonkeyTouchEvent(MotionEvent.ACTION_DOWN).setDownTime(downAt).addPointer(0, p.x, p.y).setIntermediateNote(false));
+            if (waitTime > 0) {
+                addEvent(new MonkeyWaitEvent(waitTime));
+            }
+            addEvent(new MonkeyTouchEvent(MotionEvent.ACTION_UP).setDownTime(downAt).addPointer(0, p.x, p.y).setIntermediateNote(false));
+        }
     }
 
     protected void generateScrollEventAt(Rect nodeRect, ActionType type) {

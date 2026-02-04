@@ -53,6 +53,7 @@ import com.android.commands.monkey.utils.ContextUtils;
 import com.android.commands.monkey.utils.InputUtils;
 import com.android.commands.monkey.utils.Logger;
 import com.android.commands.monkey.utils.Utils;
+import com.android.commands.monkey.utils.AndroidVersions;
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.view.IInputMethodManager;
 
@@ -422,7 +423,7 @@ public class AndroidDevice {
      * Primary display (0) always; secondary displays only on API 29+.
      */
     public static boolean supportsInputEvents(int displayId) {
-        return displayId == DEFAULT_DISPLAY_ID || Build.VERSION.SDK_INT >= 29;
+        return displayId == DEFAULT_DISPLAY_ID || Build.VERSION.SDK_INT >= AndroidVersions.API_29_ANDROID_10;
     }
 
     /**
@@ -433,7 +434,7 @@ public class AndroidDevice {
         if (event == null || displayId == DEFAULT_DISPLAY_ID) {
             return true;
         }
-        if (Build.VERSION.SDK_INT < 29 || !supportsInputEvents(displayId)) {
+        if (Build.VERSION.SDK_INT < AndroidVersions.API_29_ANDROID_10 || !supportsInputEvents(displayId)) {
             return false;
         }
         try {
@@ -455,7 +456,7 @@ public class AndroidDevice {
         if (pm == null) {
             return false;
         }
-        if (Build.VERSION.SDK_INT >= 34) {
+        if (Build.VERSION.SDK_INT >= AndroidVersions.API_34_ANDROID_14) {
             try {
                 Method m = pm.getClass().getMethod("isDisplayInteractive", int.class);
                 Object r = m.invoke(pm, displayId);
