@@ -6,3 +6,4 @@ android/native/fastbot.log
 /android/.gradle
 android/monkeyq copy.jar
 /android/native/CMakeFiles
+/android/native/CMakeFiles
