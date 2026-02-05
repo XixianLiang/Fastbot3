@@ -77,6 +77,14 @@ namespace fastbotx {
          */
         uintptr_t hash() const override;
 
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        /**
+         * @brief Get state hash as if computed under the given widget key mask (for coarsening).
+         * Base implementation returns hash(); ReuseState overrides to use mask over widgets.
+         */
+        virtual uintptr_t getHashUnderMask(WidgetKeyMask mask) const;
+#endif
+
         /**
          * @brief Destructor cleans up all resources
          */
@@ -162,6 +170,24 @@ namespace fastbotx {
          * @return true if action is saturated
          */
         bool isSaturated(const ActivityStateActionPtr &action) const;
+
+        /**
+         * @brief Get the maximum number of widgets that map to the same model action in this state.
+         * Used for Action Refinement (α): if > α, the activity should be refined (APE paper).
+         * @return Max count of widgets per distinct model action (by current mask / hash).
+         */
+        virtual size_t getMaxWidgetsPerModelAction() const;
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        /**
+         * @brief Count of widgets with non-empty text (for "skip Text refinement" when text-heavy).
+         */
+        virtual size_t getWidgetsWithNonEmptyTextCount() const;
+        /**
+         * @brief Number of distinct widget hashes under the given mask (for "skip Text if would explode").
+         */
+        virtual size_t getUniqueWidgetCountUnderMask(WidgetKeyMask mask) const;
+#endif
 
         /**
          * @brief Set priority of this state

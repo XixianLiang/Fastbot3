@@ -34,9 +34,10 @@ namespace fastbotx {
      */
     RichWidget::RichWidget(WidgetPtr parent, const ElementPtr &element)
             : Widget(std::move(parent), element) {
+        // Performance optimization: Use fast string hash function instead of std::hash
         // Compute hash components
-        uintptr_t hashcode1 = std::hash<std::string>{}(this->_clazz);
-        uintptr_t hashcode2 = std::hash<std::string>{}(this->_resourceID);
+        uintptr_t hashcode1 = fastbotx::fastStringHash(this->_clazz);
+        uintptr_t hashcode2 = fastbotx::fastStringHash(this->_resourceID);
         
         // Combine action types into hash
         uintptr_t hashcode3 = 0x1;
@@ -48,9 +49,10 @@ namespace fastbotx {
         this->_widgetHashcode = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^ ((127U * hashcode3 << 1));
         
         // Include text from widget or children if available
+        // Use fast string hash for better performance
         std::string elementText = this->getValidTextFromWidgetAndChildren(element);
         if (!elementText.empty()) {
-            this->_widgetHashcode ^= (0x79b9 + (std::hash<std::string>{}(elementText) << 1));
+            this->_widgetHashcode ^= (0x79b9 + (fastbotx::fastStringHash(elementText) << 1));
         }
     }
 
@@ -112,6 +114,9 @@ namespace fastbotx {
         return getActHashCode();
     }
 
+    uintptr_t RichWidget::hashWithMask(WidgetKeyMask mask) const {
+        return Widget::hashWithMask(mask);
+    }
 
 }
 

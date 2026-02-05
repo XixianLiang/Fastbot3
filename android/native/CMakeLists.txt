@@ -57,6 +57,7 @@ include_directories(
   "thirdpart/flatbuffers/"
   "thirdpart/tinyxml2/"
   "thirdpart/json/"
+  "thirdpart/xxhash/"
 )
 
 file( GLOB SRC_LIST 
@@ -70,6 +71,7 @@ file( GLOB SRC_LIST
       "monkey/*.cpp" 
       "thirdpart/tinyxml2/*.cpp"
       "thirdpart/flatbuffers/*.cpp"
+      "thirdpart/xxhash/*.cpp"
       "thirdpart/json/*.hpp")
 
 message(STATUS ${SRC_LIST})

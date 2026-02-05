@@ -10,6 +10,8 @@
 #include "ReuseState.h"
 
 #include <utility>
+#include <unordered_map>
+#include <unordered_set>
 #include "RichWidget.h"
 #include "ActivityNameAction.h"
 #include "../utils.hpp"
@@ -107,9 +109,11 @@ namespace fastbotx {
      * @param activityName Activity name string pointer
      * @return Shared pointer to newly created ReuseState
      */
-    ReuseStatePtr ReuseState::create(const ElementPtr &element, const stringPtr &activityName) {
+    ReuseStatePtr ReuseState::create(const ElementPtr &element, const stringPtr &activityName,
+                                     WidgetKeyMask mask) {
         // Use new + shared_ptr instead of make_shared because constructor is protected
         ReuseStatePtr statePointer = std::shared_ptr<ReuseState>(new ReuseState(activityName));
+        statePointer->_widgetKeyMask = mask;
         statePointer->buildState(element);
         return statePointer;
     }
@@ -132,12 +136,24 @@ namespace fastbotx {
      * - Combines activity hash with widget hash
      */
     void ReuseState::buildHashForState() {
-        // Build hash from activity name
-        std::string activityString = *(_activity.get());
-        uintptr_t activityHash = (std::hash<std::string>{}(activityString) * 31U) << 5;
-        
+        // Build hash from activity name (guard against null _activity)
+        std::string activityString = (_activity && _activity.get()) ? *_activity : "";
+        // Performance optimization: Use fast string hash instead of std::hash
+        // This provides better performance for activity name strings
+        uintptr_t activityHash = (fastbotx::fastStringHash(activityString) * 31U) << 5;
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        uintptr_t widgetsHash = 0x1;
+        for (const auto &w : _widgets) {
+            if (w) {
+                widgetsHash ^= w->hashWithMask(_widgetKeyMask);
+            }
+        }
+        activityHash ^= (widgetsHash << 1);
+#else
         // Combine with widget hash (may include order if STATE_WITH_WIDGET_ORDER is enabled)
         activityHash ^= (combineHash<Widget>(_widgets, STATE_WITH_WIDGET_ORDER) << 1);
+#endif
         _hashcode = activityHash;
     }
 
@@ -155,35 +171,25 @@ namespace fastbotx {
      * - Skips widgets with null bounds
      */
     void ReuseState::buildActionForState() {
-        // Performance: Pre-allocate capacity to avoid vector reallocations
-        // Estimate action count: sum of all widget actions + 1 for back action
-        size_t estimatedActionCount = 1; // Reserve space for back action
-        for (const auto &widget: _widgets) {
-            if (widget->getBounds() != nullptr) {
-                estimatedActionCount += widget->getActions().size();
-            }
-        }
-        _actions.reserve(estimatedActionCount);
-        
-        for (const auto &widget: _widgets) {
-            if (widget->getBounds() == nullptr) {
+        // Performance: Cache activity string (shared_ptr copy) once instead of per action
+        stringPtr activityStr = getActivityString();
+        // Performance: Heuristic reserve to avoid first-pass count; typical ~2–4 actions per widget
+        _actions.reserve(_widgets.size() * 4 + 1);
+
+        for (const auto &widget : _widgets) {
+            RectPtr bounds = widget->getBounds();
+            if (bounds == nullptr) {
                 BLOGE("NULL Bounds happened");
                 continue;
             }
-            // Create action for each action type supported by this widget
-            for (ActionType action: widget->getActions()) {
-                // Performance: Use make_shared for single memory allocation
-                // (constructor is public, so make_shared can be used)
-                ActivityNameActionPtr activityNameAction = std::make_shared<ActivityNameAction>(
-                        getActivityString(), widget, action);
-                // Performance: emplace_back() constructs in-place, avoiding copy
-                _actions.emplace_back(activityNameAction);
+            // getActions() returns const ref — no set copy per widget
+            const std::set<ActionType> &actions = widget->getActions();
+            for (ActionType action : actions) {
+                _actions.emplace_back(std::make_shared<ActivityNameAction>(activityStr, widget, action));
             }
         }
-        
-        // Always add back action for navigation
-        _backAction = std::make_shared<ActivityNameAction>(getActivityString(), nullptr,
-                                                           ActionType::BACK);
+
+        _backAction = std::make_shared<ActivityNameAction>(activityStr, nullptr, ActionType::BACK);
         _actions.emplace_back(_backAction);
     }
 
@@ -198,17 +204,84 @@ namespace fastbotx {
      * - Improves hash computation and state comparison speed
      */
     void ReuseState::mergeWidgetsInState() {
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        std::unordered_map<uintptr_t, WidgetPtr> uniqueByMaskHash;
+        WidgetPtrVec uniqueWidgets;
+        int mergedCount = 0;
+        for (const auto &w : _widgets) {
+            if (!w) continue;
+            uintptr_t keyMask = w->hashWithMask(_widgetKeyMask);
+            auto it = uniqueByMaskHash.find(keyMask);
+            if (it == uniqueByMaskHash.end()) {
+                uniqueByMaskHash[keyMask] = w;
+                uniqueWidgets.push_back(w);
+            } else {
+                mergedCount++;
+                WidgetPtr representative = it->second;
+                uintptr_t repHash = representative->hash();
+                auto mergedIt = _mergedWidgets.find(repHash);
+                if (mergedIt == _mergedWidgets.end()) {
+                    WidgetPtrVec vec;
+                    vec.push_back(representative);
+                    vec.push_back(w);
+                    _mergedWidgets[repHash] = std::move(vec);
+                } else {
+                    mergedIt->second.push_back(w);
+                }
+            }
+        }
+        if (mergedCount != 0) {
+            BDLOG("build state merged  %d widget", mergedCount);
+            _widgets = std::move(uniqueWidgets);
+        }
+#else
         WidgetPtrSet mergedWidgets;
         int mergedCount = mergeWidgetAndStoreMergedOnes(mergedWidgets);
         if (mergedCount != 0) {
             BDLOG("build state merged  %d widget", mergedCount);
-            // Replace widgets with deduplicated set
             _widgets.assign(mergedWidgets.begin(), mergedWidgets.end());
         }
+#endif
     }
 
+    size_t ReuseState::getMaxWidgetsPerModelAction() const {
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        size_t maxCount = 1;
+        for (const auto &p : _mergedWidgets) {
+            if (p.second.size() > maxCount) {
+                maxCount = p.second.size();
+            }
+        }
+        return maxCount;
+#else
+        return State::getMaxWidgetsPerModelAction();
+#endif
+    }
 
-} // namespace fastbot
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    uintptr_t ReuseState::getHashUnderMask(WidgetKeyMask mask) const {
+        std::string activityString = (_activity && _activity.get()) ? *_activity : "";
+        // Performance optimization: Use fast string hash instead of std::hash
+        uintptr_t activityHash = (fastbotx::fastStringHash(activityString) * 31U) << 5;
+        uintptr_t widgetsHash = 0x1;
+        for (const auto &w : _widgets) {
+            if (w) {
+                widgetsHash ^= w->hashWithMask(mask);
+            }
+        }
+        return activityHash ^ (widgetsHash << 1);
+    }
+
+    size_t ReuseState::getUniqueWidgetCountUnderMask(WidgetKeyMask mask) const {
+        std::unordered_set<uintptr_t> seen;
+        for (const auto &w : _widgets) {
+            if (w) seen.insert(w->hashWithMask(mask));
+        }
+        return seen.size();
+    }
+#endif
+
+} // namespace fastbotx
 
 
 #endif // ReuseState_CPP_

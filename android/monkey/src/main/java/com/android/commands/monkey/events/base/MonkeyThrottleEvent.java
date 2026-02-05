@@ -22,15 +22,44 @@ import android.view.IWindowManager;
 import com.android.commands.monkey.events.MonkeyEvent;
 import com.android.commands.monkey.utils.Logger;
 
+import java.util.ArrayDeque;
+import java.util.Queue;
+
 /**
- * monkey throttle event
+ * Monkey throttle event. §8.10: pooled via obtain/recycle to reduce allocations.
  */
 public class MonkeyThrottleEvent extends MonkeyEvent {
-    /* private */ long mThrottle;
+    private static final int MAX_POOL_SIZE = 64;
+    private static final Queue<MonkeyThrottleEvent> sPool = new ArrayDeque<>(MAX_POOL_SIZE);
+
+    /* package */ long mThrottle;
 
     public MonkeyThrottleEvent(long throttle) {
         super(MonkeyEvent.EVENT_TYPE_THROTTLE);
         mThrottle = throttle;
+    }
+
+    /** §8.10: Obtain from pool or create new. Call recycle() after inject to return to pool. */
+    public static MonkeyThrottleEvent obtain(long throttle) {
+        MonkeyThrottleEvent e;
+        synchronized (sPool) {
+            e = sPool.poll();
+        }
+        if (e != null) {
+            e.mThrottle = throttle;
+            return e;
+        }
+        return new MonkeyThrottleEvent(throttle);
+    }
+
+    /** §8.10: Return to pool after inject. Reset eventId so setEventId() can be called again when reused. */
+    public static void recycle(MonkeyThrottleEvent e) {
+        if (e == null) return;
+        e.mThrottle = 0;
+        e.resetEventId();
+        synchronized (sPool) {
+            if (sPool.size() < MAX_POOL_SIZE) sPool.offer(e);
+        }
     }
 
     @Override

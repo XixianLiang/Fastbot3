@@ -31,10 +31,12 @@ namespace fastbotx {
          * @param agentT Algorithm type (currently unused, reserved for future use)
          * @param activity Activity name string pointer
          * @param element Root Element of the UI hierarchy
+         * @param mask Widget key mask for dynamic state abstraction (default: DefaultWidgetKeyMask)
          * @return Shared pointer to created State
          */
         static StatePtr
-        createState(AlgorithmType agentT, const stringPtr &activity, const ElementPtr &element);
+        createState(AlgorithmType agentT, const stringPtr &activity, const ElementPtr &element,
+                   WidgetKeyMask mask = DefaultWidgetKeyMask);
     };
 }
 #endif /* SateFactory_H_ */

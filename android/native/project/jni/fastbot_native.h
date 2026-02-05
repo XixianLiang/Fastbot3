@@ -26,8 +26,24 @@ JNIEXPORT void JNICALL Java_com_bytedance_fastbot_AiClient_jdasdbil(JNIEnv *env,
 JNIEXPORT jboolean JNICALL
 Java_com_bytedance_fastbot_AiClient_nkksdhdk(JNIEnv *env, jobject, jstring activity, jfloat pointX,
                                              jfloat pointY);
+JNIEXPORT jbooleanArray JNICALL
+Java_com_bytedance_fastbot_AiClient_checkPointsInShieldNative(JNIEnv *env, jobject, jstring activity,
+                                                              jfloatArray xCoords, jfloatArray yCoords);
+JNIEXPORT jstring JNICALL
+Java_com_bytedance_fastbot_AiClient_getActionFromBufferNative(JNIEnv *env, jobject, jstring activity,
+                                                              jobject xmlBuffer, jint byteLength);
+JNIEXPORT jobject JNICALL
+Java_com_bytedance_fastbot_AiClient_getActionFromBufferNativeStructured(JNIEnv *env, jobject, jstring activity,
+                                                                         jobject xmlBuffer, jint byteLength);
 JNIEXPORT jstring JNICALL
 Java_com_bytedance_fastbot_AiClient_getNativeVersion(JNIEnv *env, jclass clazz);
+JNIEXPORT void JNICALL
+Java_com_bytedance_fastbot_AiClient_reportActivityNative(JNIEnv *env, jobject, jstring activity);
+JNIEXPORT jstring JNICALL
+Java_com_bytedance_fastbot_AiClient_getCoverageJsonNative(JNIEnv *env, jobject);
+JNIEXPORT jstring JNICALL
+Java_com_bytedance_fastbot_AiClient_getNextFuzzActionNative(JNIEnv *env, jobject, jint displayWidth,
+                                                            jint displayHeight, jboolean simplify);
 
 #ifdef __cplusplus
 }

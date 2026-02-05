@@ -52,7 +52,9 @@ namespace fastbotx {
     StatePtr Graph::addState(StatePtr state) {
         // Get the activity name (activity class name) of this new state
         auto activity = state->getActivityString();
-        
+        static const std::string kEmptyActivityStr;
+        const std::string& activityStrForCount = (activity && activity.get()) ? *activity : kEmptyActivityStr;
+
         // Try to find state in state cache using hash-based comparison
         auto ifStateExists = this->_states.find(state);
         
@@ -60,6 +62,7 @@ namespace fastbotx {
             // This is a brand-new state, add it to the state cache
             state->setId(static_cast<int>(this->_states.size()));
             this->_states.emplace(state);
+            this->_activityStateCount[activityStrForCount]++;
         } else {
             // State already exists, fill details if needed
             if ((*ifStateExists)->hasNoDetail()) {
@@ -73,14 +76,16 @@ namespace fastbotx {
         this->notifyNewStateEvents(state);
 
         // Add this activity name to the visited activities set (every name is unique)
-        this->_visitedActivities.emplace(activity);
-        
+        if (activity && activity.get()) {
+            this->_visitedActivities.emplace(activity);
+        }
+
         // Update total distribution count
         this->_totalDistri++;
         
         // Update activity distribution statistics
         // Performance optimization: avoid creating string copy, use reference to shared_ptr's string
-        const std::string& activityStr = *(activity.get());
+        const std::string& activityStr = activityStrForCount;
         auto distriIt = this->_activityDistri.find(activityStr);
         
         if (distriIt == this->_activityDistri.end()) {
@@ -117,6 +122,11 @@ namespace fastbotx {
      */
     void Graph::addListener(const GraphListenerPtr &listener) {
         this->_listeners.emplace_back(listener);
+    }
+
+    size_t Graph::getStateCountByActivity(const std::string &activity) const {
+        auto it = this->_activityStateCount.find(activity);
+        return it != this->_activityStateCount.end() ? it->second : 0;
     }
 
     /**
@@ -187,6 +197,7 @@ namespace fastbotx {
         this->_visitedActions.clear();
         this->_widgetActions.clear();
         this->_listeners.clear();
+        this->_activityStateCount.clear();
     }
 
 }

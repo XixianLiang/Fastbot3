@@ -32,6 +32,8 @@ namespace ModelStorageConstants {
 #endif
     constexpr const char* ModelFileExtension = ".fbm";
     constexpr const char* TempModelFileExtension = ".tmp.fbm";
+    /// Max length for activity name when serializing (security: prevent unbounded string)
+    constexpr size_t MaxActivityNameLength = 4096;
 }  // namespace ModelStorageConstants
 
 namespace fastbotx {
@@ -1045,8 +1047,17 @@ namespace fastbotx {
             return;
         }
         
-        // Deserialize model data
+        // Verify buffer before deserializing (security: prevent OOB/malformed data)
+        flatbuffers::Verifier verifier(reinterpret_cast<const uint8_t*>(modelFileData.get()), filesize);
+        if (!VerifyReuseModelBuffer(verifier)) {
+            BLOGE("Double SARSA: Invalid or corrupted model buffer");
+            return;
+        }
         auto reuseFBModel = GetReuseModel(modelFileData.get());
+        if (!reuseFBModel) {
+            BLOGE("Double SARSA: GetReuseModel returned null");
+            return;
+        }
 
         // Clear existing reuse model
         {
@@ -1119,9 +1130,11 @@ namespace fastbotx {
                 
                 // Iterate through activity mapping
                 for (const auto &activityCountEntry: activityCountEntryMap) {
+                    const std::string &actName = *(activityCountEntry.first);
+                    size_t actLen = std::min(actName.size(), ModelStorageConstants::MaxActivityNameLength);
                     auto sentryActT = CreateActivityTimes(
-                            builder, 
-                            builder.CreateString(*(activityCountEntry.first)),
+                            builder,
+                            builder.CreateString(actName.c_str(), actLen),  // Activity name (length capped)
                             activityCountEntry.second);
                     activityCountEntryVector.push_back(sentryActT);
                 }

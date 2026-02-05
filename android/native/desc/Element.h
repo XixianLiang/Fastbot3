@@ -92,7 +92,7 @@ namespace fastbotx {
      * - Hash computation for state comparison
      * - JSON/XML conversion
      */
-    class Element : public Serializable {
+    class Element : public Serializable, public std::enable_shared_from_this<Element> {
     public:
         Element();
 
@@ -141,30 +141,70 @@ namespace fastbotx {
         bool getEnable() const { return this->_enabled; }
 
         ScrollType getScrollType() const;
+        
+        // Internal method to compute scroll type (used for caching)
+        ScrollType _computeScrollType() const;
 
         // reset properties, in Preference
-        void reSetResourceID(const std::string &resourceID) { this->_resourceID = resourceID; }
+        // Performance: Clear hash cache when properties change
+        void reSetResourceID(const std::string &resourceID) { 
+            this->_resourceID = resourceID; 
+            this->_hashCached = false; // Invalidate hash cache
+        }
 
-        void reSetContentDesc(const std::string &content) { this->_contentDesc = content; }
+        void reSetContentDesc(const std::string &content) { 
+            this->_contentDesc = content; 
+            this->_hashCached = false; // Invalidate hash cache
+        }
 
-        void reSetText(const std::string &text) { this->_text = text; }
+        void reSetText(const std::string &text) { 
+            this->_text = text; 
+            this->_hashCached = false; // Invalidate hash cache
+        }
 
-        void reSetIndex(const int &index) { this->_index = index; }
+        void reSetIndex(const int &index) { 
+            this->_index = index; 
+            // Index doesn't affect hash in current implementation, but clear cache for safety
+            this->_hashCached = false;
+        }
 
-        void reSetClassname(const std::string &className) { this->_classname = className; }
+        void reSetClassname(const std::string &className) { 
+            this->_classname = className; 
+            this->_hashCached = false; // Invalidate hash cache
+        }
 
-        void reSetClickable(bool clickable) { this->_clickable = clickable; }
+        void reSetClickable(bool clickable) { 
+            this->_clickable = clickable; 
+            this->_hashCached = false; // Invalidate hash cache
+        }
 
-        void reSetScrollable(bool scrollable) { this->_scrollable = scrollable; }
+        void reSetScrollable(bool scrollable) { 
+            this->_scrollable = scrollable; 
+            // Scrollable doesn't affect hash, but clear cache for consistency
+            this->_hashCached = false;
+        }
 
-        void reSetEnabled(bool enable) { this->_enabled = enable; }
+        void reSetEnabled(bool enable) { 
+            this->_enabled = enable; 
+            // Enabled doesn't affect hash, but clear cache for consistency
+            this->_hashCached = false;
+        }
 
-        void reSetBounds(RectPtr rect) { this->_bounds = std::move(rect); }
+        void reSetBounds(RectPtr rect) { 
+            this->_bounds = std::move(rect); 
+            // Bounds doesn't affect hash, but clear cache for consistency
+            this->_hashCached = false;
+        }
 
-        void reSetParent(const std::shared_ptr<Element> &parent) { this->_parent = parent; }
+        void reSetParent(const std::shared_ptr<Element> &parent) { 
+            this->_parent = parent; 
+            // Parent doesn't affect hash, but clear cache for consistency
+            this->_hashCached = false;
+        }
 
         void reAddChild(const std::shared_ptr<Element> &child) {
             this->_children.emplace_back(child);
+            this->_hashCached = false; // Invalidate hash cache (children affect recursive hash)
         }
 
         std::string toJson() const;
@@ -178,6 +218,17 @@ namespace fastbotx {
         static std::shared_ptr<Element> createFromXml(const std::string &xmlContent);
 
         static std::shared_ptr<Element> createFromXml(const tinyxml2::XMLDocument &doc);
+
+        /** Create tree from compact binary (SECURITY_AND_OPTIMIZATION §7 opt1). Magic "FB\\0\\1" then nodes. */
+        static std::shared_ptr<Element> createFromBinary(const char *buf, size_t len);
+
+        /** Parse one node from binary buffer; used by createFromBinary. */
+        static std::shared_ptr<Element> parseBinaryNode(const char *buf, size_t len, size_t *offset,
+                                                        const std::shared_ptr<Element> &parent);
+
+        /** Instance helper: fill this node from binary buffer; used by parseBinaryNode. */
+        bool parseBinaryNodeSelf(const char *buf, size_t len, size_t *offset,
+                                 const std::shared_ptr<Element> &parent);
 
         long hash(bool recursive = true);
 
@@ -219,6 +270,14 @@ namespace fastbotx {
         RectPtr _bounds;
         std::vector<std::shared_ptr<Element> > _children;
         std::weak_ptr<Element> _parent;
+
+        // Performance optimization: Cache scroll type to avoid repeated string comparisons
+        mutable ScrollType _cachedScrollType;
+        mutable bool _scrollTypeCached;
+        
+        // Performance optimization: Cache hash to avoid repeated computation
+        mutable long _cachedHash;
+        mutable bool _hashCached;
 
         // a construct helper
         static bool _allClickableFalse;

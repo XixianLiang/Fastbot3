@@ -131,6 +131,18 @@ namespace fastbotx {
          */
         virtual AlgorithmType getAlgorithmType() { return this->_algorithmType; }
 
+        /**
+         * @brief Get current state (state before last moveForward).
+         * Used by Model for transition logging (dynamic state abstraction).
+         */
+        StatePtr getCurrentState() const { return this->_currentState; }
+
+        /**
+         * @brief Get current action (action used to reach current state).
+         * Used by Model for transition logging (dynamic state abstraction).
+         */
+        ActivityStateActionPtr getCurrentAction() const { return this->_currentAction; }
+
     protected:
 
         /**

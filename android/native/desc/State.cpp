@@ -102,14 +102,15 @@ namespace fastbotx {
         sharedPtr->buildFromElement(nullptr, std::move(elem));
         
         // Compute hash based on activity name
+        // Performance optimization: Use fast string hash instead of std::hash
         uintptr_t activityHash;
         if (sharedPtr->_activity == nullptr || sharedPtr->_activity.get() == nullptr) {
             BLOGE("State::create: activity is nullptr, using empty string for hash");
-            activityHash = (std::hash<std::string>{}("") * 31U) << 5;
+            activityHash = (fastbotx::fastStringHash("") * 31U) << 5;
             // Continue with empty activity hash (should not happen in normal flow)
         } else {
             activityHash =
-                    (std::hash<std::string>{}(*(sharedPtr->_activity.get())) * 31U) << 5;
+                    (fastbotx::fastStringHash(*(sharedPtr->_activity.get())) * 31U) << 5;
         }
         
         // Merge duplicate widgets for optimization
@@ -117,6 +118,10 @@ namespace fastbotx {
         int mergedWidgetCount = sharedPtr->mergeWidgetAndStoreMergedOnes(mergedWidgets);
         if (mergedWidgetCount != 0) {
             BDLOG("build state merged  %d widget", mergedWidgetCount);
+            // Performance optimization: Pre-allocate vector capacity before assign
+            // This avoids multiple reallocations during assign operation
+            sharedPtr->_widgets.clear();
+            sharedPtr->_widgets.reserve(mergedWidgets.size());
             // Use merged widgets (deduplicated) instead of original widgets
             sharedPtr->_widgets.assign(mergedWidgets.begin(), mergedWidgets.end());
             
@@ -213,7 +218,40 @@ namespace fastbotx {
         return action->getVisitedCount() >= 1;
     }
 
+    size_t State::getMaxWidgetsPerModelAction() const {
+        size_t maxCount = 1;
+        for (const auto &w : this->_widgets) {
+            if (!w) continue;
+            size_t n = 1;
+            auto it = this->_mergedWidgets.find(w->hash());
+            if (it != this->_mergedWidgets.end()) {
+                n += it->second.size();
+            }
+            if (n > maxCount) maxCount = n;
+        }
+        return maxCount;
+    }
+
     RectPtr State::_sameRootBounds = std::make_shared<Rect>();
+
+    namespace {
+        // Helper function to estimate widget count from element tree
+        // Counts elements that are likely to become widgets (clickable, scrollable, checkable, etc.)
+        size_t estimateWidgetCount(const ElementPtr &elem) {
+            if (!elem) return 0;
+            size_t count = 0;
+            // Count this element if it's actionable
+            if (elem->getClickable() || elem->getScrollable() || elem->getCheckable() 
+                || elem->getLongClickable() || elem->isEditText()) {
+                count = 1;
+            }
+            // Recursively count children
+            for (const auto &child : elem->getChildren()) {
+                count += estimateWidgetCount(child);
+            }
+            return count;
+        }
+    }
 
     void State::buildFromElement(WidgetPtr parentWidget, ElementPtr elem) {
         // Handle root element bounds
@@ -232,6 +270,13 @@ namespace fastbotx {
                     // Different bounds, use current bounds
                     this->_rootBounds = elemBounds;
                 }
+            }
+            
+            // Performance optimization: Pre-allocate widgets vector capacity for root element
+            // Estimate widget count to avoid multiple reallocations during recursive build
+            size_t estimatedCount = estimateWidgetCount(elem);
+            if (estimatedCount > 0) {
+                this->_widgets.reserve(estimatedCount);
             }
         }
         
@@ -253,6 +298,24 @@ namespace fastbotx {
     uintptr_t State::hash() const {
         return this->_hashcode;
     }
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    uintptr_t State::getHashUnderMask(WidgetKeyMask /*mask*/) const {
+        return this->hash();
+    }
+
+    size_t State::getWidgetsWithNonEmptyTextCount() const {
+        size_t n = 0;
+        for (const auto &w : _widgets) {
+            if (w && !w->getText().empty()) ++n;
+        }
+        return n;
+    }
+
+    size_t State::getUniqueWidgetCountUnderMask(WidgetKeyMask /*mask*/) const {
+        return _widgets.size();
+    }
+#endif
 
     bool State::operator<(const State &state) const {
         return this->hash() < state.hash();
@@ -331,7 +394,8 @@ namespace fastbotx {
         oss << "{state: " << this->hash() << "\n    widgets: \n";
         for (auto const &widget: this->_widgets) {
             if (widget != nullptr) {
-                oss << "   " << widget->toString() << "\n";
+                std::string ws = widget->toString();
+                if (!ws.empty()) oss << "   " << ws << "\n";
             } else {
                 oss << "   [null widget]\n";
             }

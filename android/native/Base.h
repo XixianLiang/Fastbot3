@@ -20,7 +20,11 @@
 #include <functional>
 #include <chrono>
 #include <cmath>
+#include <cstdint>
 #include <random>
+#include <cstring>
+#define XXH_NO_EXTERNC_GUARD
+#include "thirdpart/xxhash/xxhash.h"
 
 #include "json.hpp"
 
@@ -99,6 +103,79 @@ namespace fastbotx {
         }
     };
 
+    /**
+     * @brief Fast string hash function using XXH3 algorithm
+     * 
+     * This is an extremely fast, non-cryptographic hash function optimized for string hashing.
+     * Uses XXH3_64bits algorithm which is significantly faster than FNV-1a and std::hash.
+     * 
+     * Performance characteristics:
+     * - ~2x faster than XXH64 on large inputs, >3x faster on small inputs
+     * - Perfect avalanche properties (10/10 quality score)
+     * - Optimized for short to medium-length strings (common in UI elements)
+     * - Single pass through the string
+     * - No memory allocations
+     * 
+     * @param str String to hash
+     * @return Hash value as uintptr_t
+     * 
+     * @note Uses XXH3_64bits (default seed=0) for consistent hashing
+     */
+    inline uintptr_t fastStringHash(const std::string &str) {
+        if (str.empty()) {
+            return 0;
+        }
+        // Use XXH3_64bits for maximum performance
+        return static_cast<uintptr_t>(XXH3_64bits(str.data(), str.length()));
+    }
+
+    /**
+     * @brief Fast string hash function using XXH3 algorithm (const char* version)
+     * 
+     * Optimized version that works directly with C-style strings.
+     * 
+     * @param str C-style string to hash
+     * @param len Length of the string (0 for null-terminated)
+     * @return Hash value as uintptr_t
+     * 
+     * @note Uses XXH3_64bits (default seed=0) for consistent hashing
+     */
+    inline uintptr_t fastStringHash(const char *str, size_t len = 0) {
+        if (!str || *str == '\0') {
+            return 0;
+        }
+        
+        if (len == 0) {
+            len = std::strlen(str);
+        }
+        
+        if (len == 0) {
+            return 0;
+        }
+        
+        // Use XXH3_64bits for maximum performance
+        return static_cast<uintptr_t>(XXH3_64bits(str, len));
+    }
+
+    /// Widget key attributes for dynamic state abstraction (bitmask).
+    /// Used to select which attributes participate in widget/state hash.
+    enum class WidgetKeyAttr : uint8_t {
+        Clazz       = 1 << 0,
+        ResourceID  = 1 << 1,
+        OperateMask = 1 << 2,
+        ScrollType  = 1 << 3,
+        Text        = 1 << 4,
+        ContentDesc = 1 << 5,
+        Index       = 1 << 6,
+    };
+    using WidgetKeyMask = uint8_t;
+
+    /// Default (coarse) widget key mask: clazz + resourceID + operateMask + scrollType.
+    constexpr WidgetKeyMask DefaultWidgetKeyMask =
+        static_cast<WidgetKeyMask>(WidgetKeyAttr::Clazz) |
+        static_cast<WidgetKeyMask>(WidgetKeyAttr::ResourceID) |
+        static_cast<WidgetKeyMask>(WidgetKeyAttr::OperateMask) |
+        static_cast<WidgetKeyMask>(WidgetKeyAttr::ScrollType);
 
     typedef std::shared_ptr<std::string> stringPtr;
     typedef std::set<stringPtr, Comparator<std::string>> stringPtrSet;
@@ -341,6 +418,8 @@ namespace fastbotx {
         return {buf};
     }
 
+    /// Returns current time in **milliseconds** (ms) since epoch.
+    /// Use (currentStamp() - t0) for elapsed ms; divide by 1000 for seconds.
     inline double currentStamp() {
         struct timeval timeValue{};
         gettimeofday(&timeValue, nullptr);

@@ -38,7 +38,8 @@ namespace fastbotx {
                                            ActionType act)
             : ActivityStateAction(nullptr, widget, act), _activity(std::move(activity)) {
         // Compute hash components
-        uintptr_t activityHashCode = std::hash<std::string>{}(*(_activity.get()));
+        // Performance optimization: Use fast string hash instead of std::hash
+        uintptr_t activityHashCode = fastbotx::fastStringHash(*(_activity.get()));
         uintptr_t actionHashCode = std::hash<int>{}(static_cast<int>(this->getActionType()));
         uintptr_t targetHash = (widget != nullptr) ? widget->hash() : 0x1;
 

@@ -24,8 +24,9 @@ import android.view.InputDevice;
 import android.view.KeyCharacterMap;
 import android.view.KeyEvent;
 
-import com.android.commands.monkey.source.MonkeySourceRandom;
 import com.android.commands.monkey.events.MonkeyEvent;
+import com.android.commands.monkey.framework.AndroidDevice;
+import com.android.commands.monkey.source.MonkeySourceRandom;
 import com.android.commands.monkey.utils.Logger;
 
 /**
@@ -132,6 +133,14 @@ public class MonkeyKeyEvent extends MonkeyEvent {
                     mScanCode, KeyEvent.FLAG_FROM_SYSTEM, InputDevice.SOURCE_KEYBOARD);
         }
 
+        // SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1: use focused display so key goes to correct display in multi-display.
+        int displayId = AndroidDevice.getFocusedDisplayId();
+        if (displayId != 0 && !AndroidDevice.supportsInputEvents(displayId)) {
+            return MonkeyEvent.INJECT_FAIL;
+        }
+        if (!AndroidDevice.setInputEventDisplayId(keyEvent, displayId)) {
+            return MonkeyEvent.INJECT_FAIL;
+        }
         if (!InputManager.getInstance().injectInputEvent(keyEvent,
                 InputManager.INJECT_INPUT_EVENT_MODE_WAIT_FOR_RESULT)) {
             return MonkeyEvent.INJECT_FAIL;

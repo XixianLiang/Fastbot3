@@ -97,7 +97,7 @@ namespace fastbotx {
         }
 
         bool KeyCompareLessThan(const ReuseEntry *o) const {
-            return action() < o->action();
+            return o && (action() < o->action());
         }
 
         int KeyCompareWithValue(uint64_t val) const {
@@ -147,23 +147,15 @@ namespace fastbotx {
         }
     };
 
-    inline flatbuffers::Offset <ReuseEntry> CreateReuseEntry(
+    inline flatbuffers::Offset<ReuseEntry> CreateReuseEntry(
             flatbuffers::FlatBufferBuilder &_fbb,
             uint64_t action = 0,
-            flatbuffers::Offset <flatbuffers::Vector<flatbuffers::Offset < fastbotx::ActivityTimes>>
-
-    >
-    targets = 0
-    ) {
-    ReuseEntryBuilder builder_(_fbb);
-    builder_.
-    add_action(action);
-    builder_.
-    add_targets(targets);
-    return builder_.
-
-    Finish();
-}
+            flatbuffers::Offset<flatbuffers::Vector<flatbuffers::Offset<fastbotx::ActivityTimes>>> targets = 0) {
+        ReuseEntryBuilder builder_(_fbb);
+        builder_.add_action(action);
+        builder_.add_targets(targets);
+        return builder_.Finish();
+    }
 
 inline flatbuffers::Offset<ReuseEntry> CreateReuseEntryDirect(
         flatbuffers::FlatBufferBuilder &_fbb,

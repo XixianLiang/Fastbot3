@@ -49,7 +49,7 @@ public class KeyEvent extends AbstractCustomEvent {
     public List<MonkeyEvent> generateMonkeyEvents() {
         MonkeyEvent down = new MonkeyKeyEvent(android.view.KeyEvent.ACTION_DOWN, keyCode);
         MonkeyEvent up = new MonkeyKeyEvent(android.view.KeyEvent.ACTION_UP, keyCode);
-        MonkeyEvent throttle = new MonkeyThrottleEvent(waitTime);
+        MonkeyEvent throttle = MonkeyThrottleEvent.obtain(waitTime);
 
         return Arrays.asList(down, up, throttle);
     }

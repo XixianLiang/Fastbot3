@@ -35,10 +35,16 @@ public class Logger {
                 " ▀            ▀         ▀  ▀▀▀▀▀▀▀▀▀▀▀       ▀       ▀▀▀▀▀▀▀▀▀▀   ▀▀▀▀▀▀▀▀▀▀▀       ▀\n");
     }
 
+    // PERFORMANCE_OPTIMIZATION_ITEMS §4.4: reuse SimpleDateFormat per thread to avoid allocation on every log.
+    private static final ThreadLocal<SimpleDateFormat> sDateFormat = new ThreadLocal<SimpleDateFormat>() {
+        @Override
+        protected SimpleDateFormat initialValue() {
+            return new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.ENGLISH);
+        }
+    };
+
     public static String getCurrentTimeStamp() {
-        SimpleDateFormat sdfDate = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss.SSS", Locale.ENGLISH);//dd/MM/yyyy
-        Date now = new Date();
-        return sdfDate.format(now);
+        return sDateFormat.get().format(new Date());
     }
 
     public static void println(Object message) {

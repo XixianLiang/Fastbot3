@@ -127,7 +127,48 @@ inline void logLongStringInfo(const std::string& longStr) {
 
 #define SCROLL_BOTTOM_UP_N_ENABLE 0
 
-#define FASTBOT_VERSION "local build"
+// Dynamic state abstraction (refinement/coarsening)
+#define DYNAMIC_STATE_ABSTRACTION_ENABLED 1
+#define RefinementCheckInterval           50
+#define MaxTransitionLogSize              2000
+#define MinNonDeterminismCount            2
+#define BetaMaxStateGrowth                8
+/// β for coarsening (APE): coarsen when one old state L′ splits into more than β new states
+#define BetaMaxSplitCount                 8
+// α: soft upper bound for "same state, same action" candidate widget count (paper APE; reserved for future use)
+#define AlphaMaxGuiActionsPerModelAction  3
+/// When true: per-round paper order — ActionRefinement(α) then StateCoarsening(β) then StateRefinement; when false: per-K-step batch (merge α + non-determinism)
+#define UsePaperRefinementOrder           0
+/// Skip adding Text when widgets with non-empty text > this count (avoid list/article screens exploding)
+#define MaxTextWidgetCount                20
+/// Skip adding Text when (widgets with non-empty text) / total widgets > this ratio (0–100, e.g. 50 = 50%)
+#define MaxTextWidgetRatioPercent         50
+/// Skip adding Text when unique widgets under (cur|Text) would exceed this (avoid refinement explosion)
+#define MaxUniqueWidgetsAfterText         50
+
+/// Compile-time timestamp (e.g. "Jan 30 2026 08:15:28")
+#define FASTBOT_VERSION __DATE__ " " __TIME__
+
+// Performance optimization: Control raw guitree XML logging
+// Set to 1 to enable detailed line-by-line XML logging (for debugging)
+// Set to 0 to disable (default) for better performance on large dumps
+#ifndef FASTBOT_LOG_RAW_GUITREE
+#define FASTBOT_LOG_RAW_GUITREE 0
+#endif
+
+// Performance optimization: Control xpath matching detailed logging
+// Set to 1 to enable detailed xpath match logging (for debugging)
+// Set to 0 to disable (default) for better performance on large dumps
+#ifndef FASTBOT_LOG_XPATH_MATCH
+#define FASTBOT_LOG_XPATH_MATCH 0
+#endif
+
+// Performance optimization: Control black widget point check logging
+// Set to 1 to enable detailed logging for checkPointIsInBlackRects (for debugging)
+// Set to 0 to disable (default) for better performance (this function is called frequently)
+#ifndef FASTBOT_LOG_BLACK_RECT_CHECK
+#define FASTBOT_LOG_BLACK_RECT_CHECK 0
+#endif
 
 #endif // UTILS_HPP_
 

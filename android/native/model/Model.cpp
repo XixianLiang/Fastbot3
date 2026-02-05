@@ -9,11 +9,47 @@
 
 #include "Model.h"
 #include "StateFactory.h"
+#include "../Base.h"
 #include "../utils.hpp"
+#include "../thirdpart/json/json.hpp"
+#include <algorithm>
 #include <ctime>
 #include <iostream>
+#include <map>
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+#include <utility>
+#include <sstream>
+
+namespace {
+    /// Convert WidgetKeyMask to human-readable dimension list for logging (e.g. "Clazz|ResourceID|ContentDesc").
+    std::string maskToDimensionString(fastbotx::WidgetKeyMask m) {
+        std::ostringstream os;
+        const char *sep = "";
+        if (m & static_cast<fastbotx::WidgetKeyMask>(fastbotx::WidgetKeyAttr::Clazz)) { os << sep << "Clazz"; sep = "|"; }
+        if (m & static_cast<fastbotx::WidgetKeyMask>(fastbotx::WidgetKeyAttr::ResourceID)) { os << sep << "ResourceID"; sep = "|"; }
+        if (m & static_cast<fastbotx::WidgetKeyMask>(fastbotx::WidgetKeyAttr::OperateMask)) { os << sep << "OperateMask"; sep = "|"; }
+        if (m & static_cast<fastbotx::WidgetKeyMask>(fastbotx::WidgetKeyAttr::ScrollType)) { os << sep << "ScrollType"; sep = "|"; }
+        if (m & static_cast<fastbotx::WidgetKeyMask>(fastbotx::WidgetKeyAttr::Text)) { os << sep << "Text"; sep = "|"; }
+        if (m & static_cast<fastbotx::WidgetKeyMask>(fastbotx::WidgetKeyAttr::ContentDesc)) { os << sep << "ContentDesc"; sep = "|"; }
+        if (m & static_cast<fastbotx::WidgetKeyMask>(fastbotx::WidgetKeyAttr::Index)) { os << sep << "Index"; sep = "|"; }
+        return os.str().empty() ? "(none)" : os.str();
+    }
+}
+#endif
 
 namespace fastbotx {
+
+    WidgetKeyMask Model::getActivityKeyMask(const std::string &activity) const {
+        auto it = _activityKeyMask.find(activity);
+        if (it != _activityKeyMask.end()) {
+            return it->second;
+        }
+        return DefaultWidgetKeyMask;
+    }
+
+    void Model::setActivityKeyMask(const std::string &activity, WidgetKeyMask mask) {
+        _activityKeyMask[activity] = mask;
+    }
 
     /**
      * @brief Log state information with each widget and action on a separate line
@@ -33,11 +69,12 @@ namespace fastbotx {
         // Print state header with hash code
         BDLOG("{state: %lu", static_cast<unsigned long>(state->hash()));
         
-        // Print each widget on a separate line for better readability
+        // Print each widget on a separate line for better readability; skip empty (e.g. toXPath returns "" when details cleared)
         BDLOG("widgets:");
         const auto &widgets = state->getWidgets();
         for (const auto &widget : widgets) {
             std::string widgetStr = widget->toString();
+            if (widgetStr.empty()) continue;
             // If widget string is too long, split it across multiple log lines
             if (widgetStr.length() > 3000) {
                 logLongStringInfo("   " + widgetStr);
@@ -96,6 +133,11 @@ namespace fastbotx {
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        this->_transitionLog.resize(MaxTransitionLogSize);
+        BLOG("state abstraction: enabled (check interval=%d, batch every %d steps)",
+             (int)RefinementCheckInterval, (int)RefinementCheckInterval);
+#endif
     }
 
 
@@ -309,15 +351,32 @@ namespace fastbotx {
         
         // Create state according to the agent's algorithm type
         // The state includes all possible actions based on widgets in the element
-        StatePtr state = StateFactory::createState(agent->getAlgorithmType(), activityPtr, element);
-        
+        std::string activityStr = activityPtr ? *activityPtr : "";
+        WidgetKeyMask mask = getActivityKeyMask(activityStr);
+        StatePtr state = StateFactory::createState(agent->getAlgorithmType(), activityPtr, element, mask);
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        // Update text stats from newly built state (before addState) for accurate "skip Text" check (§22)
+        if (state && !activityStr.empty()) {
+            const auto textMask = static_cast<WidgetKeyMask>(WidgetKeyAttr::Text);
+            ActivityLastStateTextStats &st = _activityLastStateTextStats[activityStr];
+            st.widgetsWithNonEmptyText = state->getWidgetsWithNonEmptyTextCount();
+            st.totalWidgets = state->getWidgets().size();
+            if ((mask & textMask) == 0) {
+                st.uniqueWidgetsIfAddText = state->getUniqueWidgetCountUnderMask(mask | textMask);
+            } else {
+                st.uniqueWidgetsIfAddText = 0;
+            }
+        }
+#endif
+
         // Add state to graph (may return existing state if duplicate)
         // The graph handles deduplication based on state hash
         state = this->_graph->addState(state);
-        
+
         // Mark state as visited with current graph timestamp
         state->visit(this->_graph->getTimestamp());
-        
+
         return state;
     }
 
@@ -472,11 +531,18 @@ namespace fastbotx {
         
         // Step 4: Create state from element and add to graph
         // The graph handles deduplication if a similar state already exists
+        // currentStamp() returns ms; record build-state-only duration for log
+        double buildStateStartTimestamp = currentStamp();
         StatePtr state = createAndAddState(element, agent, activityPtr);
-        
-        // Record state generation time for performance tracking
-        double stateGeneratedTimestamp = currentStamp();
-        
+        double buildStateEndTimestamp = currentStamp();
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        recordTransition(agent, state);
+        recordStateSplitIfRefined(activityPtr ? *activityPtr : "", state);
+        if (state && state->getActivityString() &&
+            state->getMaxWidgetsPerModelAction() > static_cast<size_t>(AlphaMaxGuiActionsPerModelAction)) {
+            _activitiesNeedingAlphaRefinement.insert(activityPtr ? *activityPtr : "");
+        }
+#endif
         // Step 5: Select action (either custom, restart, or from agent)
         double actionCost = 0.0;
         ActionPtr action = selectAction(state, agent, customAction, actionCost);
@@ -489,14 +555,245 @@ namespace fastbotx {
         // Step 6: Convert action to operation object and apply patches
         OperatePtr opt = convertActionToOperate(action, state);
         
-        // Record end time and log performance metrics
+        // Record end time and log performance metrics (currentStamp returns ms, keep ms for log)
         double methodEndTimestamp = currentStamp();
-        BLOG("build state cost: %.3fs action cost: %.3fs total cost %.3fs",
-             stateGeneratedTimestamp - methodStartTimestamp,
-             actionCost,
-             methodEndTimestamp - methodStartTimestamp);
-        
+        double buildStateCostMs = buildStateEndTimestamp - buildStateStartTimestamp;
+        double actionCostMs = actionCost;
+        double totalCostMs = methodEndTimestamp - methodStartTimestamp;
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms dims=[%s]",
+             buildStateCostMs,
+             actionCostMs,
+             totalCostMs,
+             maskToDimensionString(getActivityKeyMask(activity)).c_str());
+#else
+        BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms",
+             buildStateCostMs,
+             actionCostMs,
+             totalCostMs);
+#endif
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        _stepCountSinceLastCheck++;
+        if (_stepCountSinceLastCheck >= RefinementCheckInterval) {
+            runRefinementAndCoarseningIfScheduled();
+            _stepCountSinceLastCheck = 0;
+        }
+#endif
         return opt;
+    }
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    void Model::recordTransition(const AbstractAgentPtr &agent, const StatePtr &targetState) {
+        if (!agent || !targetState) return;
+        StatePtr srcState = agent->getCurrentState();
+        ActivityStateActionPtr act = agent->getCurrentAction();
+        if (!srcState || !act || !act->isModelAct() || !act->requireTarget()) return;
+        TransitionEntry e;
+        e.sourceStateHash = srcState->hash();
+        e.actionHash = act->hash();
+        e.targetStateHash = targetState->hash();
+        {
+            auto actPtr = srcState->getActivityString();
+            e.sourceActivity = (actPtr && actPtr.get()) ? *actPtr : "";
+        }
+        e.valid = true;
+        if (_transitionLog.empty()) return;
+        BDLOG("state abstraction: transition src=%lu act=%lu tgt=%lu activity=%s",
+              (unsigned long)e.sourceStateHash, (unsigned long)e.actionHash, (unsigned long)e.targetStateHash,
+              e.sourceActivity.c_str());
+        _transitionLog[_transitionLogWriteIndex] = std::move(e);
+        _transitionLogWriteIndex = (_transitionLogWriteIndex + 1) % _transitionLog.size();
+    }
+
+    void Model::recordStateSplitIfRefined(const std::string &activity, const StatePtr &state) {
+        if (!state) return;
+        auto it = _activityAbstractionContext.find(activity);
+        if (it == _activityAbstractionContext.end()) return;
+        ActivityAbstractionContext &ctx = it->second;
+        WidgetKeyMask cur = getActivityKeyMask(activity);
+        if (ctx.previousMask == cur) return;  // not refined yet or already coarsened
+        uintptr_t oldHash = state->getHashUnderMask(ctx.previousMask);
+        uintptr_t newHash = state->hash();
+        ctx.oldStateToNewStates[oldHash].insert(newHash);
+        BDLOG("state abstraction: split activity=%s oldHash=%lu newHash=%lu setSize=%zu",
+              activity.c_str(), (unsigned long)oldHash, (unsigned long)newHash,
+              ctx.oldStateToNewStates[oldHash].size());
+    }
+
+    std::vector<std::string> Model::detectNonDeterminism() const {
+        using Key = std::pair<uintptr_t, uintptr_t>;
+        std::map<Key, std::pair<std::unordered_set<uintptr_t>, std::string>> saToTargets;
+        for (const auto &e : _transitionLog) {
+            if (!e.valid) continue;
+            if (e.sourceStateHash == e.targetStateHash) continue;
+            Key k(e.sourceStateHash, e.actionHash);
+            saToTargets[k].first.insert(e.targetStateHash);
+            saToTargets[k].second = e.sourceActivity;
+        }
+        std::set<std::string> activitiesSet;
+        for (const auto &p : saToTargets) {
+            if (p.second.first.size() >= static_cast<size_t>(MinNonDeterminismCount)) {
+                activitiesSet.insert(p.second.second);
+            }
+        }
+        return std::vector<std::string>(activitiesSet.begin(), activitiesSet.end());
+    }
+
+    bool Model::refineActivity(const std::string &activity) {
+        WidgetKeyMask cur = getActivityKeyMask(activity);
+        const auto tMask = static_cast<WidgetKeyMask>(WidgetKeyAttr::Text);
+        const auto cMask = static_cast<WidgetKeyMask>(WidgetKeyAttr::ContentDesc);
+        const auto iMask = static_cast<WidgetKeyMask>(WidgetKeyAttr::Index);
+        WidgetKeyMask newMask = cur;
+        const char *addedAttr = nullptr;
+        if ((cur & cMask) == 0) {
+            newMask = cur | cMask;
+            addedAttr = "ContentDesc";
+        } else if ((cur & iMask) == 0) {
+            newMask = cur | iMask;
+            addedAttr = "Index";
+        } else if ((cur & tMask) == 0) {
+            newMask = cur | tMask;
+            addedAttr = "Text";
+            // Skip adding Text when text-heavy or would explode (see §11.5)
+            auto it = _activityLastStateTextStats.find(activity);
+            if (it != _activityLastStateTextStats.end()) {
+                const ActivityLastStateTextStats &st = it->second;
+                if (st.widgetsWithNonEmptyText > static_cast<size_t>(MaxTextWidgetCount)) {
+                    BDLOG("state abstraction: skip refine activity=%s (+Text) reason=textCount>%d",
+                          activity.c_str(), (int)MaxTextWidgetCount);
+                    return false;
+                }
+                if (st.totalWidgets > 0 &&
+                    st.widgetsWithNonEmptyText * 100 > static_cast<size_t>(MaxTextWidgetRatioPercent) * st.totalWidgets) {
+                    BDLOG("state abstraction: skip refine activity=%s (+Text) reason=textRatio>%d%%",
+                          activity.c_str(), (int)MaxTextWidgetRatioPercent);
+                    return false;
+                }
+                if (st.uniqueWidgetsIfAddText > static_cast<size_t>(MaxUniqueWidgetsAfterText)) {
+                    BDLOG("state abstraction: skip refine activity=%s (+Text) reason=uniqueAfterText>%d",
+                          activity.c_str(), (int)MaxUniqueWidgetsAfterText);
+                    return false;
+                }
+            }
+        } else {
+            BDLOG("state abstraction: skip refine activity=%s reason=already finest mask", activity.c_str());
+            return false;
+        }
+        if (_coarseningBlacklist.count(std::make_pair(activity, newMask)) != 0) {
+            BDLOG("state abstraction: skip refine activity=%s newMask=%u reason=blacklisted", activity.c_str(), (unsigned)newMask);
+            return false;
+        }
+        ActivityAbstractionContext &ctx = _activityAbstractionContext[activity];
+        ctx.previousMask = cur;
+        ctx.stateCountAtLastRefinement = getGraph()->getStateCountByActivity(activity);
+        ctx.oldStateToNewStates.clear();
+        setActivityKeyMask(activity, newMask);
+        BLOG("state abstraction: refine activity=%s mask %u->%u (+%s) stateCount=%zu dims=[%s]->[%s]",
+             activity.c_str(), (unsigned)cur, (unsigned)newMask, addedAttr, ctx.stateCountAtLastRefinement,
+             maskToDimensionString(cur).c_str(), maskToDimensionString(newMask).c_str());
+        return true;
+    }
+
+    void Model::coarsenActivityIfNeeded(const std::string &activity) {
+        auto it = _activityAbstractionContext.find(activity);
+        if (it == _activityAbstractionContext.end()) return;
+        // APE coarsening: if any old state L′ splits into > β new states, roll back
+        for (const auto &p : it->second.oldStateToNewStates) {
+            if (p.second.size() > static_cast<size_t>(BetaMaxSplitCount)) {
+                WidgetKeyMask cur = getActivityKeyMask(activity);
+                WidgetKeyMask prev = it->second.previousMask;
+                setActivityKeyMask(activity, prev);
+                _coarseningBlacklist.insert(std::make_pair(activity, cur));
+                it->second.oldStateToNewStates.clear();
+                it->second.stateCountAtLastRefinement = getGraph()->getStateCountByActivity(activity);
+                BLOG("state abstraction: coarsen activity=%s mask %u->%u (split %zu>%d) dims=[%s]->[%s]",
+                     activity.c_str(), (unsigned)cur, (unsigned)prev, p.second.size(), (int)BetaMaxSplitCount,
+                     maskToDimensionString(cur).c_str(), maskToDimensionString(prev).c_str());
+                return;
+            }
+        }
+        return;
+    }
+
+    void Model::runRefinementAndCoarseningIfScheduled() {
+        if (_stepCountSinceLastCheck < static_cast<size_t>(RefinementCheckInterval)) return;
+        BLOG("state abstraction: batch at step %zu (interval=%d)", _stepCountSinceLastCheck, (int)RefinementCheckInterval);
+        // Coarsen check for activities refined in a previous batch (oldStateToNewStates accumulated over last K steps)
+        for (const auto &kv : _activityAbstractionContext) {
+            const std::string &activity = kv.first;
+            const ActivityAbstractionContext &ctx = kv.second;
+            if (ctx.previousMask != getActivityKeyMask(activity)) {
+                coarsenActivityIfNeeded(activity);
+            }
+        }
+        if (UsePaperRefinementOrder) {
+            // Paper order: (1) ActionRefinement(α) + Coarsening(β), (2) StateRefinement (non-determinism) + Coarsening(β)
+            std::vector<std::string> activitiesAlpha(_activitiesNeedingAlphaRefinement.begin(),
+                                                     _activitiesNeedingAlphaRefinement.end());
+            _activitiesNeedingAlphaRefinement.clear();
+            BLOG("state abstraction: paper order alpha=%zu", activitiesAlpha.size());
+            for (const auto &activity : activitiesAlpha) {
+                if (refineActivity(activity)) {
+                    coarsenActivityIfNeeded(activity);
+                }
+            }
+            std::vector<std::string> activitiesNonDet = detectNonDeterminism();
+            BLOG("state abstraction: paper order nonDet=%zu", activitiesNonDet.size());
+            for (const auto &activity : activitiesNonDet) {
+                if (refineActivity(activity)) {
+                    coarsenActivityIfNeeded(activity);
+                }
+            }
+        } else {
+            // Per-K-step batch: merge α + non-determinism, refine all, then coarsen all refined
+            std::vector<std::string> activitiesToRefine = detectNonDeterminism();
+            size_t nonDetCount = activitiesToRefine.size();
+            size_t alphaCount = _activitiesNeedingAlphaRefinement.size();
+            for (const auto &a : _activitiesNeedingAlphaRefinement) {
+                if (std::find(activitiesToRefine.begin(), activitiesToRefine.end(), a) == activitiesToRefine.end()) {
+                    activitiesToRefine.push_back(a);
+                }
+            }
+            _activitiesNeedingAlphaRefinement.clear();
+            BLOG("state abstraction: batch nonDet=%zu alpha=%zu toRefine=%zu",
+                 nonDetCount, alphaCount, activitiesToRefine.size());
+            std::vector<std::string> activitiesJustRefined;
+            for (const auto &activity : activitiesToRefine) {
+                if (refineActivity(activity)) {
+                    activitiesJustRefined.push_back(activity);
+                }
+            }
+            for (const auto &activity : activitiesJustRefined) {
+                coarsenActivityIfNeeded(activity);
+            }
+            if (!activitiesJustRefined.empty()) {
+                BLOG("state abstraction: batch refined=%zu coarsenChecked=%zu",
+                     activitiesJustRefined.size(), activitiesJustRefined.size());
+            } else {
+                BLOG("state abstraction: batch done refined=0 (all already finest or skipped)");
+            }
+        }
+    }
+#endif
+
+    void Model::reportActivity(const std::string &activity) {
+        if (activity.empty()) return;
+        std::lock_guard<std::mutex> lock(_coverageMutex);
+        _visitedActivities.insert(activity);
+        _coverageStepCount++;
+    }
+
+    std::string Model::getCoverageJson() const {
+        std::lock_guard<std::mutex> lock(_coverageMutex);
+        nlohmann::json j;
+        j["stepsCount"] = _coverageStepCount;
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto &a : _visitedActivities) {
+            arr.push_back(a);
+        }
+        j["testedActivities"] = arr;
+        return j.dump();
     }
 
     /**

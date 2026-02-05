@@ -31,15 +31,19 @@ import android.content.pm.PackageInfo;
 import android.content.pm.PackageManager;
 import android.content.pm.PackageStats;
 import android.content.pm.ResolveInfo;
+import android.util.Base64;
+import android.util.DisplayMetrics;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.hardware.display.DisplayManagerGlobal;
+import android.os.Build;
 import android.os.IBinder;
 import android.os.IPowerManager;
 import android.os.RemoteException;
 import android.os.ServiceManager;
 import android.os.UserHandle;
 import android.provider.MediaStore;
+import android.view.InputEvent;
 import android.view.IWindowManager;
 import android.view.inputmethod.EditorInfo;
 import android.view.inputmethod.InputMethodInfo;
@@ -49,6 +53,7 @@ import com.android.commands.monkey.utils.ContextUtils;
 import com.android.commands.monkey.utils.InputUtils;
 import com.android.commands.monkey.utils.Logger;
 import com.android.commands.monkey.utils.Utils;
+import com.android.commands.monkey.utils.AndroidVersions;
 import com.android.internal.statusbar.IStatusBarService;
 import com.android.internal.view.IInputMethodManager;
 
@@ -61,9 +66,11 @@ import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
 import java.util.Set;
+import java.lang.reflect.Method;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
+import static com.android.commands.monkey.utils.Config.bytestStatusBarHeight;
 import static com.android.commands.monkey.utils.Config.clearPackage;
 import static com.android.commands.monkey.utils.Config.enableStopPackage;
 import static com.android.commands.monkey.utils.Config.grantAllPermission;
@@ -98,53 +105,93 @@ public class AndroidDevice {
     private static Set<String> blacklistPermissions = new HashSet<String>();
     /**
      * https://github.com/senzhk/ADBKeyBoard
+     * ADB_INPUT_TEXT may not pass UTF-8 correctly via adb shell on Oreo/P;
+     * ADB_INPUT_B64 sends Base64(UTF-8(text)) for reliable Chinese/emoji input.
      */
     private static String IME_MESSAGE = "ADB_INPUT_TEXT";
+    private static String IME_MESSAGE_B64 = "ADB_INPUT_B64";
     private static String IME_CHARS = "ADB_INPUT_CHARS";
     private static String IME_KEYCODE = "ADB_INPUT_CODE";
     private static String IME_EDITORCODE = "ADB_EDITOR_CODE";
     private static String IME_ADB_KEYBOARD;
+
+    /** Default path on device for ADBKeyBoard APK when using auto-install (e.g. push via activate_fastbot.sh). */
+    private static final String ADBKEYBOARD_APK_PATH = "/data/local/tmp/ADBKeyBoard.apk";
 
     public static void initializeAndroidDevice(IActivityManager mAm, IWindowManager mWm, IPackageManager mPm, String keyboard) {
         iActivityManager = mAm;
         iWindowManager = mWm;
         iPackageManager = mPm;
         IME_ADB_KEYBOARD = keyboard;
-
-        inputMethodManager = (InputMethodManager) ContextUtils.getSystemContext().getSystemService(Context.INPUT_METHOD_SERVICE);
         packageManager = ContextUtils.getSystemContext().getPackageManager();
-        iDevicePolicyManager = IDevicePolicyManager.Stub.asInterface(ServiceManager.getService("device_policy"));
+        // Performance: non-startup services (IStatusBarService, IInputMethodManager, etc.) are lazy-loaded (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §5).
+    }
+
+    /** Lazy-loaded; use this instead of direct field access. */
+    public static IDevicePolicyManager getIDevicePolicyManager() {
         if (iDevicePolicyManager == null) {
-            System.err.println("** Error: Unable to connect to deveice policy manager; is the system " + "running?");
+            iDevicePolicyManager = IDevicePolicyManager.Stub.asInterface(ServiceManager.getService("device_policy"));
+            if (iDevicePolicyManager == null) {
+                System.err.println("** Error: Unable to connect to device policy manager; is the system running?");
+            }
         }
+        return iDevicePolicyManager;
+    }
 
-        iStatusBarService = IStatusBarService.Stub.asInterface(ServiceManager.getService("statusbar"));
+    /** Lazy-loaded; use this instead of direct field access. */
+    public static IStatusBarService getIStatusBarService() {
         if (iStatusBarService == null) {
-            System.err.println("** Error: Unable to connect to status bar service; is the system " + "running?");
+            iStatusBarService = IStatusBarService.Stub.asInterface(ServiceManager.getService("statusbar"));
+            if (iStatusBarService == null) {
+                System.err.println("** Error: Unable to connect to status bar service; is the system running?");
+            }
         }
+        return iStatusBarService;
+    }
 
-        iInputMethodManager = IInputMethodManager.Stub.asInterface(ServiceManager.getService("input_method"));
+    /** Lazy-loaded; use this instead of direct field access. */
+    public static IInputMethodManager getIInputMethodManager() {
         if (iInputMethodManager == null) {
-            System.err.println(
-                    "** Error: Unable to connect to input method manager service; is the system " + "running?");
+            iInputMethodManager = IInputMethodManager.Stub.asInterface(ServiceManager.getService("input_method"));
+            if (iInputMethodManager == null) {
+                System.err.println("** Error: Unable to connect to input method manager service; is the system running?");
+            }
         }
+        return iInputMethodManager;
+    }
 
-        AndroidDevice.useADBKeyboard = enableADBKeyboard();
+    /** Lazy-loaded; use this instead of direct field access. Sets useADBKeyboard on first call. */
+    public static InputMethodManager getInputMethodManager() {
+        if (inputMethodManager == null) {
+            inputMethodManager = (InputMethodManager) ContextUtils.getSystemContext().getSystemService(Context.INPUT_METHOD_SERVICE);
+            useADBKeyboard = enableADBKeyboard();
+        }
+        return inputMethodManager;
+    }
 
-        iPowerManager = IPowerManager.Stub.asInterface(ServiceManager.getService("power"));
+    /** Lazy-loaded; use this instead of direct field access. */
+    public static IPowerManager getIPowerManager() {
         if (iPowerManager == null) {
-            System.err.println("** Error: Unable to connect to power manager service; is the system " + "running?");
+            iPowerManager = IPowerManager.Stub.asInterface(ServiceManager.getService("power"));
+            if (iPowerManager == null) {
+                System.err.println("** Error: Unable to connect to power manager service; is the system running?");
+            }
         }
+        return iPowerManager;
     }
 
     /**
-     * Try to get all enabled keyboards, and find ADBKeyboard
-     * @return If ADBKeyboard IME exists and enabled, return true, false otherwise.
+     * Try to get all enabled keyboards, and find ADBKeyboard. If ADBKeyBoard is not installed, tries
+     * to install from {@link #ADBKEYBOARD_APK_PATH} (pm install -r). If installed but not enabled,
+     * tries "ime enable &lt;id&gt;". Requires shell permission (e.g. when monkey runs via adb shell).
+     *
+     * @return If ADBKeyboard IME exists and is enabled (or was auto-installed/enabled), return true.
      */
     private static boolean enableADBKeyboard() {
-        List<InputMethodInfo> inputMethods = AndroidDevice.inputMethodManager.getEnabledInputMethodList();
-        if (inputMethods != null) {
-            for (InputMethodInfo imi : inputMethods) {
+        InputMethodManager imm = getInputMethodManager();
+        List<InputMethodInfo> enabled = imm.getEnabledInputMethodList();
+        if (enabled != null) {
+            for (InputMethodInfo imi : enabled) {
                 Logger.println("InputMethod ID: " + imi.getId());
                 if (IME_ADB_KEYBOARD.equals(imi.getId())) {
                     Logger.println("Find Keyboard: " + IME_ADB_KEYBOARD);
@@ -152,19 +199,287 @@ public class AndroidDevice {
                 }
             }
         }
+        List<InputMethodInfo> all = imm.getInputMethodList();
+        boolean installed = false;
+        if (all != null) {
+            for (InputMethodInfo imi : all) {
+                if (IME_ADB_KEYBOARD.equals(imi.getId())) {
+                    installed = true;
+                    break;
+                }
+            }
+        }
+        if (!installed) {
+            Logger.println("ADBKeyBoard not installed, trying: pm install -r " + ADBKEYBOARD_APK_PATH);
+            try {
+                int ret = executeCommandAndWaitFor(new String[]{"pm", "install", "-r", ADBKEYBOARD_APK_PATH});
+                if (ret == 0) {
+                    all = imm.getInputMethodList();
+                    if (all != null) {
+                        for (InputMethodInfo imi : all) {
+                            if (IME_ADB_KEYBOARD.equals(imi.getId())) {
+                                installed = true;
+                                Logger.println("ADBKeyBoard auto-installed successfully.");
+                                break;
+                            }
+                        }
+                    }
+                }
+            } catch (Exception e) {
+                Logger.warningPrintln("Auto-install ADBKeyBoard failed: " + e.getMessage());
+            }
+            if (!installed) {
+                return false;
+            }
+        }
+        // Installed but not enabled: try ime enable
+        Logger.println("ADBKeyBoard installed but not enabled, trying: ime enable " + IME_ADB_KEYBOARD);
+        try {
+            int ret = executeCommandAndWaitFor(new String[]{"ime", "enable", IME_ADB_KEYBOARD});
+            if (ret == 0) {
+                List<InputMethodInfo> enabledAfter = imm.getEnabledInputMethodList();
+                if (enabledAfter != null) {
+                    for (InputMethodInfo imi2 : enabledAfter) {
+                        if (IME_ADB_KEYBOARD.equals(imi2.getId())) {
+                            Logger.println("ADBKeyBoard auto-enabled successfully.");
+                            return true;
+                        }
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Logger.warningPrintln("Auto-enable ADBKeyBoard failed: " + e.getMessage());
+        }
         return false;
     }
 
+    // Performance: cache display bounds to avoid Binder + allocation on every call (PERFORMANCE_OPTIMIZATION_ITEMS §2.1).
+    private static final Rect sDisplayBoundsCache = new Rect();
+    private static final Point sDisplaySizeCache = new Point();
+    private static boolean sDisplayBoundsCached = false;
+
+    /** Returns cached display bounds for default display; callers must not mutate. Refreshed on first call. */
     public static Rect getDisplayBounds() {
-        android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(android.view.Display.DEFAULT_DISPLAY);
+        return getDisplayBounds(DEFAULT_DISPLAY_ID);
+    }
+
+    /**
+     * Returns display bounds for the given display (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1).
+     * For default display (0) uses cache; for other displays queries DisplayManagerGlobal each time.
+     * Callers must not mutate the returned Rect.
+     */
+    public static Rect getDisplayBounds(int displayId) {
+        if (displayId == DEFAULT_DISPLAY_ID) {
+            if (sDisplayBoundsCached) {
+                return sDisplayBoundsCache;
+            }
+            android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(android.view.Display.DEFAULT_DISPLAY);
+            display.getSize(sDisplaySizeCache);
+            sDisplayBoundsCache.set(0, 0, sDisplaySizeCache.x, sDisplaySizeCache.y);
+            sDisplayBoundsCached = true;
+            return sDisplayBoundsCache;
+        }
+        try {
+            android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(displayId);
+            if (display != null) {
+                Point size = new Point();
+                display.getSize(size);
+                Rect out = new Rect(0, 0, size.x, size.y);
+                return out;
+            }
+        } catch (Exception e) {
+            Logger.warningPrintln("getDisplayBounds(displayId=" + displayId + ") failed: " + e.getMessage());
+        }
+        return getDisplayBounds(DEFAULT_DISPLAY_ID);
+    }
+
+    /** Invalidate display bounds cache (e.g. after rotation). */
+    public static void invalidateDisplayBoundsCache() {
+        sDisplayBoundsCached = false;
+    }
+
+    /**
+     * Maps a point from source coordinate space to target display bounds (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1).
+     * Like scrcpy PositionMapper: when coordinates come from another resolution/rotation (e.g. remote view),
+     * scale and clamp so (x,y) corresponds to the device display space. Returns mapped point; null if source is empty.
+     */
+    public static Point mapPointToDisplay(float x, float y, int sourceWidth, int sourceHeight, Rect targetBounds) {
+        if (sourceWidth <= 0 || sourceHeight <= 0 || targetBounds == null) {
+            return null;
+        }
+        int tw = targetBounds.width();
+        int th = targetBounds.height();
+        if (tw <= 0 || th <= 0) {
+            return null;
+        }
+        float scaleX = (float) tw / sourceWidth;
+        float scaleY = (float) th / sourceHeight;
+        int mx = (int) (x * scaleX);
+        int my = (int) (y * scaleY);
+        mx = Math.max(targetBounds.left, Math.min(targetBounds.right - 1, mx));
+        my = Math.max(targetBounds.top, Math.min(targetBounds.bottom - 1, my));
+        return new Point(mx, my);
+    }
+
+    // Performance: cache status bar / bottom bar heights; invalidate on rotation (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §4).
+    private static int sStatusBarHeight;
+    private static int sBottomBarHeight;
+    private static boolean sDisplayBarHeightsCached = false;
+
+    /** Returns cached status bar height; refreshed on first call or after invalidateDisplayBarHeights(). */
+    public static int getStatusBarHeight() {
+        if (!sDisplayBarHeightsCached) {
+            refreshDisplayBarHeights();
+        }
+        return sStatusBarHeight;
+    }
+
+    /** Returns cached bottom bar Y (display height - status bar height); refreshed on first call or after invalidateDisplayBarHeights(). */
+    public static int getBottomBarHeight() {
+        if (!sDisplayBarHeightsCached) {
+            refreshDisplayBarHeights();
+        }
+        return sBottomBarHeight;
+    }
+
+    private static void refreshDisplayBarHeights() {
+        android.view.Display display = DisplayManagerGlobal.getInstance().getRealDisplay(0);
         Point size = new Point();
         display.getSize(size);
-        Rect bounds = new Rect();
-        bounds.top = 0;
-        bounds.left = 0;
-        bounds.right = size.x;
-        bounds.bottom = size.y;
-        return bounds;
+        int w = size.x;
+        int h = size.y;
+        sStatusBarHeight = bytestStatusBarHeight;
+        if (sStatusBarHeight == 0) {
+            DisplayMetrics dm = ContextUtils.getSystemContext().getResources().getDisplayMetrics();
+            if (w == 1080 && h > 2100) {
+                sStatusBarHeight = (int) (40f * dm.density);
+            } else if (w == 1200 && h == 1824) {
+                sStatusBarHeight = (int) (30f * dm.density);
+            } else if (w == 1440 && h == 2696) {
+                sStatusBarHeight = (int) (30f * dm.density);
+            } else {
+                sStatusBarHeight = (int) (24f * dm.density);
+            }
+            sStatusBarHeight += 15;
+        }
+        sBottomBarHeight = h - sStatusBarHeight;
+        sDisplayBarHeightsCached = true;
+    }
+
+    /** Invalidate display bar heights cache (e.g. after rotation). */
+    public static void invalidateDisplayBarHeights() {
+        sDisplayBarHeightsCached = false;
+    }
+
+    /** Default display id (primary display). Multi-display: use setInputEventDisplayId when displayId != 0 (API 29+). */
+    public static final int DEFAULT_DISPLAY_ID = 0;
+
+    /** Cached focused display id from top task; invalidate on demand. */
+    private static int sFocusedDisplayIdCache = DEFAULT_DISPLAY_ID;
+    private static boolean sFocusedDisplayIdCached = false;
+
+    /**
+     * Returns the display id of the top/focused task (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §三.1).
+     * Used so touch/key events are injected to the correct display in multi-display.
+     * Uses RunningTaskInfo.displayId (API 24+) via reflection; falls back to DEFAULT_DISPLAY_ID.
+     */
+    public static int getFocusedDisplayId() {
+        if (sFocusedDisplayIdCached) {
+            return sFocusedDisplayIdCache;
+        }
+        try {
+            List<RunningTaskInfo> taskInfo = APIAdapter.getTasks(AndroidDevice.iActivityManager, Integer.MAX_VALUE);
+            if (taskInfo != null && !taskInfo.isEmpty()) {
+                RunningTaskInfo task = taskInfo.get(0);
+                for (Class<?> c = task.getClass(); c != null; c = c.getSuperclass()) {
+                    try {
+                        java.lang.reflect.Field field = c.getDeclaredField("displayId");
+                        field.setAccessible(true);
+                        int displayId = field.getInt(task);
+                        if (displayId >= 0) {
+                            sFocusedDisplayIdCache = displayId;
+                        }
+                        break;
+                    } catch (NoSuchFieldException e) {
+                        // try superclass (e.g. TaskInfo)
+                    }
+                }
+            }
+        } catch (Exception e) {
+            Logger.warningPrintln("getFocusedDisplayId failed: " + e.getMessage());
+        }
+        sFocusedDisplayIdCached = true;
+        Logger.println("displayId=" + sFocusedDisplayIdCache);
+        return sFocusedDisplayIdCache;
+    }
+
+    /** Invalidate focused display id cache (e.g. after activity/display change). */
+    public static void invalidateFocusedDisplayIdCache() {
+        sFocusedDisplayIdCached = false;
+    }
+
+    /**
+     * Whether input events are supported for the given display (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.1).
+     * Primary display (0) always; secondary displays only on API 29+.
+     */
+    public static boolean supportsInputEvents(int displayId) {
+        return displayId == DEFAULT_DISPLAY_ID || Build.VERSION.SDK_INT >= AndroidVersions.API_29_ANDROID_10;
+    }
+
+    /**
+     * Set display id on input event for multi-display (API 29+). No-op for primary (0).
+     * Returns false if displayId != 0 and SDK &lt; 29 or reflection fails.
+     */
+    public static boolean setInputEventDisplayId(InputEvent event, int displayId) {
+        if (event == null || displayId == DEFAULT_DISPLAY_ID) {
+            return true;
+        }
+        if (Build.VERSION.SDK_INT < AndroidVersions.API_29_ANDROID_10 || !supportsInputEvents(displayId)) {
+            return false;
+        }
+        try {
+            Method setDisplayId = event.getClass().getMethod("setDisplayId", int.class);
+            setDisplayId.invoke(event, displayId);
+            return true;
+        } catch (Exception e) {
+            Logger.warningPrintln("setInputEventDisplayId failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Whether the given display is interactive (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.3).
+     * API 34+ uses isDisplayInteractive(displayId); otherwise isInteractive().
+     */
+    public static boolean isDisplayInteractive(int displayId) {
+        IPowerManager pm = getIPowerManager();
+        if (pm == null) {
+            return false;
+        }
+        if (Build.VERSION.SDK_INT >= AndroidVersions.API_34_ANDROID_14) {
+            try {
+                Method m = pm.getClass().getMethod("isDisplayInteractive", int.class);
+                Object r = m.invoke(pm, displayId);
+                return Boolean.TRUE.equals(r);
+            } catch (Exception e) {
+                Logger.warningPrintln("isDisplayInteractive(displayId) failed, fallback to isInteractive: " + e.getMessage());
+            }
+        }
+        try {
+            return pm.isInteractive();
+        } catch (RemoteException e) {
+            Logger.warningPrintln("isInteractive() failed: " + e.getMessage());
+            return false;
+        }
+    }
+
+    /**
+     * Placeholder for display power on/off (SCRCPY_VS_FASTBOT_OPTIMIZATION_ANALYSIS §二.4).
+     * Full implementation would use SurfaceControl/setDisplayPowerMode per API and vendor.
+     */
+    public static boolean setDisplayPower(int displayId, boolean on) {
+        Logger.println("setDisplayPower(displayId=" + displayId + ", on=" + on + ") not implemented; use 'input keyevent 26' to wake.");
+        return false;
     }
 
     public static ComponentName getTopActivityComponentName() {
@@ -189,41 +504,35 @@ public class AndroidDevice {
         return null;
     }
 
+    /**
+     * Best-effort check: whether the soft keyboard (IME) is currently visible.
+     * Uses only InputMethodManager.getInputMethodWindowVisibleHeight() to avoid
+     * dumpsys format differences across Android versions and OEMs.
+     * When the process has no IME client (e.g. monkey run as app_process), this
+     * throws on the server side and we return false.
+     * <p>
+     * There is no other reliable cross-process API: getInputMethodWindowVisibleHeight
+     * requires an IME client; dumpsys output format varies by OS/OEM. Prefer
+     * {@code action.isEditText()} from the model (GUI tree / native) when available—
+     * that is the only stable signal for "focus is on an input field" from monkey.
+     */
     public static boolean isVirtualKeyboardOpened() {
         try {
-            String[] cmd = {
-                    "/bin/sh",
-                    "-c",
-                    "dumpsys input_method | grep mInputShown"
-            };
-            Process process =  Runtime.getRuntime().exec(cmd);
-            BufferedReader stdInput = new BufferedReader(new
-                    InputStreamReader(process.getInputStream()));
-            String s;
-            Pattern pattern = Pattern.compile("minputshown=true", Pattern.CASE_INSENSITIVE);
-            while ((s = stdInput.readLine()) != null) {
-                Logger.println(s = s.toLowerCase(Locale.ENGLISH));
-                Matcher matcher = pattern.matcher(s);
-                boolean matchFound = matcher.find();
-                if(matchFound) {
-                    Logger.println("mInputShown found.");
-                    return true;
-                }
-            }
-        }catch (IOException ioException){
-            Logger.errorPrintln("adb executing \"dumpsys input_method | grep mInputShown\" wrong!");
+            int height = getInputMethodManager().getInputMethodWindowVisibleHeight();
+            return height != 0;
+        } catch (IllegalArgumentException e) {
+            // No IME client (e.g. app_process): server throws "unknown client".
+            Logger.warningPrintln("getInputMethodWindowVisibleHeight failed (no IME client): " + e.getMessage());
+            return false;
         }
-        Logger.println("mInputShown not found, getInputMethodWindowVisibleHeight is used.");
-        int height = AndroidDevice.inputMethodManager.getInputMethodWindowVisibleHeight();
-        return height != 0;
     }
 
     public static void checkInteractive() {
         try {
-            if (!iPowerManager.isInteractive()) {
+            if (!isDisplayInteractive(DEFAULT_DISPLAY_ID)) {
                 Logger.format("Power Manager says we are NOT interactive");
                 int ret = Runtime.getRuntime().exec(new String[]{"input", "keyevent", "26"}).waitFor();
-                Logger.format("Wakeup ret code %d %s", ret, (iPowerManager.isInteractive() ? "Interactive" : "Not interactive"));
+                Logger.format("Wakeup ret code %d %s", ret, (isDisplayInteractive(DEFAULT_DISPLAY_ID) ? "Interactive" : "Not interactive"));
             } else {
                 Logger.format("Power Manager says we are interactive");
             }
@@ -459,7 +768,7 @@ public class AndroidDevice {
 
     public static boolean switchToLastInputMethod() {
         try {
-            iInputMethodManager.switchToLastInputMethod(null);
+            getIInputMethodManager().switchToLastInputMethod(null);
             return true;
         } catch (RemoteException e) {
             Logger.warningPrintln("Fail to switch to last input method");
@@ -527,9 +836,22 @@ public class AndroidDevice {
         sendIMEIntent(intent);
     }
 
+    /** Package part of {@link #IME_ADB_KEYBOARD} (e.g. com.android.adbkeyboard) for explicit broadcast. */
+    private static String getImePackage() {
+        if (IME_ADB_KEYBOARD == null) {
+            return null;
+        }
+        int slash = IME_ADB_KEYBOARD.indexOf('/');
+        return slash > 0 ? IME_ADB_KEYBOARD.substring(0, slash) : null;
+    }
+
     public static boolean sendIMEIntent(Intent intent) {
         try {
             if (checkAndSetInputMethod()) {
+                String pkg = getImePackage();
+                if (pkg != null) {
+                    intent.setPackage(pkg);
+                }
                 return broadcastIntent(intent);
             }
             return false;
@@ -596,12 +918,53 @@ public class AndroidDevice {
         return ret;
     }
 
+    /**
+     * Send text via ADBKeyBoard IME. Uses ADB_INPUT_B64 for any non-ASCII character
+     * (Chinese, emoji, etc.) so that Unicode is reliably delivered; uses ADB_INPUT_TEXT
+     * for pure ASCII. Requires ADBKeyBoard (senzhk/ADBKeyBoard) to be installed and
+     * <b>enabled</b> in Settings → Languages & input → Keyboards (or: adb shell ime enable
+     * com.android.adbkeyboard/.AdbIME). If not enabled, returns false.
+     */
     public static boolean sendText(String text) {
+        if (text == null) {
+            return false;
+        }
+        if (containsNonAscii(text)) {
+            return sendTextViaB64(text);
+        }
         Intent intent = new Intent();
         intent.setAction(IME_MESSAGE);
         intent.putExtra("msg", text);
         return sendIMEIntent(intent);
-        // sendIMEActionGo();
+    }
+
+    private static boolean containsNonAscii(CharSequence text) {
+        for (int i = 0; i < text.length(); i++) {
+            if (text.charAt(i) > 127) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /**
+     * Send text via ADBKeyBoard ADB_INPUT_B64 (Base64-encoded UTF-8). Use this for
+     * Chinese, emoji, and any Unicode when ADB_INPUT_TEXT might not preserve encoding.
+     */
+    public static boolean sendTextViaB64(String text) {
+        if (text == null) {
+            return false;
+        }
+        try {
+            byte[] utf8 = text.getBytes("UTF-8");
+            String b64 = Base64.encodeToString(utf8, Base64.NO_WRAP);
+            Intent intent = new Intent();
+            intent.setAction(IME_MESSAGE_B64);
+            intent.putExtra("msg", b64);
+            return sendIMEIntent(intent);
+        } catch (java.io.UnsupportedEncodingException e) {
+            return false;
+        }
     }
 
     /**

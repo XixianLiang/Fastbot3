@@ -126,13 +126,13 @@ public class MonkeyPermissionUtil {
                     continue;
                 }
                 List<PermissionInfo> permissions = new ArrayList<>();
-                if (info.applicationInfo.targetSdkVersion <= Build.VERSION_CODES.LOLLIPOP_MR1) {
+                if (info.applicationInfo.targetSdkVersion <= AndroidVersions.API_22_ANDROID_5_1) {
                     // skip apps targetting lower API level
                     continue;
                 }
 
-                if (Build.VERSION.SDK_INT >= 30) {
-                    // skip apps targetting high API level
+                if (Build.VERSION.SDK_INT >= AndroidVersions.API_30_ANDROID_11) {
+                    // skip permission targeting when device is API 30+ (high API level device)
                     continue;
                 }
                 if (info.requestedPermissions == null) {

@@ -17,6 +17,7 @@ import org.json.JSONException;
 import org.json.JSONObject;
 
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 
 /**
@@ -51,11 +52,17 @@ public class PinchOrZoomEvent extends AbstractCustomEvent {
         return new PinchOrZoomEvent(values);
     }
 
+    /** Minimum points: 1 DOWN + 2 POINTER_DOWN + 2 POINTER_UP + 1 UP = 6. */
+    private static final int MIN_POINTS = 6;
+
     @Override
     public List<MonkeyEvent> generateMonkeyEvents() {
         int index = 0;
         PointF[] points = toPointsArray(values);
         int size = points.length;
+        if (size < MIN_POINTS) {
+            return Collections.emptyList();
+        }
         long downAt = SystemClock.uptimeMillis();
         List<MonkeyEvent> events = new ArrayList<MonkeyEvent>(size);
         PointF p = points[index++];

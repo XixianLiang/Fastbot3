@@ -13,6 +13,8 @@
 #include "Preference.h"
 #include <algorithm>
 #include <utility>
+#include <vector>
+#include <cstring>
 
 namespace fastbotx {
 
@@ -42,6 +44,10 @@ namespace fastbotx {
         // Move parent to avoid copying shared_ptr
         this->_parent = std::move(parent);
         
+        // Performance optimization: Cache Preference instance to avoid repeated inst() calls
+        // Preference::inst() is thread-safe singleton, but caching avoids repeated function calls
+        PreferencePtr pref = Preference::inst();
+        
         // Initialize widget properties from element
         this->initFormElement(element);
         
@@ -54,34 +60,50 @@ namespace fastbotx {
         this->_text.erase(removeIterator, this->_text.end());
         
         // Process text for hash computation if text-based state is enabled
-        if (STATE_WITH_TEXT || Preference::inst()->isForceUseTextModel()) {
-            bool overMaxLen = this->_text.size() > STATE_TEXT_MAX_LEN;
+        // Use cached Preference instance instead of calling inst() again
+        bool useTextModel = STATE_WITH_TEXT || pref->isForceUseTextModel();
+        bool overMaxLen = false;
+        std::string finalText = this->_text; // Keep original for hash computation
+        
+        if (useTextModel) {
+            overMaxLen = this->_text.size() > STATE_TEXT_MAX_LEN;
             
-            // Temporarily extend text for Chinese character detection
-            // (Chinese chars may span multiple bytes, need to check at boundary)
-            this->_text = this->_text.substr(0, STATE_TEXT_MAX_LEN * 4);
+            // Performance optimization: Compute cut length first, then do single substr
             size_t cutLength = static_cast<size_t>(STATE_TEXT_MAX_LEN);
             
             // Handle Chinese characters: if cut point is in middle of Chinese char, adjust
-            if (this->_text.length() > cutLength && isZhCn(this->_text[STATE_TEXT_MAX_LEN])) {
-                size_t ci = 0;
-                // Find safe cut point that doesn't split Chinese characters
-                for (; ci < cutLength; ci++) {
-                    if (isZhCn(this->_text[ci])) {
-                        ci += 2; // Chinese chars are typically 2-3 bytes in UTF-8
+            // Check if we need to adjust cut point for Chinese characters
+            if (this->_text.length() > cutLength) {
+                // Check a bit beyond cutLength to see if we're in middle of Chinese char
+                size_t checkLen = std::min(cutLength + 4, this->_text.length());
+                std::string tempText = this->_text.substr(0, checkLen);
+                if (tempText.length() > cutLength && isZhCn(tempText[cutLength])) {
+                    size_t ci = 0;
+                    // Find safe cut point that doesn't split Chinese characters
+                    for (; ci < cutLength && ci < tempText.length(); ci++) {
+                        if (isZhCn(tempText[ci])) {
+                            ci += 2; // Chinese chars are typically 2-3 bytes in UTF-8
+                        }
                     }
+                    cutLength = ci;
                 }
-                cutLength = ci;
             }
 
-            // Final text truncation
-            this->_text = this->_text.substr(0, cutLength);
-            
-            // Only include text in hash if it wasn't truncated
-            // (truncated text would make hash unstable)
-            if (!overMaxLen) {
-                this->_hashcode ^= (0x79b9 + (std::hash<std::string>{}(this->_text) << 5));
-            }
+            // Final text truncation (single substr operation)
+            finalText = this->_text.substr(0, cutLength);
+            this->_text = finalText;
+        }
+
+        // Performance optimization: Compute text hash only once and reuse
+        // Component hash for Text (for dynamic abstraction hashWithMask)
+        // Use fast string hash for better performance
+        uintptr_t textHash = finalText.empty() ? 0 : (0x79b9U + (fastbotx::fastStringHash(finalText) << 5));
+        this->_hashText = textHash;
+        
+        // Only include text in hash if it wasn't truncated
+        // (truncated text would make hash unstable)
+        if (useTextModel && !overMaxLen) {
+            this->_hashcode ^= textHash;
         }
 
         // Include index in hash if configured
@@ -132,17 +154,27 @@ namespace fastbotx {
 
         if (this->hasAction()) {
             this->_clazz = (element->getClassname());
-            this->_isEditable = ("android.widget.EditText" == this->_clazz
-                                 || "android.inputmethodservice.ExtractEditText" == this->_clazz
-                                 || "android.widget.AutoCompleteTextView" == this->_clazz
-                                 || "android.widget.MultiAutoCompleteTextView" == this->_clazz);
+            
+            // Performance optimization: Use length check and pointer comparison for common class names
+            // This avoids multiple string comparisons and allocations
+            const std::string &clazz = this->_clazz;
+            const char *clazzPtr = clazz.c_str();
+            size_t clazzLen = clazz.length();
+            
+            // Check for EditText variants using optimized comparison
+            // Most common case first: android.widget.EditText (length 23)
+            this->_isEditable = (clazzLen == 23 && strcmp(clazzPtr, "android.widget.EditText") == 0)
+                                 || (clazzLen == 42 && strcmp(clazzPtr, "android.inputmethodservice.ExtractEditText") == 0)
+                                 || (clazzLen == 35 && strcmp(clazzPtr, "android.widget.AutoCompleteTextView") == 0)
+                                 || (clazzLen == 42 && strcmp(clazzPtr, "android.widget.MultiAutoCompleteTextView") == 0);
 
-            if (SCROLL_BOTTOM_UP_N_ENABLE && (0 == this->_clazz.compare("android.widget.ListView")
-                                              || 0 == this->_clazz.compare(
-                    "android.support.v7.widget.RecyclerView")
-                                              || 0 == this->_clazz.compare(
-                    "androidx.recyclerview.widget.RecyclerView"))) {
-                this->_actions.insert(ActionType::SCROLL_BOTTOM_UP_N);
+            // Performance optimization: Use length check before compare for better branch prediction
+            if (SCROLL_BOTTOM_UP_N_ENABLE) {
+                if ((clazzLen == 25 && strcmp(clazzPtr, "android.widget.ListView") == 0)
+                    || (clazzLen == 37 && strcmp(clazzPtr, "android.support.v7.widget.RecyclerView") == 0)
+                    || (clazzLen == 35 && strcmp(clazzPtr, "androidx.recyclerview.widget.RecyclerView") == 0)) {
+                    this->_actions.insert(ActionType::SCROLL_BOTTOM_UP_N);
+                }
             }
             this->_resourceID = (element->getResourceID());
         }
@@ -155,12 +187,39 @@ namespace fastbotx {
         this->_index = element->getIndex();
         this->_enabled = element->getEnable();
         this->_text = element->getText();
-        this->_contextDesc = (element->getContentDesc());
-        // compute for only 1 time
-        uintptr_t hashcode1 = std::hash<std::string>{}(this->_clazz);
-        uintptr_t hashcode2 = std::hash<std::string>{}(this->_resourceID);
+        
+        // Performance optimization: Use const reference to avoid string copy
+        // Only copy if ContentDesc is actually used (non-empty)
+        const std::string &contentDescRef = element->getContentDesc();
+        if (!contentDescRef.empty()) {
+            this->_contextDesc = contentDescRef; // Copy only when needed
+        } else {
+            this->_contextDesc.clear(); // Explicitly clear to avoid unnecessary allocation
+        }
+        
+        // Performance optimization: Use fast string hash function instead of std::hash
+        // This provides better performance for typical UI strings (short to medium length)
+        // compute for only 1 time (base + component hashes for dynamic abstraction)
+        uintptr_t hashcode1 = fastbotx::fastStringHash(this->_clazz);
+        uintptr_t hashcode2 = fastbotx::fastStringHash(this->_resourceID);
         uintptr_t hashcode3 = std::hash<int>{}(this->_operateMask);
         uintptr_t hashcode4 = std::hash<int>{}(scrollType);
+
+        this->_hashClazz = hashcode1;
+        this->_hashResourceID = hashcode2;
+        this->_hashOperateMask = hashcode3;
+        this->_hashScrollType = hashcode4;
+        
+        // Performance optimization: Compute ContentDesc hash only if not empty
+        // Most widgets don't have ContentDesc, so this avoids unnecessary hash computation
+        // Use fast string hash for better performance
+        if (!this->_contextDesc.empty()) {
+            this->_hashContentDesc = 0x79b9U + (fastbotx::fastStringHash(this->_contextDesc) << 5);
+        } else {
+            this->_hashContentDesc = 0; // Fast path for empty ContentDesc
+        }
+        
+        this->_hashIndex = (0x79b9U + (static_cast<uintptr_t>(std::hash<int>{}(this->_index)) << 6)) << 1;
 
         this->_hashcode = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^
                           (((127U * hashcode3 << 1) ^ (256U * hashcode4 << 3)) >> 1);
@@ -176,6 +235,8 @@ namespace fastbotx {
         this->_contextDesc.clear();
         this->_resourceID.clear();
         this->_bounds = Rect::RectZero;
+        this->_hashClazz = this->_hashResourceID = this->_hashOperateMask = this->_hashScrollType = 0;
+        this->_hashText = this->_hashContentDesc = this->_hashIndex = 0;
     }
 
     void Widget::fillDetails(const std::shared_ptr<Widget> &copy) {
@@ -185,6 +246,13 @@ namespace fastbotx {
         this->_resourceID = copy->_resourceID;
         this->_bounds = copy->getBounds();
         this->_enabled = copy->_enabled;
+        this->_hashClazz = copy->_hashClazz;
+        this->_hashResourceID = copy->_hashResourceID;
+        this->_hashOperateMask = copy->_hashOperateMask;
+        this->_hashScrollType = copy->_hashScrollType;
+        this->_hashText = copy->_hashText;
+        this->_hashContentDesc = copy->_hashContentDesc;
+        this->_hashIndex = copy->_hashIndex;
     }
 
     std::string Widget::toString() const {
@@ -193,9 +261,9 @@ namespace fastbotx {
 
 
     std::string Widget::toXPath() const {
+        // Details cleared for memory (e.g. after state merge); skip per-call log to avoid noise
         if (this->_text.empty() && this->_clazz.empty()
             && this->_resourceID.empty()) {
-            BDLOG("widget detail has been clear");
             return "";
         }
 
@@ -224,9 +292,9 @@ namespace fastbotx {
     }
 
     std::string Widget::toJson() const {
+        // Details cleared for memory (e.g. after state merge); skip per-call log to avoid noise
         if (this->_text.empty() && this->_clazz.empty()
             && this->_resourceID.empty()) {
-            BDLOG("widget detail has been clear");
             return "";
         }
 
@@ -246,14 +314,20 @@ namespace fastbotx {
     }
 
     std::string Widget::buildFullXpath() const {
-        std::string fullXpathString = this->toXPath();
+        std::vector<std::string> segments;
+        segments.push_back(this->toXPath());
         std::shared_ptr<Widget> parent = _parent;
         while (parent) {
-            std::string parentXpath = parent->toXPath();
-            parentXpath.append(fullXpathString);
-            fullXpathString = parentXpath;
+            segments.push_back(parent->toXPath());
             parent = parent->_parent;
         }
+        std::string fullXpathString;
+        size_t total = 0;
+        for (const auto &s : segments)
+            total += s.size();
+        fullXpathString.reserve(total);
+        for (auto it = segments.rbegin(); it != segments.rend(); ++it)
+            fullXpathString.append(*it);
         return fullXpathString;
     }
 
@@ -264,6 +338,25 @@ namespace fastbotx {
 
     uintptr_t Widget::hash() const {
         return _hashcode;
+    }
+
+    uintptr_t Widget::hashWithMask(WidgetKeyMask mask) const {
+        uintptr_t h;
+        const auto defaultMask = static_cast<WidgetKeyMask>(DefaultWidgetKeyMask);
+        if ((mask & defaultMask) == defaultMask) {
+            h = ((_hashClazz ^ (_hashResourceID << 4)) >> 2) ^
+                (((127U * _hashOperateMask << 1) ^ (256U * _hashScrollType << 3)) >> 1);
+        } else {
+            h = 0x1;
+            if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Clazz)) h ^= _hashClazz;
+            if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::ResourceID)) h ^= (_hashResourceID << 4);
+            if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::OperateMask)) h ^= (127U * _hashOperateMask << 1);
+            if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::ScrollType)) h ^= (256U * _hashScrollType << 3);
+        }
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Text)) h ^= _hashText;
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::ContentDesc)) h ^= _hashContentDesc;
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Index)) h ^= _hashIndex;
+        return h;
     }
 
 }

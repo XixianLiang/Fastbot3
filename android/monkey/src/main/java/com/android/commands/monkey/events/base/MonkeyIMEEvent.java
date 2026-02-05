@@ -23,6 +23,7 @@ import android.view.IWindowManager;
 import com.android.commands.monkey.events.MonkeyEvent;
 import com.android.commands.monkey.framework.AndroidDevice;
 import com.android.commands.monkey.utils.Logger;
+import com.android.commands.monkey.utils.InputUtils;
 
 /**
  * @author Zhao Zhang
@@ -42,23 +43,24 @@ public class MonkeyIMEEvent extends MonkeyEvent {
     @Override
     public int injectEvent(IWindowManager iwm, IActivityManager iam, int verbose) {
         try {
-            long startTime = SystemClock.uptimeMillis();
-            long imeVisibleTime = startTime;
-            while (imeVisibleTime - startTime <= 2000){
-                boolean keyboardShown = AndroidDevice.isVirtualKeyboardOpened();
-                Logger.println(":Is accepting text: " + keyboardShown);
-                if (keyboardShown){
-                    Thread.sleep(300);
-                    Logger.println(":Trying to send Input (" + text + ")");
-                    boolean sent = AndroidDevice.sendText(text);
-                    Logger.println(":Input (" + text + ") is successfully sent: "+sent);
-                    if (!sent){
-                        Logger.println(":Input (" + text + ") is not sent. Please check if the adb keyboard is installed.");
-                    }
-                    break;
-                }
-                imeVisibleTime = SystemClock.uptimeMillis();
-                Thread.sleep(150);
+            // No reliable cross-process API for "focus on input" (getInputMethodWindowVisibleHeight
+            // requires IME client; dumpsys format varies). Optimistically: ensure ADBKeyBoard is
+            // current, short delay for focus to settle, then send text.
+            if (!AndroidDevice.checkAndSetInputMethod()) {
+                Logger.println(":ADBKeyBoard not available, skip IME send.");
+                return MonkeyEvent.INJECT_FAIL;
+            }
+            String currentIme = InputUtils.getDefaultIme();
+            if (currentIme != null && !currentIme.isEmpty()) {
+                Logger.println(":Current IME: " + currentIme);
+            }
+            // Give system time to bind the new IME to the focused input (InputConnection).
+            Thread.sleep(600);
+            Logger.println(":Trying to send Input (" + text + ")");
+            boolean sent = AndroidDevice.sendText(text);
+            Logger.println(":Input (" + text + ") is successfully sent: " + sent);
+            if (!sent) {
+                Logger.println(":Input (" + text + ") is not sent. Please check if the adb keyboard is installed.");
             }
         } catch (InterruptedException e) {
             Logger.warningPrintln("sendText Fail.");

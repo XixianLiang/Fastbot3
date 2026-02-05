@@ -60,8 +60,6 @@ import com.android.commands.monkey.framework.AndroidDevice;
 import com.android.commands.monkey.source.MonkeySourceApeNative;
 import com.android.commands.monkey.source.MonkeySourceApeU2;
 import com.android.commands.monkey.source.MonkeySourceRandom;
-import com.android.commands.monkey.source.MonkeySourceRandomScript;
-import com.android.commands.monkey.source.MonkeySourceScript;
 import com.android.commands.monkey.utils.Config;
 import com.android.commands.monkey.utils.ContextUtils;
 import com.android.commands.monkey.utils.Logger;
@@ -146,10 +144,6 @@ public class Monkey {
      * Device idle time. This is for the scripted monkey.
      **/
     private long mDeviceSleepTime = 30000;
-    /**
-     * The random select user actions. This is for the scripted monkey.
-     */
-    private boolean mRandomizeScript = false;
     /**
      * Abandoned
      */
@@ -331,16 +325,6 @@ public class Monkey {
      * Capture bugreprot whenever there is a crash.
      **/
     private boolean mRequestBugreport = false;
-
-    /**
-     * a filename to the setup script (if any)
-     */
-    private String mSetupFileName = null;
-
-    /**
-     * a filenames of the script (if any)
-     */
-    private final ArrayList<String> mScriptFileNames = new ArrayList<String>();
 
     /**
      * a TCP port to listen on for remote commands.
@@ -756,26 +740,7 @@ public class Monkey {
 
         Logger.println("// phone info： " + android.os.Build.MANUFACTURER + "_" + android.os.Build.MODEL + "_" + Build.VERSION.RELEASE);
 
-        // script monkey
-        if (mScriptFileNames != null && mScriptFileNames.size() == 1) {
-            // script mode, ignore other options
-            mEventSource = new MonkeySourceScript(mRandom, mScriptFileNames.get(0), mThrottle, mRandomizeThrottle,
-                    mProfileWaitTime, mDeviceSleepTime);
-            mEventSource.setVerbose(mVerbose);
-
-            mCountEvents = false;
-        } else if (mScriptFileNames != null && mScriptFileNames.size() > 1) {
-            if (mSetupFileName != null) {
-                mEventSource = new MonkeySourceRandomScript(mSetupFileName, mScriptFileNames, mThrottle,
-                        mRandomizeThrottle, mRandom, mProfileWaitTime, mDeviceSleepTime, mRandomizeScript);
-                mCount++;
-            } else {
-                mEventSource = new MonkeySourceRandomScript(mScriptFileNames, mThrottle, mRandomizeThrottle, mRandom,
-                        mProfileWaitTime, mDeviceSleepTime, mRandomizeScript);
-            }
-            mEventSource.setVerbose(mVerbose);
-            mCountEvents = false;
-        } else if (mUseApeNative) {
+        if (mUseApeNative) {
             // fastbot monkey
             Logger.println("// runing fastbot");
 
@@ -1140,21 +1105,12 @@ public class Monkey {
                     case "--port":
                         mServerPort = (int) nextOptionLong("Server port to listen on for commands");
                         break;
-                    case "--setup":
-                        mSetupFileName = nextOptionData();
-                        break;
-                    case "-f":
-                        mScriptFileNames.add(nextOptionData());
-                        break;
                     case "--profile-wait":
                         mProfileWaitTime = nextOptionLong(
                                 "Profile delay" + " (in milliseconds) to wait between user action");
                         break;
                     case "--device-sleep-time":
                         mDeviceSleepTime = nextOptionLong("Device sleep time" + "(in milliseconds)");
-                        break;
-                    case "--randomize-script":
-                        mRandomizeScript = true;
                         break;
                     case "--script-log":
                         mScriptLog = true;
@@ -1579,6 +1535,9 @@ public class Monkey {
             }
             if (ev != null) {
                 int injectCode = ev.injectEvent(mWm, mAm, mVerbose);
+                if (ev instanceof MonkeyThrottleEvent) {
+                    MonkeyThrottleEvent.recycle((MonkeyThrottleEvent) ev);
+                }
                 if (injectCode == MonkeyEvent.INJECT_FAIL) {
                     Logger.println("    // Injection Failed " + ev);
                     if (ev instanceof MonkeyKeyEvent) {
@@ -1933,13 +1892,11 @@ public class Monkey {
                 "              [--pkg-blacklist-file PACKAGE_BLACKLIST_FILE]\n" +
                 "              [--pkg-whitelist-file PACKAGE_WHITELIST_FILE]\n" +
                 "              [--wait-dbg] [--dbg-no-events]\n" +
-                "              [--setup scriptfile] [-f scriptfile [-f scriptfile] ...]\n" +
                 "              [--port port]\n" +
                 "              [-s SEED] [-v [-v] ...]\n" +
                 "              [--throttle MILLISEC] [--randomize-throttle]\n" +
                 "              [--profile-wait MILLISEC]\n" +
                 "              [--device-sleep-time MILLISEC]\n" +
-                "              [--randomize-script]\n" +
                 "              [--top-activity]\n" +
                 "              [--script-log]\n" +
                 "              [--bugreport]\n" +
