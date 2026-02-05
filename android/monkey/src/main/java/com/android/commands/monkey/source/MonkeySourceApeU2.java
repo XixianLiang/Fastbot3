@@ -630,7 +630,7 @@ public class MonkeySourceApeU2 extends MonkeySourceApeBase implements MonkeyEven
                 Operate operate = AiClient.getAction(topActivityName.getClassName(), stringOfGuiTree);
 
                 // record the monkeyStep
-                server.recordMonkeyStep(operate);
+                server.recordMonkeyStep(operate, topActivityName.getClassName());
 
                 operate.throttle += (int) this.mThrottle;
                 // For user specified actions, during executing, fuzzing is not allowed.
