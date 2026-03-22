@@ -663,7 +663,7 @@ public class MonkeySourceApeNative extends MonkeySourceApeBase implements Monkey
                     takeScreenshot(screenshotFile);
                 }
 
-                // When native returns FUZZ (e.g. DFSAgent blockTimes > 5), generate random click fuzzing actions
+                // When native returns FUZZ (e.g. anti-stuck escalation), generate random click fuzzing actions
                 if (type == ActionType.FUZZ) {
                     fuzzingAction = generateFuzzingAction(fullFuzzing);
                     generateEventsForAction(fuzzingAction);

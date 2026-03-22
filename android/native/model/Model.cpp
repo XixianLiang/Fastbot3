@@ -9,6 +9,84 @@
 
 #include "Model.h"
 #include "StateFactory.h"
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+#include "../desc/gui_tree/GUITreeNode.h"
+#include "../desc/reuse/ActivityNameAction.h"
+#endif
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+#include "../desc/xpath/GUITreeBuilder.h"
+#include "../desc/gui_tree/GUITree.h"
+#include "../desc/naming/NamingFactory.h"
+#endif
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+namespace {
+using namespace fastbotx;
+
+struct ApeNonDetPairStat {
+    std::string sourceActivity;
+    uintptr_t sourceKeyHash{0};
+    uintptr_t actionHash{0};
+    std::unordered_set<uintptr_t> targetKeyHashes;
+    size_t targetCount{0};
+};
+
+void collectGUITreeNodesPreOrder(const gui_tree::GUITreeNode *node, std::vector<const gui_tree::GUITreeNode *> *out) {
+    if (!node || !out) {
+        return;
+    }
+    out->push_back(node);
+    for (const auto &ch : node->getChildren()) {
+        collectGUITreeNodesPreOrder(ch.get(), out);
+    }
+}
+
+void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
+                                             const std::vector<const gui_tree::GUITreeNode *> &nodesPreOrder,
+                                             const naming::StateKey &apeKey) {
+    if (!state) {
+        return;
+    }
+    const uintptr_t activityH = fastStringHash(apeKey.activity());
+    const WidgetPtrVec &ws = state->getWidgets();
+    const bool indexAligned = (ws.size() == nodesPreOrder.size());
+    for (const auto &a : state->getActions()) {
+        auto ana = std::dynamic_pointer_cast<ActivityNameAction>(a);
+        if (!ana) {
+            continue;
+        }
+        WidgetPtr w = ana->getTarget();
+        if (!w) {
+            ana->applyApeDynamicRlIdentity(activityH, 0x1);
+            continue;
+        }
+        uintptr_t th = w->hash();
+        if (indexAligned) {
+            size_t idx = SIZE_MAX;
+            for (size_t i = 0; i < ws.size(); ++i) {
+                if (ws[i] == w) {
+                    idx = i;
+                    break;
+                }
+            }
+            if (idx != SIZE_MAX) {
+                const gui_tree::GUITreeNode *n = nodesPreOrder[idx];
+                if (n) {
+                    naming::NamePtr nxp = n->getXPathName();
+                    if (nxp) {
+                        th = fastStringHash(nxp->toXPath());
+                    }
+                }
+            }
+        }
+        ana->applyApeDynamicRlIdentity(activityH, th);
+    }
+}
+} // namespace
+
+#include "../desc/naming/NamingFactory.h"
+#include "../desc/naming/NamerLattice.h"
+#include "../desc/naming/NamerFactory.h"
+#endif
 #include "../Base.h"
 #include "../utils.hpp"
 #include "../thirdpart/json/json.hpp"
@@ -18,9 +96,10 @@
 #include <iostream>
 #include <map>
 #include <fstream>
-#if DYNAMIC_STATE_ABSTRACTION_ENABLED
-#include <utility>
 #include <sstream>
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+#include <unordered_map>
+#include <utility>
 
 namespace {
     /// Convert WidgetKeyMask to human-readable dimension list for logging (e.g. "Clazz|ResourceID|ContentDesc").
@@ -153,8 +232,9 @@ namespace fastbotx {
             BLOG("LLMTaskAgent: LLM is disabled in config");
         }
         this->_llmTaskAgent = std::make_shared<LLMTaskAgent>(this->_preference, client);
+        this->_apeStateNamingManager = std::make_shared<naming::StateNamingManager>(nullptr);
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        this->_transitionLog.resize(MaxTransitionLogSize);
+        this->_apeTransitionLog.resize(MaxTransitionLogSize);
         BLOG("state abstraction: enabled (check interval=%d, batch every %d steps)",
              (int)RefinementCheckInterval, (int)RefinementCheckInterval);
 #endif
@@ -361,19 +441,6 @@ namespace fastbotx {
         std::string activityStr = activityPtr ? *activityPtr : "";
         WidgetKeyMask mask = getActivityKeyMask(activityStr);
         StatePtr state = StateFactory::createState(agent->getAlgorithmType(), activityPtr, element, mask);
-#if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        if (state && !activityStr.empty()) {
-            const auto textMask = static_cast<WidgetKeyMask>(WidgetKeyAttr::Text);
-            ActivityLastStateTextStats &st = _activityLastStateTextStats[activityStr];
-            st.widgetsWithNonEmptyText = state->getWidgetsWithNonEmptyTextCount();
-            st.totalWidgets = state->getWidgets().size();
-            if ((mask & textMask) == 0) {
-                st.uniqueWidgetsIfAddText = state->getUniqueWidgetCountUnderMask(mask | textMask);
-            } else {
-                st.uniqueWidgetsIfAddText = 0;
-            }
-        }
-#endif
         return state;
     }
 
@@ -550,22 +617,98 @@ namespace fastbotx {
         // moveForward(currentState) must run before addState so agent still has previous _newState/_newAction
         // for (fromState, actionTaken, nextState) → updateKnowledge / AIG edges (see FIND_NAVIGATE_PATH_CODE_REVIEW §7).
         double buildStateStartTimestamp = currentStamp();
-        StatePtr state = buildStateOnly(element, agent, activityPtr);
+        StatePtr built = buildStateOnly(element, agent, activityPtr);
+        StatePtr state = built;
         if (state) {
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+            naming::StateKey apeKey = naming::StateKey::fromParts(
+                naming::StateKey::canonicalActivityString(activity), nullptr, {});
+            bool haveApeKey = false;
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+            const bool wantApeRlIdentity = !_preference || !_preference->useStaticReuseAbstraction();
+            haveApeKey = buildApeStateKeyFromElementTree(
+                element, activity, &apeKey, wantApeRlIdentity ? built : StatePtr());
+            if (wantApeRlIdentity) {
+                if (haveApeKey) {
+                    built->applyDynamicAbstractionIdentityHash(apeKey.hash());
+                } else {
+                    const uintptr_t xmlH = fastStringHash(element->toXML());
+                    apeKey = naming::StateKey::fromFallbackXmlStringHash(activity, xmlH);
+                    built->applyDynamicAbstractionIdentityHash(apeKey.hash());
+                    applyApeDynamicActionHashesToReuseState(built, {}, apeKey);
+                    haveApeKey = true;
+                }
+            }
+#else
+            haveApeKey = buildApeStateKeyFromElementTree(element, activity, &apeKey);
+#endif
+            if (haveApeKey && _preference && _preference->useApeGraphDedupByStateKey()) {
+                const uintptr_t kh = apeKey.hash();
+                auto itDedup = _ape_graph_state_by_key.find(kh);
+                if (itDedup != _ape_graph_state_by_key.end()) {
+                    agent->moveForward(itDedup->second);
+                    _graph->recordStateVisit(itDedup->second, built);
+                    state = itDedup->second;
+                } else {
+                    agent->moveForward(built);
+                    state = _graph->addState(built);
+                    _ape_graph_state_by_key.emplace(kh, state);
+                }
+            } else {
+                agent->moveForward(built);
+                state = _graph->addState(built);
+            }
+            state->visit(this->_graph->getTimestamp());
+            if (haveApeKey) {
+                recordApeStateKey(state, apeKey);
+                logApeStateKeySnapshot(activity, state, apeKey, _graph);
+            }
+#elif DYNAMIC_STATE_ABSTRACTION_ENABLED
+            // No pugixml in this build: XPath/GUITree unavailable — use XML-digest StateKey only (still APE-style id).
+            naming::StateKey apeKey = naming::StateKey::fromParts(
+                naming::StateKey::canonicalActivityString(activity), nullptr, {});
+            bool haveApeKey = false;
+            const bool wantApeRlIdentity = !_preference || !_preference->useStaticReuseAbstraction();
+            std::vector<const gui_tree::GUITreeNode *> guiPreOrder;
+            if (wantApeRlIdentity) {
+                const uintptr_t xmlH = fastStringHash(element->toXML());
+                apeKey = naming::StateKey::fromFallbackXmlStringHash(activity, xmlH);
+                built->applyDynamicAbstractionIdentityHash(apeKey.hash());
+                applyApeDynamicActionHashesToReuseState(built, guiPreOrder, apeKey);
+                haveApeKey = true;
+            }
+            if (haveApeKey && _preference && _preference->useApeGraphDedupByStateKey()) {
+                const uintptr_t kh = apeKey.hash();
+                auto itDedup = _ape_graph_state_by_key.find(kh);
+                if (itDedup != _ape_graph_state_by_key.end()) {
+                    agent->moveForward(itDedup->second);
+                    _graph->recordStateVisit(itDedup->second, built);
+                    state = itDedup->second;
+                } else {
+                    agent->moveForward(built);
+                    state = _graph->addState(built);
+                    _ape_graph_state_by_key.emplace(kh, state);
+                }
+            } else {
+                agent->moveForward(built);
+                state = _graph->addState(built);
+            }
+            state->visit(this->_graph->getTimestamp());
+            if (haveApeKey) {
+                recordApeStateKey(state, apeKey);
+                logApeStateKeySnapshot(activity, state, apeKey, _graph);
+            }
+#else
             agent->moveForward(state);
             state = this->_graph->addState(state);
             state->visit(this->_graph->getTimestamp());
+#endif
         }
         double buildStateEndTimestamp = currentStamp();
         bool fromLlm = (_llmTaskAgent && _llmTaskAgent->inSession());
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         if (!fromLlm) {
             recordTransition(agent, state);
-            recordStateSplitIfRefined(activityPtr ? *activityPtr : "", state);
-            if (state && state->getActivityString() &&
-                state->getMaxWidgetsPerModelAction() > static_cast<size_t>(AlphaMaxGuiActionsPerModelAction)) {
-                _activitiesNeedingAlphaRefinement.insert(activityPtr ? *activityPtr : "");
-            }
         }
 #endif
         // Step 5b: Removed — image now stays in Java (setLastScreenshotForLlm + doLlmHttpPostFromPrompt).
@@ -618,11 +761,18 @@ namespace fastbotx {
         double actionCostMs = actionCost;
         double totalCostMs = methodEndTimestamp - methodStartTimestamp;
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms dims=[%s]",
-             buildStateCostMs,
-             actionCostMs,
-             totalCostMs,
-             maskToDimensionString(getActivityKeyMask(activity)).c_str());
+        if (state && state->usesDynamicAbstractionIdentityHash()) {
+            BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms dims=[APE]",
+                 buildStateCostMs,
+                 actionCostMs,
+                 totalCostMs);
+        } else {
+            BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms dims=[%s]",
+                 buildStateCostMs,
+                 actionCostMs,
+                 totalCostMs,
+                 maskToDimensionString(getActivityKeyMask(activity)).c_str());
+        }
 #else
         BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms",
              buildStateCostMs,
@@ -647,132 +797,532 @@ namespace fastbotx {
         StatePtr srcState = agent->getCurrentState();
         ActivityStateActionPtr act = agent->getCurrentAction();
         if (!srcState || !act || !act->isModelAct() || !act->requireTarget()) return;
-        TransitionEntry e;
-        e.sourceStateHash = srcState->hash();
+        recordApeTransitionForAbstraction(srcState, targetState, act);
+    }
+
+    void Model::recordApeTransitionForAbstraction(const StatePtr &src, const StatePtr &tgt,
+                                                  const ActivityStateActionPtr &act) {
+        if (!src || !tgt || !act || _apeTransitionLog.empty()) {
+            return;
+        }
+        auto itS = _ape_state_keys_by_hash.find(src->hash());
+        auto itT = _ape_state_keys_by_hash.find(tgt->hash());
+        if (itS == _ape_state_keys_by_hash.end() || itT == _ape_state_keys_by_hash.end()) {
+            return;
+        }
+        ApeTransitionEntry e;
+        e.sourceKeyHash = itS->second.hash();
         e.actionHash = act->hash();
-        e.targetStateHash = targetState->hash();
+        e.targetKeyHash = itT->second.hash();
         {
-            auto actPtr = srcState->getActivityString();
-            e.sourceActivity = (actPtr && actPtr.get()) ? *actPtr : "";
+            auto actPtr = src->getActivityString();
+            e.sourceActivity = naming::StateKey::canonicalActivityString(
+                (actPtr && actPtr.get()) ? *actPtr : "");
         }
         e.valid = true;
-        if (_transitionLog.empty()) return;
-        BDLOG("state abstraction: transition src=%lu act=%lu tgt=%lu activity=%s",
-              (unsigned long)e.sourceStateHash, (unsigned long)e.actionHash, (unsigned long)e.targetStateHash,
+        BDLOG("ape naming: transition srcKey=%lu act=%lu tgtKey=%lu activity=%s",
+              (unsigned long)e.sourceKeyHash, (unsigned long)e.actionHash, (unsigned long)e.targetKeyHash,
               e.sourceActivity.c_str());
-        _transitionLog[_transitionLogWriteIndex] = std::move(e);
-        _transitionLogWriteIndex = (_transitionLogWriteIndex + 1) % _transitionLog.size();
-    }
-
-    void Model::recordStateSplitIfRefined(const std::string &activity, const StatePtr &state) {
-        if (!state) return;
-        auto it = _activityAbstractionContext.find(activity);
-        if (it == _activityAbstractionContext.end()) return;
-        ActivityAbstractionContext &ctx = it->second;
-        WidgetKeyMask cur = getActivityKeyMask(activity);
-        if (ctx.previousMask == cur) return;  // not refined yet or already coarsened
-        uintptr_t oldHash = state->getHashUnderMask(ctx.previousMask);
-        uintptr_t newHash = state->hash();
-        ctx.oldStateToNewStates[oldHash].insert(newHash);
-        BDLOG("state abstraction: split activity=%s oldHash=%lu newHash=%lu setSize=%zu",
-              activity.c_str(), (unsigned long)oldHash, (unsigned long)newHash,
-              ctx.oldStateToNewStates[oldHash].size());
-    }
-
-    std::vector<std::string> Model::detectNonDeterminism() const {
-        using Key = std::pair<uintptr_t, uintptr_t>;
-        std::map<Key, std::pair<std::unordered_set<uintptr_t>, std::string>> saToTargets;
-        for (const auto &e : _transitionLog) {
-            if (!e.valid) continue;
-            if (e.sourceStateHash == e.targetStateHash) continue;
-            Key k(e.sourceStateHash, e.actionHash);
-            saToTargets[k].first.insert(e.targetStateHash);
-            saToTargets[k].second = e.sourceActivity;
+        ApeTransitionEntry &aSlot = _apeTransitionLog[_apeTransitionLogWriteIndex];
+        if (aSlot.valid) {
+            apePairAggRemove(aSlot);
         }
+        aSlot = std::move(e);
+        apePairAggAdd(aSlot);
+        _apeTransitionLogWriteIndex = (_apeTransitionLogWriteIndex + 1) % _apeTransitionLog.size();
+    }
+
+    void Model::apePairAggRemove(const ApeTransitionEntry &e) {
+        if (!e.valid || e.sourceKeyHash == e.targetKeyHash) {
+            return;
+        }
+        ApePairKey pk{e.sourceKeyHash, e.actionHash};
+        auto it = _apePairAgg.find(pk);
+        if (it == _apePairAgg.end()) {
+            return;
+        }
+        auto &tm = it->second.first;
+        auto itT = tm.find(e.targetKeyHash);
+        if (itT == tm.end()) {
+            return;
+        }
+        if (--(itT->second) <= 0) {
+            tm.erase(itT);
+        }
+        if (tm.empty()) {
+            _apePairAgg.erase(it);
+        }
+    }
+
+    void Model::apePairAggAdd(const ApeTransitionEntry &e) {
+        if (!e.valid || e.sourceKeyHash == e.targetKeyHash) {
+            return;
+        }
+        ApePairKey pk{e.sourceKeyHash, e.actionHash};
+        auto &slot = _apePairAgg[pk];
+        slot.first[e.targetKeyHash]++;
+        slot.second = e.sourceActivity;
+    }
+
+    std::vector<std::string> Model::detectNonDeterminismApe() const {
+        const int minTargets = (_preference ? _preference->getApeNamingMinNonDetTargets()
+                                            : MinNonDeterminismCount);
         std::set<std::string> activitiesSet;
-        for (const auto &p : saToTargets) {
-            if (p.second.first.size() >= static_cast<size_t>(MinNonDeterminismCount)) {
-                activitiesSet.insert(p.second.second);
+        for (const auto &kv : _apePairAgg) {
+            if (kv.second.first.size() >= static_cast<size_t>(minTargets)) {
+                activitiesSet.insert(kv.second.second);
             }
         }
         return std::vector<std::string>(activitiesSet.begin(), activitiesSet.end());
     }
 
-    bool Model::refineActivity(const std::string &activity) {
-        WidgetKeyMask cur = getActivityKeyMask(activity);
-        const auto tMask = static_cast<WidgetKeyMask>(WidgetKeyAttr::Text);
-        const auto cMask = static_cast<WidgetKeyMask>(WidgetKeyAttr::ContentDesc);
-        const auto iMask = static_cast<WidgetKeyMask>(WidgetKeyAttr::Index);
-        WidgetKeyMask newMask = cur;
-        const char *addedAttr = nullptr;
-        if ((cur & cMask) == 0) {
-            newMask = cur | cMask;
-            addedAttr = "ContentDesc";
-        } else if ((cur & iMask) == 0) {
-            newMask = cur | iMask;
-            addedAttr = "Index";
-        } else if ((cur & tMask) == 0) {
-            newMask = cur | tMask;
-            addedAttr = "Text";
-            // Skip adding Text when text-heavy or would explode (see §11.5)
-            auto it = _activityLastStateTextStats.find(activity);
-            if (it != _activityLastStateTextStats.end()) {
-                const ActivityLastStateTextStats &st = it->second;
-                if (st.widgetsWithNonEmptyText > static_cast<size_t>(MaxTextWidgetCount)) {
-                    BDLOG("state abstraction: skip refine activity=%s (+Text) reason=textCount>%d",
-                          activity.c_str(), (int)MaxTextWidgetCount);
-                    return false;
+    bool Model::refineActivityApeNaming(const std::string &activity) {
+        return refineActivityApeNaming(activity, nullptr, -1);
+    }
+
+    bool Model::refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
+                                        int precomputedActivityNonDetPairCount) {
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        const int minTargets = (_preference ? _preference->getApeNamingMinNonDetTargets()
+                                            : MinNonDeterminismCount);
+        int nonDetPairs = 0;
+        size_t dominantPairTargets = 0;
+        uintptr_t dominantSourceKeyHash = 0;
+        uintptr_t dominantActionHash = 0;
+        std::unordered_set<uintptr_t> dominantTargetKeyHashes;
+        const bool useBatchNonDet =
+            precomputedActivityNonDetPairCount >= 0 && pair && pair->sourceKeyHash != 0 &&
+            pair->actionHash != 0 && pair->targetCount >= static_cast<size_t>(minTargets);
+        if (useBatchNonDet) {
+            nonDetPairs = precomputedActivityNonDetPairCount;
+            dominantPairTargets = pair->targetCount;
+            dominantSourceKeyHash = pair->sourceKeyHash;
+            dominantActionHash = pair->actionHash;
+            dominantTargetKeyHashes = pair->targetKeyHashes;
+        } else {
+            for (const auto &kv : _apePairAgg) {
+                if (kv.second.second != actKey) {
+                    continue;
                 }
-                if (st.totalWidgets > 0 &&
-                    st.widgetsWithNonEmptyText * 100 > static_cast<size_t>(MaxTextWidgetRatioPercent) * st.totalWidgets) {
-                    BDLOG("state abstraction: skip refine activity=%s (+Text) reason=textRatio>%d%%",
-                          activity.c_str(), (int)MaxTextWidgetRatioPercent);
-                    return false;
+                const auto &tm = kv.second.first;
+                if (tm.size() < static_cast<size_t>(minTargets)) {
+                    continue;
                 }
-                if (st.uniqueWidgetsIfAddText > static_cast<size_t>(MaxUniqueWidgetsAfterText)) {
-                    BDLOG("state abstraction: skip refine activity=%s (+Text) reason=uniqueAfterText>%d",
-                          activity.c_str(), (int)MaxUniqueWidgetsAfterText);
-                    return false;
+                nonDetPairs++;
+                if (tm.size() > dominantPairTargets) {
+                    dominantPairTargets = tm.size();
+                    dominantSourceKeyHash = kv.first.sourceKeyHash;
+                    dominantActionHash = kv.first.actionHash;
+                    dominantTargetKeyHashes.clear();
+                    for (const auto &te : tm) {
+                        dominantTargetKeyHashes.insert(te.first);
+                    }
                 }
             }
+            // Batch (`runApeNamingAbstractionBatch`) passes the exact non-det pair for this attempt; use it as
+            // the trigger for blacklist/admissibility and `ctx.trigger*` so logs and behavior match `refine-attempt`.
+            // With `pair == nullptr` (one-arg API), keep scan-only dominant = max target fan-out for this activity.
+            if (pair && pair->sourceKeyHash != 0 && pair->actionHash != 0 &&
+                pair->targetCount >= static_cast<size_t>(minTargets)) {
+                dominantPairTargets = pair->targetCount;
+                dominantSourceKeyHash = pair->sourceKeyHash;
+                dominantActionHash = pair->actionHash;
+                dominantTargetKeyHashes = pair->targetKeyHashes;
+            }
+        }
+        if (dominantSourceKeyHash != 0 || dominantActionHash != 0) {
+            ApePairKey pairKey{dominantSourceKeyHash, dominantActionHash};
+            auto itBlk = _apeRefinePairBlacklist.find(actKey);
+            if (itBlk != _apeRefinePairBlacklist.end() && itBlk->second.count(pairKey) != 0) {
+                BDLOG("ape naming: skip refine activity=%s reason=trigger pair blacklisted srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
+                return false;
+            }
+        }
+        const int minNonDetPairs = (_preference ? _preference->getApeNamingActionRefineMinNonDetPairs() : 1);
+        if (nonDetPairs < minNonDetPairs) {
+            BDLOG("ape naming: skip refine activity=%s reason=nonDetPairs<%d (%d)",
+                  activity.c_str(), minNonDetPairs, nonDetPairs);
+            return false;
+        }
+        const int minNonDetPairDelta =
+            (_preference ? _preference->getApeNamingActionRefineMinNonDetPairDelta() : 0);
+        auto itCtx = _apeNamingContext.find(actKey);
+        if (itCtx != _apeNamingContext.end()) {
+            const int lastPairs = itCtx->second.nonDetPairsAtLastNamingRefinement;
+            if (nonDetPairs < lastPairs + minNonDetPairDelta) {
+                BDLOG("ape naming: skip refine activity=%s reason=nonDetPairDelta<%d (now=%d,last=%d)",
+                      activity.c_str(), minNonDetPairDelta, nonDetPairs, lastPairs);
+                return false;
+            }
+        }
+        const size_t activityStateCount = getGraph()->getStateCountByActivity(activity);
+        const int minStates = (_preference ? _preference->getApeNamingActionRefineMinActivityStates() : 2);
+        if (activityStateCount < static_cast<size_t>(minStates)) {
+            BDLOG("ape naming: skip refine activity=%s reason=stateCount<%d (%zu)",
+                  activity.c_str(), minStates, activityStateCount);
+            return false;
+        }
+        const int minStateDelta = (_preference ? _preference->getApeNamingActionRefineMinStateDelta() : 1);
+        if (itCtx != _apeNamingContext.end()) {
+            const size_t lastCount = itCtx->second.stateCountAtLastNamingRefinement;
+            if (activityStateCount < lastCount + static_cast<size_t>(minStateDelta)) {
+                BDLOG("ape naming: skip refine activity=%s reason=stateDelta<%d (now=%zu,last=%zu)",
+                      activity.c_str(), minStateDelta, activityStateCount, lastCount);
+                return false;
+            }
+        }
+        naming::ActivityNamingManager &mgr = _apeStateNamingManager->activityManager();
+        naming::NamingPtr cur = mgr.getNaming(actKey);
+        if (!cur) {
+            cur = naming::NamingFactory::defaultRootNaming();
+            if (!cur) {
+                return false;
+            }
+            mgr.setNaming(actKey, cur);
+        }
+        naming::NamerLattice lat(naming::NamerFactory::CURRENT);
+        std::set<std::string> blk;
+        for (const auto &p : _apeNamingCoarseningBlacklist) {
+            if (p.first == actKey) {
+                blk.insert(p.second);
+            }
+        }
+        naming::NamingFactory::ActionRefinementOptions opts;
+        opts.max_steps = (_preference ? _preference->getApeNamingActionRefineHops() : 8);
+        opts.blacklist = &blk;
+        // TODO(ape-alpha): map Java action-set α predicates into this accept_predicate hook.
+        // Current native baseline supports configurable predicate modes.
+        const std::string predicateMode =
+            (_preference ? _preference->getApeNamingActionRefinePredicateMode() : "fingerprint_change");
+        const std::string selectionMode =
+            (_preference ? _preference->getApeNamingActionRefineSelectionMode() : "first_accept");
+        const std::string ruleProfile =
+            (_preference ? _preference->getApeNamingActionRefineRuleProfile() : "baseline");
+        opts.choose_deepest_acceptable = (selectionMode == "deepest_accept");
+        // ALPHA_BASE_PREDICATE: configurable baseline predicate family before Java-specific α rules are ported.
+        if (ruleProfile == "java_rule_01_preview") {
+            // Preview profile for first Java-rule mapping experiments:
+            // stricter predicate + deeper acceptable-hop preference.
+            opts.choose_deepest_acceptable = true;
+            const std::string curFp = cur->fingerprintString();
+            const int curFineness = cur->getFineness();
+            opts.accept_predicate = [curFp, curFineness](const naming::NamingPtr &candidate) {
+                return candidate && candidate->fingerprintString() != curFp &&
+                       candidate->getFineness() > curFineness;
+            };
+        } else if (ruleProfile == "java_rule_03_preview") {
+            // Preview profile for branch/topology experiments:
+            // evaluate all immediate refinements at each depth, not only greedy refs[0] chain.
+            opts.choose_deepest_acceptable = true;
+            opts.evaluate_all_immediate_candidates = true;
+            const std::string curFp = cur->fingerprintString();
+            opts.accept_predicate = [curFp](const naming::NamingPtr &candidate) {
+                return candidate && candidate->fingerprintString() != curFp;
+            };
+        } else if (ruleProfile == "strict_baseline") {
+            const std::string curFp = cur->fingerprintString();
+            const int curFineness = cur->getFineness();
+            opts.accept_predicate = [curFp, curFineness](const naming::NamingPtr &candidate) {
+                return candidate && candidate->fingerprintString() != curFp &&
+                       candidate->getFineness() > curFineness;
+            };
+        } else if (predicateMode == "fingerprint_change") {
+            const std::string curFp = cur->fingerprintString();
+            opts.accept_predicate = [curFp](const naming::NamingPtr &candidate) {
+                return candidate && candidate->fingerprintString() != curFp;
+            };
+        } else if (predicateMode == "fineness_increase") {
+            const int curFineness = cur->getFineness();
+            opts.accept_predicate = [curFineness](const naming::NamingPtr &candidate) {
+                return candidate && candidate->getFineness() > curFineness;
+            };
         } else {
-            BDLOG("state abstraction: skip refine activity=%s reason=already finest mask", activity.c_str());
+            opts.accept_predicate = {};
+        }
+        naming::NamingPtr next = naming::NamingFactory::actionRefinementWithOptions(cur, lat, opts);
+        if (!next) {
+            BDLOG("ape naming: skip refine activity=%s reason=no non-blacklisted finer namer", activity.c_str());
             return false;
         }
-        if (_coarseningBlacklist.count(std::make_pair(activity, newMask)) != 0) {
-            BDLOG("state abstraction: skip refine activity=%s newMask=%u reason=blacklisted", activity.c_str(), (unsigned)newMask);
+        // Transition-level admissibility baseline:
+        // on concrete non-deterministic (sourceKey, action) pairs, require strict refinement.
+        if (dominantPairTargets >= static_cast<size_t>(minTargets) &&
+            next->getFineness() <= cur->getFineness()) {
+            BDLOG("ape naming: skip refine activity=%s reason=admissibility(nonDetPair strict-fineness) "
+                  "dominantPairTargets=%zu curFine=%d nextFine=%d",
+                  activity.c_str(), dominantPairTargets, cur->getFineness(), next->getFineness());
             return false;
         }
-        ActivityAbstractionContext &ctx = _activityAbstractionContext[activity];
-        ctx.previousMask = cur;
-        ctx.stateCountAtLastRefinement = getGraph()->getStateCountByActivity(activity);
-        ctx.oldStateToNewStates.clear();
-        setActivityKeyMask(activity, newMask);
-        BLOG("state abstraction: refine activity=%s mask %u->%u (+%s) stateCount=%zu dims=[%s]->[%s]",
-             activity.c_str(), (unsigned)cur, (unsigned)newMask, addedAttr, ctx.stateCountAtLastRefinement,
-             maskToDimensionString(cur).c_str(), maskToDimensionString(newMask).c_str());
+        if (dominantPairTargets >= static_cast<size_t>(minTargets) &&
+            next->fingerprintString() == cur->fingerprintString()) {
+            BDLOG("ape naming: skip refine activity=%s reason=admissibility(nonDetPair no-fingerprint-change) "
+                  "dominantPairTargets=%zu",
+                  activity.c_str(), dominantPairTargets);
+            return false;
+        }
+        ApeNamingAbstractionContext &ctx = _apeNamingContext[actKey];
+        ctx.previousNamingBeforeRefine = cur;
+        ctx.previousNamingFingerprintBeforeRefine = cur->fingerprintString();
+        ctx.oldKeyHashToNewKeyHashes.clear();
+        ctx.stateCountAtLastNamingRefinement = getGraph()->getStateCountByActivity(activity);
+        ctx.nonDetPairsAtLastNamingRefinement = nonDetPairs;
+        ctx.triggerSourceKeyHash = dominantSourceKeyHash;
+        ctx.triggerActionHash = dominantActionHash;
+        ctx.triggerTargetKeyHashes = std::move(dominantTargetKeyHashes);
+        ctx.triggerTargetCountAtRefine = dominantPairTargets;
+        mgr.setNaming(actKey, next);
+        invalidateApeGraphStateKeyDedupMap();
+        BLOG("ape naming: refine activity=%s", activity.c_str());
         return true;
     }
 
-    void Model::coarsenActivityIfNeeded(const std::string &activity) {
-        auto it = _activityAbstractionContext.find(activity);
-        if (it == _activityAbstractionContext.end()) return;
-        // APE coarsening: if any old state L′ splits into > β new states, roll back
-        for (const auto &p : it->second.oldStateToNewStates) {
+    void Model::invalidateApeGraphStateKeyDedupMap() {
+        _ape_graph_state_by_key.clear();
+    }
+
+    void Model::coarsenActivityApeNamingIfNeeded(const std::string &activity) {
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        auto it = _apeNamingContext.find(actKey);
+        if (it == _apeNamingContext.end()) {
+            return;
+        }
+        ApeNamingAbstractionContext &ctx = it->second;
+        naming::ActivityNamingManager &mgr2 = _apeStateNamingManager->activityManager();
+        naming::NamingPtr cur = mgr2.getNaming(actKey);
+        naming::NamingPtr prev = ctx.previousNamingBeforeRefine;
+        if (!cur || !prev) {
+            return;
+        }
+        const size_t affectedOldKeys = ctx.oldKeyHashToNewKeyHashes.size();
+        std::unordered_set<uintptr_t> totalNewKeys;
+        bool overSplit = false;
+        for (const auto &p : ctx.oldKeyHashToNewKeyHashes) {
+            totalNewKeys.insert(p.second.begin(), p.second.end());
             if (p.second.size() > static_cast<size_t>(BetaMaxSplitCount)) {
-                WidgetKeyMask cur = getActivityKeyMask(activity);
-                WidgetKeyMask prev = it->second.previousMask;
-                setActivityKeyMask(activity, prev);
-                _coarseningBlacklist.insert(std::make_pair(activity, cur));
-                it->second.oldStateToNewStates.clear();
-                it->second.stateCountAtLastRefinement = getGraph()->getStateCountByActivity(activity);
-                BLOG("state abstraction: coarsen activity=%s mask %u->%u (split %zu>%d) dims=[%s]->[%s]",
-                     activity.c_str(), (unsigned)cur, (unsigned)prev, p.second.size(), (int)BetaMaxSplitCount,
-                     maskToDimensionString(cur).c_str(), maskToDimensionString(prev).c_str());
-                return;
+                overSplit = true;
+                break;
             }
         }
-        return;
+        // Java batchAbstract-inspired global rollback gates:
+        // 1) affected old states threshold; 2) resulting refined targets threshold by fineness.
+        const int affectedThreshold = 8;
+        const int totalTypes = static_cast<int>(naming::namerTypesUsed().size());
+        const int fineness = cur->getFineness();
+        const int shift = std::max(0, totalTypes - fineness);
+        const int targetThreshold = std::min(8, std::max(1, 2 << shift));
+        const bool overAffected = affectedOldKeys > static_cast<size_t>(affectedThreshold);
+        const bool overTargets = totalNewKeys.size() > static_cast<size_t>(targetThreshold);
+        // Java batchAbstract filterTargets-like gate: focus on trigger source-key bucket.
+        const uintptr_t triggerSource = ctx.triggerSourceKeyHash;
+        size_t filteredAffected = 0;
+        size_t filteredTargets = 0;
+        auto itFiltered = ctx.oldKeyHashToNewKeyHashes.find(triggerSource);
+        if (itFiltered != ctx.oldKeyHashToNewKeyHashes.end()) {
+            filteredAffected = 1;
+            filteredTargets = itFiltered->second.size();
+        }
+        const bool overFilteredAffected =
+            (filteredAffected > 0 && filteredAffected > static_cast<size_t>(affectedThreshold));
+        const bool overFilteredTargets =
+            (filteredTargets > 0 && filteredTargets > static_cast<size_t>(targetThreshold));
+
+        // Pair-driven effectiveness check: if trigger source is observed but still unsplit
+        // and trigger targets remain divergent after refinement, rollback.
+        bool unresolvedTriggerPair = false;
+        size_t postRefineMaxFanoutForAction = 0;
+        if (triggerSource != 0 && itFiltered != ctx.oldKeyHashToNewKeyHashes.end()) {
+            const bool sourceSplit = itFiltered->second.size() > 1;
+            std::unordered_set<uintptr_t> mappedTargetUnion;
+            size_t coveredOldTargets = 0;
+            for (auto oldT : ctx.triggerTargetKeyHashes) {
+                auto itOld = ctx.oldKeyHashToNewKeyHashes.find(oldT);
+                if (itOld == ctx.oldKeyHashToNewKeyHashes.end()) {
+                    continue;
+                }
+                coveredOldTargets++;
+                mappedTargetUnion.insert(itOld->second.begin(), itOld->second.end());
+            }
+            const size_t minEvidence = std::min<size_t>(ctx.triggerTargetCountAtRefine, 2);
+            if (!sourceSplit && coveredOldTargets >= minEvidence && mappedTargetUnion.size() >= minEvidence) {
+                unresolvedTriggerPair = true;
+            }
+        }
+        // Action-level transition-sample check (Java checkActionRefinement approximation):
+        // estimate post-refine fan-out via old->new key mapping evidence.
+        if (ctx.triggerActionHash != 0 && ctx.triggerSourceKeyHash != 0) {
+            auto itSrcMap = ctx.oldKeyHashToNewKeyHashes.find(ctx.triggerSourceKeyHash);
+            if (itSrcMap != ctx.oldKeyHashToNewKeyHashes.end() && !itSrcMap->second.empty()) {
+                std::unordered_set<uintptr_t> mappedTargetUnion;
+                size_t coveredOldTargets = 0;
+                for (auto oldT : ctx.triggerTargetKeyHashes) {
+                    auto itOld = ctx.oldKeyHashToNewKeyHashes.find(oldT);
+                    if (itOld == ctx.oldKeyHashToNewKeyHashes.end()) {
+                        continue;
+                    }
+                    coveredOldTargets++;
+                    mappedTargetUnion.insert(itOld->second.begin(), itOld->second.end());
+                }
+                postRefineMaxFanoutForAction = mappedTargetUnion.size();
+                const size_t minEvidence = std::min<size_t>(ctx.triggerTargetCountAtRefine, 2);
+                // Evidence guard: only fail when source and targets both have enough remap evidence.
+                if (ctx.triggerTargetCountAtRefine > 0 &&
+                    itSrcMap->second.size() >= minEvidence &&
+                    coveredOldTargets >= minEvidence &&
+                    postRefineMaxFanoutForAction >= ctx.triggerTargetCountAtRefine) {
+                    unresolvedTriggerPair = true;
+                }
+            }
+        }
+        if (overSplit || overAffected || overTargets ||
+            overFilteredAffected || overFilteredTargets || unresolvedTriggerPair) {
+            std::string fpFiner = cur->fingerprintString();
+            mgr2.setNaming(actKey, prev);
+            invalidateApeGraphStateKeyDedupMap();
+            _apeNamingCoarseningBlacklist.insert(std::make_pair(actKey, fpFiner));
+            if (ctx.triggerSourceKeyHash != 0 || ctx.triggerActionHash != 0) {
+                _apeRefinePairBlacklist[actKey].insert(
+                    ApePairKey{ctx.triggerSourceKeyHash, ctx.triggerActionHash});
+            }
+            ctx.oldKeyHashToNewKeyHashes.clear();
+            ctx.previousNamingBeforeRefine = nullptr;
+            ctx.previousNamingFingerprintBeforeRefine.clear();
+            ctx.triggerSourceKeyHash = 0;
+            ctx.triggerActionHash = 0;
+            ctx.triggerTargetKeyHashes.clear();
+            ctx.triggerTargetCountAtRefine = 0;
+            ctx.stateCountAtLastNamingRefinement = getGraph()->getStateCountByActivity(activity);
+            BLOG("ape naming: coarsen activity=%s rollback split=%d overAffected=%d overTargets=%d "
+                 "overFilteredAffected=%d overFilteredTargets=%d unresolvedTriggerPair=%d "
+                 "affectedOld=%zu totalNew=%zu filteredTargets=%zu triggerTargets=%zu postFanout=%zu "
+                 "targetThreshold=%d fp=%s",
+                 activity.c_str(), overSplit ? 1 : 0, overAffected ? 1 : 0, overTargets ? 1 : 0,
+                 overFilteredAffected ? 1 : 0, overFilteredTargets ? 1 : 0, unresolvedTriggerPair ? 1 : 0,
+                 affectedOldKeys, totalNewKeys.size(), filteredTargets, ctx.triggerTargetCountAtRefine,
+                 postRefineMaxFanoutForAction, targetThreshold, fpFiner.c_str());
+            return;
+        }
+    }
+
+    void Model::runApeNamingAbstractionBatch() {
+        if (Preference::inst() && Preference::inst()->useStaticReuseAbstraction()) {
+            return;
+        }
+        const int minTargets = (_preference ? _preference->getApeNamingMinNonDetTargets()
+                                            : MinNonDeterminismCount);
+        for (const auto &kv : _apeNamingContext) {
+            const std::string &activity = kv.first;
+            const ApeNamingAbstractionContext &ctx = kv.second;
+            if (!ctx.previousNamingBeforeRefine) {
+                continue;
+            }
+            naming::NamingPtr n = _apeStateNamingManager->activityManager().getNaming(activity);
+            if (!n) {
+                continue;
+            }
+            if (ctx.previousNamingFingerprintBeforeRefine != n->fingerprintString()) {
+                coarsenActivityApeNamingIfNeeded(activity);
+            }
+        }
+        if (Preference::inst() && !Preference::inst()->useApeNamingPeriodicRefinement()) {
+            return;
+        }
+        const std::string ruleProfile =
+            (_preference ? _preference->getApeNamingActionRefineRuleProfile() : "baseline");
+        auto collectNonDetPairs = [&]() -> std::vector<ApeNonDetPairStat> {
+            std::vector<ApeNonDetPairStat> out;
+            out.reserve(_apePairAgg.size());
+            for (const auto &kv : _apePairAgg) {
+                const auto &tm = kv.second.first;
+                if (tm.size() < static_cast<size_t>(minTargets)) {
+                    continue;
+                }
+                ApeNonDetPairStat s;
+                s.sourceKeyHash = kv.first.sourceKeyHash;
+                s.actionHash = kv.first.actionHash;
+                s.sourceActivity = kv.second.second;
+                for (const auto &te : tm) {
+                    s.targetKeyHashes.insert(te.first);
+                }
+                s.targetCount = s.targetKeyHashes.size();
+                out.push_back(std::move(s));
+            }
+            std::sort(out.begin(), out.end(), [](const ApeNonDetPairStat &a, const ApeNonDetPairStat &b) {
+                if (a.targetCount != b.targetCount) return a.targetCount > b.targetCount;
+                if (a.sourceActivity != b.sourceActivity) return a.sourceActivity < b.sourceActivity;
+                if (a.sourceKeyHash != b.sourceKeyHash) return a.sourceKeyHash < b.sourceKeyHash;
+                return a.actionHash < b.actionHash;
+            });
+            return out;
+        };
+        auto toRefinePair = [](const ApeNonDetPairStat &p) -> ApeRefinePair {
+            ApeRefinePair out;
+            out.sourceKeyHash = p.sourceKeyHash;
+            out.actionHash = p.actionHash;
+            out.targetKeyHashes = p.targetKeyHashes;
+            out.targetCount = p.targetCount;
+            return out;
+        };
+        auto countNonDetPairsPerActivity = [](const std::vector<ApeNonDetPairStat> &v) {
+            std::unordered_map<std::string, int> m;
+            m.reserve(std::max<size_t>(v.size(), 8) * 2);
+            for (const auto &p : v) {
+                const std::string k = naming::StateKey::canonicalActivityString(p.sourceActivity);
+                m[k]++;
+            }
+            return m;
+        };
+        if (UsePaperRefinementOrder) {
+            std::vector<ApeNonDetPairStat> nonDetPairs = collectNonDetPairs();
+            const std::unordered_map<std::string, int> nonDetCountByAct = countNonDetPairsPerActivity(nonDetPairs);
+            if (ruleProfile == "java_rule_02_preview" && nonDetPairs.size() > 1) {
+                nonDetPairs.resize(1);
+            }
+            BLOG("ape naming: paper order nonDetPairs=%zu", nonDetPairs.size());
+            std::unordered_set<std::string> refinedActivities;
+            for (const auto &p : nonDetPairs) {
+                if (refinedActivities.count(p.sourceActivity) != 0) {
+                    continue;
+                }
+                ApeRefinePair rp = toRefinePair(p);
+                BLOG("ape naming: refine-attempt activity=%s srcKey=%lu act=%lu targets=%zu",
+                     p.sourceActivity.c_str(), (unsigned long)p.sourceKeyHash,
+                     (unsigned long)p.actionHash, p.targetCount);
+                const int preN = nonDetCountByAct.at(
+                    naming::StateKey::canonicalActivityString(p.sourceActivity));
+                if (refineActivityApeNaming(p.sourceActivity, &rp, preN)) {
+                    coarsenActivityApeNamingIfNeeded(p.sourceActivity);
+                    refinedActivities.insert(p.sourceActivity);
+                }
+            }
+        } else {
+            std::vector<ApeNonDetPairStat> nonDetPairs = collectNonDetPairs();
+            const std::unordered_map<std::string, int> nonDetCountByAct = countNonDetPairsPerActivity(nonDetPairs);
+            if (ruleProfile == "java_rule_02_preview" && nonDetPairs.size() > 1) {
+                nonDetPairs.resize(1);
+            }
+            BLOG("ape naming: batch nonDetPairs=%zu", nonDetPairs.size());
+            std::vector<std::string> refinedActs;
+            std::unordered_set<std::string> refinedActivities;
+            for (const auto &p : nonDetPairs) {
+                if (refinedActivities.count(p.sourceActivity) != 0) {
+                    continue;
+                }
+                ApeRefinePair rp = toRefinePair(p);
+                BLOG("ape naming: refine-attempt activity=%s srcKey=%lu act=%lu targets=%zu",
+                     p.sourceActivity.c_str(), (unsigned long)p.sourceKeyHash,
+                     (unsigned long)p.actionHash, p.targetCount);
+                const int preN = nonDetCountByAct.at(
+                    naming::StateKey::canonicalActivityString(p.sourceActivity));
+                if (refineActivityApeNaming(p.sourceActivity, &rp, preN)) {
+                    refinedActs.push_back(p.sourceActivity);
+                    refinedActivities.insert(p.sourceActivity);
+                }
+            }
+            for (const auto &a : refinedActs) {
+                coarsenActivityApeNamingIfNeeded(a);
+            }
+        }
     }
 
     void Model::runRefinementAndCoarseningIfScheduled() {
@@ -780,63 +1330,9 @@ namespace fastbotx {
             return;
         }
         if (_stepCountSinceLastCheck < static_cast<size_t>(RefinementCheckInterval)) return;
-        BLOG("state abstraction: batch at step %zu (interval=%d)", _stepCountSinceLastCheck, (int)RefinementCheckInterval);
-        // Coarsen check for activities refined in a previous batch (oldStateToNewStates accumulated over last K steps)
-        for (const auto &kv : _activityAbstractionContext) {
-            const std::string &activity = kv.first;
-            const ActivityAbstractionContext &ctx = kv.second;
-            if (ctx.previousMask != getActivityKeyMask(activity)) {
-                coarsenActivityIfNeeded(activity);
-            }
-        }
-        if (UsePaperRefinementOrder) {
-            // Paper order: (1) ActionRefinement(α) + Coarsening(β), (2) StateRefinement (non-determinism) + Coarsening(β)
-            std::vector<std::string> activitiesAlpha(_activitiesNeedingAlphaRefinement.begin(),
-                                                     _activitiesNeedingAlphaRefinement.end());
-            _activitiesNeedingAlphaRefinement.clear();
-            BLOG("state abstraction: paper order alpha=%zu", activitiesAlpha.size());
-            for (const auto &activity : activitiesAlpha) {
-                if (refineActivity(activity)) {
-                    coarsenActivityIfNeeded(activity);
-                }
-            }
-            std::vector<std::string> activitiesNonDet = detectNonDeterminism();
-            BLOG("state abstraction: paper order nonDet=%zu", activitiesNonDet.size());
-            for (const auto &activity : activitiesNonDet) {
-                if (refineActivity(activity)) {
-                    coarsenActivityIfNeeded(activity);
-                }
-            }
-        } else {
-            // Per-K-step batch: merge α + non-determinism, refine all, then coarsen all refined
-            std::vector<std::string> activitiesToRefine = detectNonDeterminism();
-            size_t nonDetCount = activitiesToRefine.size();
-            size_t alphaCount = _activitiesNeedingAlphaRefinement.size();
-            for (const auto &a : _activitiesNeedingAlphaRefinement) {
-                if (std::find(activitiesToRefine.begin(), activitiesToRefine.end(), a) == activitiesToRefine.end()) {
-                    activitiesToRefine.push_back(a);
-                }
-            }
-            _activitiesNeedingAlphaRefinement.clear();
-            BLOG("state abstraction: batch nonDet=%zu alpha=%zu toRefine=%zu",
-                 nonDetCount, alphaCount, activitiesToRefine.size());
-            std::vector<std::string> activitiesJustRefined;
-            for (const auto &activity : activitiesToRefine) {
-                if (refineActivity(activity)) {
-                    activitiesJustRefined.push_back(activity);
-                }
-            }
-            for (const auto &activity : activitiesJustRefined) {
-                coarsenActivityIfNeeded(activity);
-            }
-            if (!activitiesJustRefined.empty()) {
-                BLOG("state abstraction: batch refined=%zu coarsenChecked=%zu",
-                     activitiesJustRefined.size(), activitiesJustRefined.size());
-            } else {
-                BLOG("state abstraction: batch done refined=0 (all already finest or skipped)");
-            }
-        }
-        // Notify agents so they can clear hash-dependent caches (e.g. FrontierAgent _outEdges/path)
+        BLOG("state abstraction: ape-only batch at step %zu (interval=%d)",
+             _stepCountSinceLastCheck, (int)RefinementCheckInterval);
+        runApeNamingAbstractionBatch();
         for (const auto &kv : _deviceIDAgentMap) {
             if (kv.second) kv.second->onStateAbstractionChanged();
         }
@@ -896,52 +1392,23 @@ namespace fastbotx {
             nlohmann::json j;
             in >> j;
 
-            size_t loadedActivities = 0;
-            size_t loadedBlacklistEntries = 0;
-
             if (!j.is_object()) {
                 BLOGE("state abstraction: policy file %s is not a JSON object", path.c_str());
                 return;
             }
 
+            // v1 files may contain widget-key masks and coarseningBlacklist (legacy); do not apply — dynamic
+            // identity is APE StateKey-only; keeping old entries would confuse debugging.
             auto itActs = j.find("activities");
-            if (itActs != j.end() && itActs->is_array()) {
-                for (const auto &item : *itActs) {
-                    if (!item.is_object()) continue;
-                    std::string name = item.value("name", "");
-                    // mask stored as unsigned int; silently ignore obviously invalid values.
-                    unsigned int maskVal = 0u;
-                    try {
-                        maskVal = item.at("mask").get<unsigned int>();
-                    } catch (...) {
-                        continue;
-                    }
-                    if (name.empty() || maskVal == 0u) continue;
-                    setActivityKeyMask(name, static_cast<WidgetKeyMask>(maskVal));
-                    loadedActivities++;
-                }
+            if (itActs != j.end() && itActs->is_array() && !itActs->empty()) {
+                BLOG("state abstraction: %s contains legacy activities[]; ignored", path.c_str());
             }
-
             auto itBlk = j.find("coarseningBlacklist");
-            if (itBlk != j.end() && itBlk->is_array()) {
-                _coarseningBlacklist.clear();
-                for (const auto &item : *itBlk) {
-                    if (!item.is_object()) continue;
-                    std::string name = item.value("activity", "");
-                    unsigned int maskVal = 0u;
-                    try {
-                        maskVal = item.at("mask").get<unsigned int>();
-                    } catch (...) {
-                        continue;
-                    }
-                    if (name.empty() || maskVal == 0u) continue;
-                    _coarseningBlacklist.insert(std::make_pair(name, static_cast<WidgetKeyMask>(maskVal)));
-                    loadedBlacklistEntries++;
-                }
+            if (itBlk != j.end() && itBlk->is_array() && !itBlk->empty()) {
+                BLOG("state abstraction: %s contains legacy coarseningBlacklist; ignored", path.c_str());
             }
 
-            BLOG("state abstraction: loaded policy from %s (activities=%zu, blacklist=%zu)",
-                 path.c_str(), loadedActivities, loadedBlacklistEntries);
+            BLOG("state abstraction: loaded policy metadata from %s (no widget-mask state applied)", path.c_str());
         } catch (const std::exception &ex) {
             BLOGE("state abstraction: failed to load policy from %s: %s", path.c_str(), ex.what());
         }
@@ -967,27 +1434,8 @@ namespace fastbotx {
         std::string tmpPath = path + ".tmp";
 
         nlohmann::json j;
-        j["version"] = 1;
-
-        // Serialize per-activity key masks
-        nlohmann::json acts = nlohmann::json::array();
-        for (const auto &kv : _activityKeyMask) {
-            nlohmann::json item;
-            item["name"] = kv.first;
-            item["mask"] = static_cast<unsigned int>(kv.second);
-            acts.push_back(item);
-        }
-        j["activities"] = acts;
-
-        // Serialize coarsening blacklist
-        nlohmann::json blk = nlohmann::json::array();
-        for (const auto &p : _coarseningBlacklist) {
-            nlohmann::json item;
-            item["activity"] = p.first;
-            item["mask"] = static_cast<unsigned int>(p.second);
-            blk.push_back(item);
-        }
-        j["coarseningBlacklist"] = blk;
+        j["version"] = 2;
+        j["activities"] = nlohmann::json::array();
 
         try {
             std::ofstream out(tmpPath, std::ios::trunc);
@@ -1008,6 +1456,130 @@ namespace fastbotx {
 #else
         (void)this;
 #endif
+    }
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    void Model::logApeStateKeySnapshot(const std::string &rawActivity, const StatePtr &state,
+                                       const naming::StateKey &key, const GraphPtr &graph) {
+        std::ostringstream head;
+        head << "ape-key: activityRaw=" << rawActivity
+             << " activityKey=" << key.activity()
+             << " stateHash=" << static_cast<unsigned long>(state ? state->hash() : 0U)
+             << " stateKeyHash=" << static_cast<unsigned long>(key.hash())
+             << " graphSize=" << static_cast<unsigned long>(graph ? graph->stateSize() : 0U)
+             << " names=" << key.sortedXPaths().size();
+        BDLOG("%s", head.str().c_str());
+        std::ostringstream sample;
+        const auto &xs = key.sortedXPaths();
+        const size_t k = std::min<size_t>(3, xs.size());
+        for (size_t i = 0; i < k; ++i) {
+            if (i != 0) {
+                sample << " | ";
+            }
+            sample << xs[i];
+        }
+        BDLOG("ape-key: sample=%s", sample.str().c_str());
+    }
+
+#endif
+
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+
+    bool Model::buildApeStateKeyFromElementTree(const ElementPtr &element, const std::string &activity,
+                                               naming::StateKey *outKey,
+                                               const StatePtr &stateForDynamicApply) {
+        if (!element || !outKey) {
+            return false;
+        }
+        std::string pkg;
+        std::string cls;
+        naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        gui_tree::GUITreeBuildResult built = gui_tree::GUITreeBuilder::buildFromElement(element, pkg, cls);
+        if (!built.tree || !built.dom) {
+            const std::string xml = element->toXML();
+            built = gui_tree::GUITreeBuilder::buildFromXml(xml, pkg, cls);
+        }
+        if (!built.tree || !built.dom) {
+            return false;
+        }
+        naming::ActivityNamingManager &mgr = _apeStateNamingManager->activityManager();
+        const int fpSteps = _preference ? _preference->getApeNamingFixedPointMaxIter() : 0;
+        naming::NamingPtr naming;
+        if (fpSteps > 0) {
+            naming = _apeStateNamingManager->getNamingFixedPoint(actKey, *built.tree, built.dom, fpSteps);
+            if (!naming) {
+                return false;
+            }
+        } else {
+            naming = mgr.getNaming(actKey);
+            if (!naming) {
+                naming = naming::NamingFactory::defaultRootNaming();
+                if (naming) {
+                    mgr.setNaming(actKey, naming);
+                }
+            }
+            if (!naming) {
+                return false;
+            }
+            if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
+                return false;
+            }
+        }
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        auto itCtx = _apeNamingContext.find(actKey);
+        if (itCtx != _apeNamingContext.end() && itCtx->second.previousNamingBeforeRefine) {
+            naming::NamingPtr prevN = itCtx->second.previousNamingBeforeRefine;
+            if (!naming::NamingFactory::rebuildTree(prevN, *built.tree, built.dom)) {
+                return false;
+            }
+            naming::StateKey kOld = naming::StateKey::fromGUITree(*built.tree);
+            if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
+                return false;
+            }
+            naming::StateKey kNewAfter = naming::StateKey::fromGUITree(*built.tree);
+            uintptr_t oldH = kOld.hash();
+            uintptr_t newH = kNewAfter.hash();
+            if (oldH != newH) {
+                itCtx->second.oldKeyHashToNewKeyHashes[oldH].insert(newH);
+            }
+        }
+#endif
+        naming::StateKey kNew = naming::StateKey::fromGUITree(*built.tree);
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        if (stateForDynamicApply) {
+            std::vector<const gui_tree::GUITreeNode *> guiPreOrder;
+            collectGUITreeNodesPreOrder(built.tree->getRootNode(), &guiPreOrder);
+            applyApeDynamicActionHashesToReuseState(stateForDynamicApply, guiPreOrder, kNew);
+        }
+#endif
+        *outKey = std::move(kNew);
+        return true;
+    }
+#endif
+
+    void Model::recordApeStateKey(const StatePtr &state, const naming::StateKey &key) {
+        if (!state) {
+            return;
+        }
+        const uintptr_t h = state->hash();
+        auto it = _ape_state_keys_by_hash.find(h);
+        if (it != _ape_state_keys_by_hash.end()) {
+            it->second = key;
+        } else {
+            _ape_state_keys_by_hash.emplace(h, key);
+        }
+    }
+
+    bool Model::tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out) const {
+        auto it = _ape_state_keys_by_hash.find(stateHash);
+        if (it == _ape_state_keys_by_hash.end()) {
+            return false;
+        }
+        if (out != nullptr) {
+            *out = it->second;
+        }
+        return true;
     }
 
     /**

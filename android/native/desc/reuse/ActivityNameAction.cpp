@@ -9,6 +9,7 @@
 
 #include  "ActivityNameAction.h"
 
+#include <functional>
 #include <utility>
 #include "../utils.hpp"
 #include "ActionFilter.h"
@@ -47,6 +48,13 @@ namespace fastbotx {
         // Magic number 0x9e3779b9 is a common hash mixing constant
         this->_hashcode = 0x9e3779b9 + (activityHashCode << 2) ^
                           (((actionHashCode << 6) ^ (targetHash << 1)) << 1);
+    }
+
+    void ActivityNameAction::applyApeDynamicRlIdentity(uintptr_t activityCanonicalHash,
+                                                       uintptr_t abstractTargetHash) {
+        uintptr_t actionHashCode = std::hash<int>{}(static_cast<int>(this->getActionType()));
+        this->_hashcode = 0x9e3779b9 + (activityCanonicalHash << 2) ^
+                          (((actionHashCode << 6) ^ (abstractTargetHash << 1)) << 1);
     }
 
     ActivityNameAction::~ActivityNameAction()

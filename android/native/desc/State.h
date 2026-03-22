@@ -83,6 +83,14 @@ namespace fastbotx {
          * Base implementation returns hash(); ReuseState overrides to use mask over widgets.
          */
         virtual uintptr_t getHashUnderMask(WidgetKeyMask mask) const;
+
+        /**
+         * Replace dynamic (non-static) state identity with APE StateKey::hash() so RL/graph reuse the same
+         * abstraction as APE naming; static reuse mode keeps widget-based hash from ReuseState::buildHashForState.
+         */
+        void applyDynamicAbstractionIdentityHash(uintptr_t apeStateKeyHash);
+
+        bool usesDynamicAbstractionIdentityHash() const { return _usesApeIdentityHash; }
 #endif
 
         /**
@@ -272,6 +280,11 @@ namespace fastbotx {
 
         /// Hash code for this state (computed from activity and widgets)
         uintptr_t _hashcode{};
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        /** True when _hashcode was set from APE StateKey (dynamic path only). */
+        bool _usesApeIdentityHash{false};
+#endif
         
         /// Activity name string pointer (shared for memory efficiency)
         stringPtr _activity;

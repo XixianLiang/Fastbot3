@@ -140,6 +140,10 @@ namespace fastbotx {
 
         bool getEnable() const { return this->_enabled; }
 
+        bool getFocused() const { return this->_focused; }
+
+        bool getPassword() const { return this->_password; }
+
         ScrollType getScrollType() const;
         
         // Internal method to compute scroll type (used for caching)

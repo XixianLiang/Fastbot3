@@ -286,22 +286,15 @@ namespace fastbotx {
     /**
      * Agent algorithm types.
      *
-     * Random:    placeholder for future purely random agent (currently unused).
-     * DFS:       Depth-First Search exploration agent.
-     * BFS:       Breadth-First Search exploration agent (layer-by-layer exploration).
+     * Random:      placeholder for future purely random agent (currently unused).
      * DoubleSarsa: Double SARSA reinforcement learning agent with reuse model.
-     * Frontier:  Frontier-based exploration agent (prioritize unvisited/low-visit actions).
-     * Curiosity:  Curiosity-driven agent (WebRLED-style dual novelty: episode + global).
+     * Curiosity:   Curiosity-driven agent (WebRLED-style dual novelty: episode + global).
      */
     enum AlgorithmType {
         Random = 0,
         Sarsa = 1,
-        DFS = 2,
-        BFS = 4,
         DoubleSarsa = 8,
-        Frontier = 16,
         Curiosity = 32,
-        GoExplore = 64,
         LLMExplorer = 128
     };
 

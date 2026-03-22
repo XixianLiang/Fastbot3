@@ -33,6 +33,13 @@ namespace fastbotx {
         ActivityNameAction(stringPtr activity, const WidgetPtr &widget, ActionType act);
 
         /**
+         * Recompute hash for dynamic (non-static) APE alignment: activity term uses the same string as
+         * StateKey::activity() (canonical pkg/cls), target term uses abstract widget id (e.g. fastStringHash(Name::toXPath)).
+         * Mixing formula matches the constructor. Static reuse mode keeps the original constructor hash.
+         */
+        void applyApeDynamicRlIdentity(uintptr_t activityCanonicalHash, uintptr_t abstractTargetHash);
+
+        /**
          * @brief Get the activity name
          * 
          * @return Shared pointer to activity name string

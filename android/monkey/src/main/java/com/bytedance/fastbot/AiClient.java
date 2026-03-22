@@ -33,6 +33,29 @@ import java.util.concurrent.TimeUnit;
 
 /**
  * @author Jianqiang Guo, Zhao Zhang
+ *
+ * <p>Optional native build: CMake {@code FASTBOTX_APE_NATIVE_RECORD=ON} (with vendored pugixml) builds
+ * APE {@code StateKey} in {@code Model::buildApeStateKeyFromElementTree} during {@code getOperateOpt} and
+ * attaches sidecars via {@code recordApeStateKey}. Optional {@code max.apeGraphDedupByStateKey=true} merges
+ * graph states by {@code StateKey} hash. When not in static reuse abstraction, native also aligns
+ * {@code State::hash()} and {@code ActivityNameAction} hashes to the same APE identity (canonical activity
+ * + abstract XPath targets where available). {@code max.apeNamingFixedPointSteps=N} enables per-step
+ * {@code refineNaming}+{@code rebuildTree} in {@code StateNamingManager::getNamingFixedPoint} with
+ * {@code StateKey} fixed-point early stop; {@code max.apeNamingPeriodicRefinement=false} turns off
+ * the separate periodic naming refine batch; {@code max.apeNamingActionRefineHops=N} controls
+ * periodic action-refinement hop search depth; {@code max.apeNamingActionRefineRequireFingerprintChange}
+ * controls whether periodic refinement requires fingerprint change; {@code max.apeNamingActionRefinePredicateMode}
+ * controls candidate acceptance mode (fingerprint_change / always_accept / fineness_increase);
+ * {@code max.apeNamingActionRefineSelectionMode} controls whether to take first or deepest acceptable hop;
+ * {@code max.apeNamingActionRefineMinActivityStates} sets minimum activity state count before periodic refine;
+ * {@code max.apeNamingActionRefineMinNonDetPairs} sets minimum non-deterministic (stateKey,action) pair count;
+ * {@code max.apeNamingMinNonDetTargets} sets per-pair target-count threshold for non-determinism;
+ * {@code max.apeNamingActionRefineMinStateDelta} sets minimum activity state-count delta between refinements;
+ * {@code max.apeNamingActionRefineMinNonDetPairDelta} sets minimum nonDet-pair delta between refinements;
+ * {@code max.apeNamingActionRefineRuleProfile} switches `baseline` / `strict_baseline` /
+ * `java_rule_01_preview` / `java_rule_02_preview` / `java_rule_03_preview` profile.
+ * Full key table: {@code android/native/desc/APE_PARITY.md}
+ * § {@code max.config} (APE-related); wire overview: {@code JNI_HIERARCHY_AUDIT.md}.
  */
 
 public class AiClient {
@@ -81,22 +104,14 @@ public class AiClient {
      * Agent algorithm types (must align with native fastbotx::AlgorithmType).
      *
      * Random:       placeholder for future random agent (currently unused).
-     * Dfs:          depth-first-search exploration agent.
-     * Bfs:          breadth-first-search exploration agent (reserved).
      * DoubleSarsa:  Double SARSA reinforcement learning agent with reuse model.
-     * Frontier:     frontier-based exploration agent (infoGain × distance, MA-SLAM style).
-     * Curiosity:   curiosity-driven agent (WebRLED-style dual novelty + ε-greedy).
-     * GoExplore:    standalone Go-Explore style agent (archive + return to cell + explore).
+     * Curiosity:    curiosity-driven agent (WebRLED-style dual novelty + ε-greedy).
      */
     public enum AlgorithmType {
         Random(0),
         Sarsa(1),
-        Dfs(2),
-        Bfs(4),
         DoubleSarsa(8),
-        Frontier(16),
-        Curiosity(32),
-        GoExplore(64);
+        Curiosity(32);
 
         private final int _value;
 

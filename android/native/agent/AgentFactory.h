@@ -35,8 +35,7 @@ namespace fastbotx {
      * 
      * Uses factory pattern to create different types of Agent instances.
      * 
-     * Note: In current implementation, regardless of algorithm type (agentT) passed,
-     * DoubleSarsaAgent instance is always created (Double SARSA reinforcement learning).
+     * Dispatch: Curiosity → CuriosityAgent; Sarsa → SarsaAgent; default → DoubleSarsaAgent.
      * 
      * Advantages of factory pattern:
      * 1. Encapsulates object creation logic
@@ -51,11 +50,9 @@ namespace fastbotx {
          * 
          * Creates corresponding Agent instance based on algorithm type and device type.
          * 
-         * Current implementation:
-         * - Always creates DoubleSarsaAgent regardless of algorithm type
-         * - After creating Agent, starts a background thread to periodically save model
+         * Model save thread: started for Sarsa and DoubleSarsa agents (delayed start, periodic save).
          * 
-         * @param agentT Algorithm type (currently unused, reserved interface)
+         * @param agentT Algorithm type (Curiosity / Sarsa / DoubleSarsa default)
          * @param model Model pointer, Agent needs access to model to get state graph info
          * @param deviceType Device type (currently unused, reserved interface, defaults to Normal)
          * @return Created Agent smart pointer

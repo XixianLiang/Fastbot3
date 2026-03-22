@@ -119,6 +119,109 @@ namespace fastbotx {
          */
         bool useStaticReuseAbstraction() const;
 
+        /**
+         * When true with FASTBOTX_APE_NATIVE_RECORD, graph merges states by APE StateKey::hash()
+         * (in addition to widget-hash dedup inside addState). max.config: max.apeGraphDedupByStateKey=true|false
+         */
+        bool useApeGraphDedupByStateKey() const;
+
+        /**
+         * Greedy Naming lattice steps in Model::buildApeStateKeyFromElementTree (0 = off).
+         * max.config: max.apeNamingFixedPointSteps=N (capped, e.g. 256).
+         */
+        int getApeNamingFixedPointMaxIter() const { return _apeNamingFixedPointMaxIter; }
+
+        /**
+         * When false, Model skips periodic APE Naming refinement (non-determinism-driven refine batch).
+         * Use with max.apeNamingFixedPointSteps to avoid double refinement. Default true.
+         * max.config: max.apeNamingPeriodicRefinement=true|false
+         */
+        bool useApeNamingPeriodicRefinement() const { return _apeNamingPeriodicRefinement; }
+        /**
+         * Only used when native is built without pugixml (no GUITree). If true, skip legacy widget/mask batch
+         * and run only runApeNamingAbstractionBatch (often empty). With FASTBOT_HAS_PUGIXML, Model always
+         * uses the APE naming batch for periodic refinement; this flag is ignored.
+         */
+        bool useApeNamingOnly() const { return _apeNamingOnly; }
+
+        /**
+         * Max refinement hops for periodic actionRefinementWithOptions in Model::refineActivityApeNaming.
+         * max.config: max.apeNamingActionRefineHops=N (clamped to [1, 64], default 8).
+         */
+        int getApeNamingActionRefineHops() const { return _apeNamingActionRefineHops; }
+
+        /**
+         * Whether periodic action refinement requires candidate fingerprint to differ from current.
+         * max.config: max.apeNamingActionRefineRequireFingerprintChange=true|false (default true).
+         */
+        bool requireApeNamingActionRefineFingerprintChange() const {
+            return _apeNamingActionRefineRequireFingerprintChange;
+        }
+
+        /**
+         * Predicate mode for periodic action refinement candidate acceptance.
+         * Values: fingerprint_change | always_accept | fineness_increase.
+         * max.config: max.apeNamingActionRefinePredicateMode=<mode>
+         */
+        const std::string &getApeNamingActionRefinePredicateMode() const {
+            return _apeNamingActionRefinePredicateMode;
+        }
+
+        /**
+         * Candidate selection mode among acceptable refinement hops.
+         * Values: first_accept | deepest_accept.
+         * max.config: max.apeNamingActionRefineSelectionMode=<mode>
+         */
+        const std::string &getApeNamingActionRefineSelectionMode() const {
+            return _apeNamingActionRefineSelectionMode;
+        }
+
+        /**
+         * Minimal activity state count required before periodic action refinement is attempted.
+         * max.config: max.apeNamingActionRefineMinActivityStates=N (clamped to [1, 10000], default 2).
+         */
+        int getApeNamingActionRefineMinActivityStates() const {
+            return _apeNamingActionRefineMinActivityStates;
+        }
+
+        /**
+         * Minimal non-deterministic (stateKey, action) pair count for an activity before
+         * periodic action refinement is attempted.
+         * max.config: max.apeNamingActionRefineMinNonDetPairs=N (clamped to [1, 10000], default 1).
+         */
+        int getApeNamingActionRefineMinNonDetPairs() const {
+            return _apeNamingActionRefineMinNonDetPairs;
+        }
+
+        /**
+         * Non-determinism target threshold for APE naming (sourceKey,action)->targetKey fan-out.
+         * max.config: max.apeNamingMinNonDetTargets=N (clamped to [2, 100], default MinNonDeterminismCount).
+         */
+        int getApeNamingMinNonDetTargets() const { return _apeNamingMinNonDetTargets; }
+
+        /**
+         * Minimal activity state count delta since last successful APE naming refinement.
+         * max.config: max.apeNamingActionRefineMinStateDelta=N (clamped to [1, 10000], default 1).
+         */
+        int getApeNamingActionRefineMinStateDelta() const { return _apeNamingActionRefineMinStateDelta; }
+
+        /**
+         * Minimal non-deterministic pair count delta since last successful APE naming refinement.
+         * max.config: max.apeNamingActionRefineMinNonDetPairDelta=N (clamped to [0, 10000], default 0).
+         */
+        int getApeNamingActionRefineMinNonDetPairDelta() const {
+            return _apeNamingActionRefineMinNonDetPairDelta;
+        }
+
+        /**
+         * Rule profile for periodic APE action refinement baseline.
+         * Values: baseline | strict_baseline | java_rule_01_preview | java_rule_02_preview | java_rule_03_preview.
+         * max.config: max.apeNamingActionRefineRuleProfile=<profile>
+         */
+        const std::string &getApeNamingActionRefineRuleProfile() const {
+            return _apeNamingActionRefineRuleProfile;
+        }
+
         bool isForceUseTextModel() const { return this->_forceUseTextModel; }
 
         int getForceMaxBlockStateTimes() const { return this->_forceMaxBlockStateTimes; }
@@ -240,6 +343,21 @@ namespace fastbotx {
         bool _pruningValidTexts;
         bool _skipAllActionsFromModel;
         bool _useStaticReuseAbstraction{};
+        bool _useApeGraphDedupByStateKey{};
+        int _apeNamingFixedPointMaxIter{0};
+        bool _apeNamingPeriodicRefinement{true};
+        // Default true: prefer APE naming dynamic abstraction batch over legacy widget/mask batch.
+        bool _apeNamingOnly{true};
+        int _apeNamingActionRefineHops{8};
+        bool _apeNamingActionRefineRequireFingerprintChange{true};
+        std::string _apeNamingActionRefinePredicateMode{"fingerprint_change"};
+        std::string _apeNamingActionRefineSelectionMode{"first_accept"};
+        int _apeNamingActionRefineMinActivityStates{2};
+        int _apeNamingActionRefineMinNonDetPairs{1};
+        int _apeNamingMinNonDetTargets{MinNonDeterminismCount};
+        int _apeNamingActionRefineMinStateDelta{1};
+        int _apeNamingActionRefineMinNonDetPairDelta{0};
+        std::string _apeNamingActionRefineRuleProfile{"baseline"};
         bool _forceUseTextModel{};
         int _forceMaxBlockStateTimes{};
         RectPtr _rootScreenSize;

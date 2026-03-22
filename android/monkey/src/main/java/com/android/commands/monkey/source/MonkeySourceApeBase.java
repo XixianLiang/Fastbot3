@@ -252,7 +252,7 @@ public abstract class MonkeySourceApeBase {
 
     /**
      * Initialize native agent with the given algorithm type.
-     * (DoubleSarsa for reuse-model agent, DFS/BFS etc. for exploration agents.)
+     * (e.g. DoubleSarsa with reuse model, or Curiosity-driven exploration.)
      */
     public void initAgent(AiClient.AlgorithmType type) {
         AiClient.InitAgent(type, this.packageName);

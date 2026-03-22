@@ -117,7 +117,7 @@ namespace fastbotx {
 
         /**
          * @brief Get the set of all states in the graph (read-only).
-         * Used e.g. by FrontierAgent for global frontier candidate collection.
+         * Used by agents that need the full state set (e.g. curiosity long-horizon novelty).
          * @return Const reference to the state set
          */
         const StatePtrSet &getStates() const { return this->_states; }
@@ -146,6 +146,13 @@ namespace fastbotx {
          * @return The state that was added or the existing matching state
          */
         StatePtr addState(StatePtr state);
+
+        /**
+         * Record a revisit to an existing graph state (same as addState tail when the state already
+         * exists by widget hash): notifications, distribution, addActionFromState. Used when graph
+         * identity is merged by an external key (e.g. APE StateKey) instead of widget hash alone.
+         */
+        void recordStateVisit(StatePtr canonical, StatePtr freshlyBuilt);
 
         /**
          * @brief Get total distribution count (total number of state accesses)

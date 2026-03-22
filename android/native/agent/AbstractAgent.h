@@ -145,7 +145,7 @@ namespace fastbotx {
 
         /**
          * @brief Callback when state abstraction has changed (refine/coarsen batch finished).
-         * Used by FrontierAgent to clear edge cache and path so BFS uses only post-change hashes.
+         * Subclasses may override to clear hash-dependent caches when abstraction changes.
          * Default: no-op.
          */
         virtual void onStateAbstractionChanged() {}

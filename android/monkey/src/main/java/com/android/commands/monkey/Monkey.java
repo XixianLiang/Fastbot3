@@ -113,15 +113,11 @@ public class Monkey {
     private static final Map<String, AiClient.AlgorithmType> AGENT_TYPE_MAP;
     static {
         Map<String, AiClient.AlgorithmType> map = new HashMap<>();
-        map.put("dfs", AiClient.AlgorithmType.Dfs);
         map.put("sarsa", AiClient.AlgorithmType.Sarsa);
         map.put("double-sarsa", AiClient.AlgorithmType.DoubleSarsa);
         map.put("reuseq", AiClient.AlgorithmType.DoubleSarsa);
-        map.put("bfs", AiClient.AlgorithmType.Bfs);
-        map.put("frontier", AiClient.AlgorithmType.Frontier);
         map.put("icm", AiClient.AlgorithmType.Curiosity);
         map.put("curiosity", AiClient.AlgorithmType.Curiosity);
-        map.put("goexplore", AiClient.AlgorithmType.GoExplore);
         AGENT_TYPE_MAP = Collections.unmodifiableMap(map);
     }
     /**
@@ -368,7 +364,7 @@ public class Monkey {
     private boolean mUseApeU2;
 
     /**
-     * agent type string from --agent / --agent-u2 (e.g. "double-sarsa", "dfs", "reuseq")
+     * agent type string from --agent / --agent-u2 (e.g. "double-sarsa", "curiosity", "reuseq")
      */
     private String mAgentType;
 

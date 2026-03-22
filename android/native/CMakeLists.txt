@@ -48,6 +48,9 @@ include_directories(
   "agent/"
   "desc/"
   "desc/reuse"
+  "desc/naming"
+  "desc/gui_tree"
+  "desc/xpath"
   "llm/"
   "events/"
   "model/"
@@ -59,13 +62,17 @@ include_directories(
   "thirdpart/tinyxml2/"
   "thirdpart/json/"
   "thirdpart/xxhash/"
+  "thirdpart/pugixml"
 )
 
 file( GLOB SRC_LIST 
       "*.hpp" 
       "*.cpp" 
       "desc/*.cpp" 
-      "desc/reuse/*.cpp" 
+      "desc/reuse/*.cpp"
+      "desc/naming/*.cpp"
+      "desc/gui_tree/*.cpp"
+      "desc/xpath/*.cpp"
       "llm/*.cpp"
       "model/*.cpp" 
       "agent/*.cpp"
@@ -78,6 +85,17 @@ file( GLOB SRC_LIST
 
 # LVQExplorerAgent.cpp was removed; exclude from build in case of stale GLOB/cache
 list(REMOVE_ITEM SRC_LIST "agent/LVQExplorerAgent.cpp")
+
+# pugixml (XPath 1.0): optional until thirdpart/pugixml/pugixml.cpp is vendored (see vendor_pugixml.sh)
+set(PUGIXML_CPP "${CMAKE_CURRENT_SOURCE_DIR}/thirdpart/pugixml/pugixml.cpp")
+if (EXISTS "${PUGIXML_CPP}")
+    list(APPEND SRC_LIST "${PUGIXML_CPP}")
+    set(FASTBOT_HAS_PUGIXML 1)
+    message(STATUS "pugixml: building with ${PUGIXML_CPP}")
+else()
+    set(FASTBOT_HAS_PUGIXML 0)
+    message(STATUS "pugixml: pugixml.cpp missing — run android/native/thirdpart/pugixml/vendor_pugixml.sh")
+endif()
 
 message(STATUS ${SRC_LIST})
 
@@ -123,6 +141,20 @@ target_compile_definitions(fastbot_native PRIVATE
     # this line to re-enable 8-dim DNN embedding clustering for A/B tests.
     FASTBOTX_ICM_DISABLE_DNN_ENCODER
 )
+if (FASTBOT_HAS_PUGIXML)
+    target_compile_definitions(fastbot_native PRIVATE FASTBOT_HAS_PUGIXML=1)
+endif()
+
+# Optional: APE StateKey sidecar in Model (Element::toXML → GUITreeBuilder + StateKey::fromGUITree); costs extra XML parse per step.
+option(FASTBOTX_APE_NATIVE_RECORD "Record APE StateKey via GUITreeBuilder (requires pugixml.cpp)" OFF)
+if (FASTBOTX_APE_NATIVE_RECORD)
+    if (FASTBOT_HAS_PUGIXML)
+        target_compile_definitions(fastbot_native PRIVATE FASTBOTX_APE_NATIVE_RECORD=1)
+        message(STATUS "FASTBOTX_APE_NATIVE_RECORD: enabled")
+    else()
+        message(WARNING "FASTBOTX_APE_NATIVE_RECORD requested but pugixml.cpp missing — ignored")
+    endif()
+endif()
 
 # compatible with the 16kb page devices
 set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -Wl,-z,common-page-size=4096 -Wl,-z,max-page-size=16384")

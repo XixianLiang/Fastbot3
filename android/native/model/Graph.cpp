@@ -104,6 +104,39 @@ namespace fastbotx {
         return state;
     }
 
+    void Graph::recordStateVisit(StatePtr canonical, StatePtr freshlyBuilt) {
+        if (!canonical) {
+            return;
+        }
+        if (freshlyBuilt && canonical->hasNoDetail() && !freshlyBuilt->hasNoDetail()) {
+            canonical->fillDetails(freshlyBuilt);
+        }
+        auto activity = canonical->getActivityString();
+        static const std::string kEmptyActivityStr;
+        const std::string &activityStrForCount = (activity && activity.get()) ? *activity : kEmptyActivityStr;
+
+        this->notifyNewStateEvents(canonical);
+
+        if (activity && activity.get()) {
+            this->_visitedActivities.emplace(activity);
+        }
+
+        this->_totalDistri++;
+
+        const std::string &activityStr = activityStrForCount;
+        auto distriIt = this->_activityDistri.find(activityStr);
+
+        if (distriIt == this->_activityDistri.end()) {
+            this->_activityDistri[activityStr] = _defaultDistri;
+            distriIt = this->_activityDistri.find(activityStr);
+        }
+
+        distriIt->second.first++;
+        distriIt->second.second = 1.0 * distriIt->second.first / this->_totalDistri;
+
+        addActionFromState(canonical);
+    }
+
     /**
      * @brief Notify all registered listeners about a new state being added
      * 

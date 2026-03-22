@@ -346,7 +346,7 @@ namespace fastbotx {
     Preference::Preference()
             : _randomInputText(false), _doInputFuzzing(true), _pruningValidTexts(false),
               _skipAllActionsFromModel(false), _useStaticReuseAbstraction(false),
-              _rootScreenSize(nullptr) {
+              _useApeGraphDedupByStateKey(false), _rootScreenSize(nullptr) {
         loadConfigs();
     }
 
@@ -1182,7 +1182,21 @@ namespace fastbotx {
 #define MaxRandomPickSTR          "max.randomPickFromStringList"
 #define InputFuzzSTR              "max.doinputtextFuzzing"
 #define ListenMode                "max.listenMode"
-#define StaticStateAbstractionSTR "max.staticStateAbstraction"
+#define StaticStateAbstractionSTR      "max.staticStateAbstraction"
+#define ApeGraphDedupByStateKeySTR     "max.apeGraphDedupByStateKey"
+#define ApeNamingFixedPointStepsSTR    "max.apeNamingFixedPointSteps"
+#define ApeNamingPeriodicRefinementSTR "max.apeNamingPeriodicRefinement"
+#define ApeNamingOnlySTR "max.apeNamingOnly"
+#define ApeNamingActionRefineHopsSTR   "max.apeNamingActionRefineHops"
+#define ApeNamingActionRefineRequireFpChangeSTR "max.apeNamingActionRefineRequireFingerprintChange"
+#define ApeNamingActionRefinePredicateModeSTR "max.apeNamingActionRefinePredicateMode"
+#define ApeNamingActionRefineSelectionModeSTR "max.apeNamingActionRefineSelectionMode"
+#define ApeNamingActionRefineMinActivityStatesSTR "max.apeNamingActionRefineMinActivityStates"
+#define ApeNamingActionRefineMinNonDetPairsSTR "max.apeNamingActionRefineMinNonDetPairs"
+#define ApeNamingMinNonDetTargetsSTR "max.apeNamingMinNonDetTargets"
+#define ApeNamingActionRefineMinStateDeltaSTR "max.apeNamingActionRefineMinStateDelta"
+#define ApeNamingActionRefineMinNonDetPairDeltaSTR "max.apeNamingActionRefineMinNonDetPairDelta"
+#define ApeNamingActionRefineRuleProfileSTR "max.apeNamingActionRefineRuleProfile"
 #define LlmEnabledSTR             "max.llm.enabled"
 #define LlmKnowledgeSTR           "max.llm.knowledge"
 #define LlmWidgetPrioritySTR      "max.llm.widgetpriority"
@@ -1294,6 +1308,170 @@ namespace fastbotx {
                     BLOG("state abstraction: static (legacy static reuse state abstraction enabled)");
                 } else {
                     BLOG("state abstraction: dynamic (runtime refinement/coarsening enabled)");
+                }
+            } else if (key == ApeGraphDedupByStateKeySTR) {
+                this->_useApeGraphDedupByStateKey = (value == "true");
+                if (this->_useApeGraphDedupByStateKey) {
+                    BLOG("APE: graph dedup by StateKey enabled (max.apeGraphDedupByStateKey=true)");
+                }
+            } else if (key == ApeNamingFixedPointStepsSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 0) {
+                        v = 0;
+                    }
+                    if (v > 256) {
+                        v = 256;
+                    }
+                    this->_apeNamingFixedPointMaxIter = v;
+                    if (v > 0) {
+                        BLOG("APE: naming fixed-point refine/rebuild max steps=%d (max.apeNamingFixedPointSteps)", v);
+                    }
+                } catch (...) {
+                    BLOGE("invalid max.apeNamingFixedPointSteps value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingPeriodicRefinementSTR) {
+                this->_apeNamingPeriodicRefinement = (value == "true");
+                if (!this->_apeNamingPeriodicRefinement) {
+                    BLOG("APE: periodic naming refinement disabled (max.apeNamingPeriodicRefinement=false)");
+                }
+            } else if (key == ApeNamingOnlySTR) {
+                this->_apeNamingOnly = (value == "true");
+                if (this->_apeNamingOnly) {
+                    BLOG("APE: apeNamingOnly enabled (skip legacy widget/mask batch; only used when built without pugixml)");
+                } else {
+                    BLOG("APE: apeNamingOnly disabled (run legacy widget/mask batch when no pugixml)");
+                }
+            } else if (key == ApeNamingActionRefineHopsSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 1) {
+                        v = 1;
+                    }
+                    if (v > 64) {
+                        v = 64;
+                    }
+                    this->_apeNamingActionRefineHops = v;
+                    BLOG("APE: periodic action refinement hops=%d (max.apeNamingActionRefineHops)", v);
+                } catch (...) {
+                    BLOGE("invalid max.apeNamingActionRefineHops value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingActionRefineRequireFpChangeSTR) {
+                this->_apeNamingActionRefineRequireFingerprintChange = (value == "true");
+                // Backward-compatible alias: map old boolean switch to predicate mode.
+                this->_apeNamingActionRefinePredicateMode =
+                    this->_apeNamingActionRefineRequireFingerprintChange ? "fingerprint_change" : "always_accept";
+                BLOG("APE: action refinement require fingerprint change=%s (%s)",
+                     this->_apeNamingActionRefineRequireFingerprintChange ? "true" : "false",
+                     ApeNamingActionRefineRequireFpChangeSTR);
+            } else if (key == ApeNamingActionRefinePredicateModeSTR) {
+                std::string mode = value;
+                if (mode == "namelet_count_change") {
+                    // Backward compatibility with earlier draft mode.
+                    mode = "fineness_increase";
+                }
+                if (mode == "fingerprint_change" || mode == "always_accept" ||
+                    mode == "fineness_increase") {
+                    this->_apeNamingActionRefinePredicateMode = mode;
+                    BLOG("APE: action refinement predicate mode=%s (%s)",
+                         this->_apeNamingActionRefinePredicateMode.c_str(),
+                         ApeNamingActionRefinePredicateModeSTR);
+                } else {
+                    BLOGE("invalid max.apeNamingActionRefinePredicateMode value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingActionRefineSelectionModeSTR) {
+                if (value == "first_accept" || value == "deepest_accept") {
+                    this->_apeNamingActionRefineSelectionMode = value;
+                    BLOG("APE: action refinement selection mode=%s (%s)",
+                         this->_apeNamingActionRefineSelectionMode.c_str(),
+                         ApeNamingActionRefineSelectionModeSTR);
+                } else {
+                    BLOGE("invalid max.apeNamingActionRefineSelectionMode value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingActionRefineMinActivityStatesSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 1) {
+                        v = 1;
+                    }
+                    if (v > 10000) {
+                        v = 10000;
+                    }
+                    this->_apeNamingActionRefineMinActivityStates = v;
+                    BLOG("APE: action refinement min activity states=%d (%s)", v,
+                         ApeNamingActionRefineMinActivityStatesSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeNamingActionRefineMinActivityStates value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingActionRefineMinNonDetPairsSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 1) {
+                        v = 1;
+                    }
+                    if (v > 10000) {
+                        v = 10000;
+                    }
+                    this->_apeNamingActionRefineMinNonDetPairs = v;
+                    BLOG("APE: action refinement min nonDet pairs=%d (%s)", v,
+                         ApeNamingActionRefineMinNonDetPairsSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeNamingActionRefineMinNonDetPairs value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingMinNonDetTargetsSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 2) {
+                        v = 2;
+                    }
+                    if (v > 100) {
+                        v = 100;
+                    }
+                    this->_apeNamingMinNonDetTargets = v;
+                    BLOG("APE: nonDet target threshold=%d (%s)", v, ApeNamingMinNonDetTargetsSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeNamingMinNonDetTargets value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingActionRefineMinStateDeltaSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 1) {
+                        v = 1;
+                    }
+                    if (v > 10000) {
+                        v = 10000;
+                    }
+                    this->_apeNamingActionRefineMinStateDelta = v;
+                    BLOG("APE: action refinement min state delta=%d (%s)", v,
+                         ApeNamingActionRefineMinStateDeltaSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeNamingActionRefineMinStateDelta value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingActionRefineMinNonDetPairDeltaSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 0) {
+                        v = 0;
+                    }
+                    if (v > 10000) {
+                        v = 10000;
+                    }
+                    this->_apeNamingActionRefineMinNonDetPairDelta = v;
+                    BLOG("APE: action refinement min nonDet-pair delta=%d (%s)", v,
+                         ApeNamingActionRefineMinNonDetPairDeltaSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeNamingActionRefineMinNonDetPairDelta value: %s", value.c_str());
+                }
+            } else if (key == ApeNamingActionRefineRuleProfileSTR) {
+                if (value == "baseline" || value == "strict_baseline" ||
+                    value == "java_rule_01_preview" || value == "java_rule_02_preview" ||
+                    value == "java_rule_03_preview") {
+                    this->_apeNamingActionRefineRuleProfile = value;
+                    BLOG("APE: action refinement rule profile=%s (%s)",
+                         this->_apeNamingActionRefineRuleProfile.c_str(),
+                         ApeNamingActionRefineRuleProfileSTR);
+                } else {
+                    BLOGE("invalid max.apeNamingActionRefineRuleProfile value: %s", value.c_str());
                 }
             } else if (key == LlmEnabledSTR) {
                 this->_llmRuntimeConfig.enabled = (value == "true");
@@ -1995,6 +2173,10 @@ namespace fastbotx {
 
     bool Preference::useStaticReuseAbstraction() const {
         return _useStaticReuseAbstraction;
+    }
+
+    bool Preference::useApeGraphDedupByStateKey() const {
+        return _useApeGraphDedupByStateKey;
     }
 
 } // namespace fastbotx

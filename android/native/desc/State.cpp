@@ -301,6 +301,11 @@ namespace fastbotx {
     }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    void State::applyDynamicAbstractionIdentityHash(uintptr_t apeStateKeyHash) {
+        this->_hashcode = apeStateKeyHash;
+        this->_usesApeIdentityHash = true;
+    }
+
     uintptr_t State::getHashUnderMask(WidgetKeyMask /*mask*/) const {
         return this->hash();
     }

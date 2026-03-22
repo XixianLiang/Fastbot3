@@ -277,6 +277,9 @@ namespace fastbotx {
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
     uintptr_t ReuseState::getHashUnderMask(WidgetKeyMask mask) const {
+        if (usesDynamicAbstractionIdentityHash()) {
+            return hash();
+        }
         std::string activityString = (_activity && _activity.get()) ? *_activity : "";
         // Performance optimization: Use fast string hash instead of std::hash
         uintptr_t activityHash = (fastbotx::fastStringHash(activityString) * 31U) << 5;

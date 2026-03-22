@@ -10,6 +10,8 @@
 #include <memory>
 #include "Base.h"
 #include "State.h"
+#include "../desc/naming/StateKey.h"
+#include "../desc/naming/StateNamingManager.h"
 #include "Element.h"
 #include "Action.h"
 #include "Graph.h"
@@ -25,29 +27,49 @@
 
 namespace fastbotx {
 
+namespace gui_tree {
+    class GUITreeNode;
+}
+
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-    /// Single transition log entry for non-determinism detection
-    struct TransitionEntry {
-        uintptr_t sourceStateHash{0};
+    /// APE Naming lattice: transition log keyed by StateKey::hash().
+    struct ApeTransitionEntry {
+        uintptr_t sourceKeyHash{0};
         uintptr_t actionHash{0};
-        uintptr_t targetStateHash{0};
+        uintptr_t targetKeyHash{0};
         std::string sourceActivity;
         bool valid{false};
     };
 
-    /// Per-activity context for refinement/coarsening (previous mask and L′→L split tracking)
-    struct ActivityAbstractionContext {
-        WidgetKeyMask previousMask{DefaultWidgetKeyMask};
-        size_t stateCountAtLastRefinement{0};
-        /// APE coarsening: map old state hash (under L′) → set of new state hashes (under L)
-        std::unordered_map<uintptr_t, std::unordered_set<uintptr_t>> oldStateToNewStates;
+    /// Per-activity Naming refine/coarsen (L′→L split on StateKey hashes, mirror ActivityAbstractionContext).
+    struct ApeNamingAbstractionContext {
+        naming::NamingPtr previousNamingBeforeRefine;
+        std::string previousNamingFingerprintBeforeRefine;
+        std::unordered_map<uintptr_t, std::unordered_set<uintptr_t>> oldKeyHashToNewKeyHashes;
+        size_t stateCountAtLastNamingRefinement{0};
+        int nonDetPairsAtLastNamingRefinement{0};
+        // Pair-driven refine/coarsen context (Java resolveNonDeterminism / batchAbstract style)
+        uintptr_t triggerSourceKeyHash{0};
+        uintptr_t triggerActionHash{0};
+        std::unordered_set<uintptr_t> triggerTargetKeyHashes;
+        size_t triggerTargetCountAtRefine{0};
     };
 
-    /// Per-activity last-seen state stats for "skip Text refinement" when text-heavy or would explode
-    struct ActivityLastStateTextStats {
-        size_t widgetsWithNonEmptyText{0};
-        size_t totalWidgets{0};
-        size_t uniqueWidgetsIfAddText{0};
+    struct ApePairKey {
+        uintptr_t sourceKeyHash{0};
+        uintptr_t actionHash{0};
+
+        bool operator==(const ApePairKey &other) const {
+            return sourceKeyHash == other.sourceKeyHash && actionHash == other.actionHash;
+        }
+    };
+
+    struct ApePairKeyHash {
+        size_t operator()(const ApePairKey &k) const {
+            const size_t h1 = std::hash<uintptr_t>{}(k.sourceKeyHash);
+            const size_t h2 = std::hash<uintptr_t>{}(k.actionHash);
+            return h1 ^ (h2 + 0x9e3779b97f4a7c15ULL + (h1 << 6) + (h1 >> 2));
+        }
     };
 #endif
 
@@ -203,22 +225,31 @@ namespace fastbotx {
         std::string getCoverageJson() const;
 
         /**
-         * @brief Load persisted dynamic state abstraction policy for the current package (if enabled).
+         * @brief Load persisted dynamic state abstraction policy metadata for the current package (if enabled).
          *
          * Policy file path (per package):
          *   /sdcard/fastbot_{packageName}.statekey.json
          *
-         * This method is a thin I/O wrapper and does not change any refinement/coarsening logic.
+         * v1 files may list legacy widget-key masks and coarseningBlacklist; they are ignored (APE dynamic
+         * identity does not use mask refinement). v2 writes an empty activities array only.
          */
         void loadStateAbstractionPolicy();
 
         /**
-         * @brief Save current dynamic state abstraction policy for the current package (if enabled).
+         * @brief Save dynamic state abstraction policy stub for the current package (if enabled).
          *
-         * Writes the same format as loadStateAbstractionPolicy() reads.
-         * Safe to call multiple times; errors are logged and otherwise ignored.
+         * Writes version 2 JSON (no per-activity widget masks). Safe to call multiple times.
          */
         void saveStateAbstractionPolicy() const;
+
+        /**
+         * @brief Optional APE bridge: store StateKey alongside an RL state (indexed by state->hash()).
+         * Call after the state is in the graph (e.g. after createAndAddState) when GUITree + Naming produced a key.
+         */
+        void recordApeStateKey(const StatePtr &state, const naming::StateKey &key);
+
+        /** Lookup a previously recorded APE StateKey by state hash (returns false if none). */
+        bool tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out) const;
 
         virtual ~Model();
 
@@ -296,19 +327,41 @@ namespace fastbotx {
          */
         OperatePtr convertActionToOperate(ActionPtr action, StatePtr state);
 
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        /** Build GUITree (+ dom for XPath); set outKey from Naming + tree. Returns false on failure.
+         *  When @p stateForDynamicApply is non-null (dynamic RL identity), applies APE action hashes
+         *  while the GUITree is still alive — must not defer to after return (node pointers invalid). */
+        bool buildApeStateKeyFromElementTree(const ElementPtr &element, const std::string &activity,
+                                             naming::StateKey *outKey,
+                                             const StatePtr &stateForDynamicApply = StatePtr());
+#endif
+
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        /// Record one transition (source, action, target) for non-determinism detection
+        static void logApeStateKeySnapshot(const std::string &rawActivity, const StatePtr &state,
+                                           const naming::StateKey &key, const GraphPtr &graph);
+
+        /// Record one transition for APE naming non-determinism detection (StateKey sidecars).
         void recordTransition(const AbstractAgentPtr &agent, const StatePtr &targetState);
-        /// Record state under previous mask for APE coarsening (one L′ state → > β new states)
-        void recordStateSplitIfRefined(const std::string &activity, const StatePtr &state);
-        /// Run refinement/coarsening batch if step count reached interval
+        /// Run APE naming refinement batch if step count reached interval
         void runRefinementAndCoarseningIfScheduled();
-        /// Detect (source, action) pairs that lead to multiple different targets; return activity names to refine
-        std::vector<std::string> detectNonDeterminism() const;
-        /// Refine activity mask (add Text/ContentDesc/Index); return true if refined
-        bool refineActivity(const std::string &activity);
-        /// Coarsen activity mask if state count exceeded threshold (after refinement)
-        void coarsenActivityIfNeeded(const std::string &activity);
+        /// APE Naming lattice: record transition when both ends have StateKey sidecars
+        void recordApeTransitionForAbstraction(const StatePtr &src, const StatePtr &tgt,
+                                               const ActivityStateActionPtr &act);
+        std::vector<std::string> detectNonDeterminismApe() const;
+        struct ApeRefinePair {
+            uintptr_t sourceKeyHash{0};
+            uintptr_t actionHash{0};
+            std::unordered_set<uintptr_t> targetKeyHashes;
+            size_t targetCount{0};
+        };
+        bool refineActivityApeNaming(const std::string &activity);
+        /// @param precomputedActivityNonDetPairCount if >= 0 (from batch collectNonDetPairs), skip per-activity log scan
+        bool refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
+                                     int precomputedActivityNonDetPairCount = -1);
+        void coarsenActivityApeNamingIfNeeded(const std::string &activity);
+        void runApeNamingAbstractionBatch();
+        /// After APE Naming changes, StateKey::hash() space shifts; stale entries must not dedup new visits.
+        void invalidateApeGraphStateKeyDedupMap();
 #endif
         
         /// Smart pointer to the graph object managing all states and actions
@@ -337,16 +390,27 @@ namespace fastbotx {
         /// Per-activity widget key mask for dynamic state abstraction
         mutable std::unordered_map<std::string, WidgetKeyMask> _activityKeyMask;
 
+        /// Optional: APE-native StateKey sidecar (parallel to widget-hash State); not used by Graph dedup.
+        std::unordered_map<uintptr_t, naming::StateKey> _ape_state_keys_by_hash;
+
+        /// When max.apeGraphDedupByStateKey: canonical StatePtr per StateKey::hash().
+        std::unordered_map<uintptr_t, StatePtr> _ape_graph_state_by_key;
+
+        /// APE naming: wraps ActivityNamingManager + optional getNamingFixedPoint(actionRefinement on same dom).
+        std::shared_ptr<naming::StateNamingManager> _apeStateNamingManager;
+
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        std::vector<TransitionEntry> _transitionLog;
-        size_t _transitionLogWriteIndex{0};
+        std::vector<ApeTransitionEntry> _apeTransitionLog;
+        size_t _apeTransitionLogWriteIndex{0};
+        std::unordered_map<ApePairKey, std::pair<std::unordered_map<uintptr_t, int>, std::string>, ApePairKeyHash>
+            _apePairAgg;
+        void apePairAggRemove(const ApeTransitionEntry &e);
+        void apePairAggAdd(const ApeTransitionEntry &e);
         size_t _stepCountSinceLastCheck{0};
-        std::unordered_map<std::string, ActivityAbstractionContext> _activityAbstractionContext;
-        std::set<std::pair<std::string, WidgetKeyMask>> _coarseningBlacklist;
-        /// Activities that need refinement due to α (max widgets per model action > α)
-        std::set<std::string> _activitiesNeedingAlphaRefinement;
-        /// Last-seen state stats per activity for "skip Text" when text-heavy or unique-after-Text would explode
-        std::unordered_map<std::string, ActivityLastStateTextStats> _activityLastStateTextStats;
+        std::unordered_map<std::string, ApeNamingAbstractionContext> _apeNamingContext;
+        std::set<std::pair<std::string, std::string>> _apeNamingCoarseningBlacklist;
+        // Java-like predicate memory: avoid repeatedly refining on proven-bad trigger pairs.
+        std::unordered_map<std::string, std::unordered_set<ApePairKey, ApePairKeyHash>> _apeRefinePairBlacklist;
 #endif
 
     };
