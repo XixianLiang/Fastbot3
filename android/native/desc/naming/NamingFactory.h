@@ -1,5 +1,23 @@
 /*
- * Evaluate Naming on GUITree via XPath (GUITreeDomBridge) + Namer (Java NamingFactory core).
+ * Copyright 2020 Advanced Software Technologies Lab at ETH Zurich, Switzerland
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**
+ * @authors Tianxiao Gu, Zhao Zhang
+ */
+/*
+ * Evaluate Naming on GUITree via XPath (XPathNodeMapper) + Namer.
  * refine / batchAbstract / blacklist — extended in later passes.
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMINGFACTORY_H_
@@ -7,7 +25,7 @@
 
 #include "Naming.h"
 #include "NamerLattice.h"
-#include "../xpath/GUITreeDomBridge.h"
+#include "../xpath/XPathNodeMapper.h"
 
 #include <functional>
 #include <memory>
@@ -34,11 +52,11 @@ namespace naming {
          * Groups by Name::toXPath(); sorts groups like GUITree::rebuild.
          */
         static Naming::NamingResult evaluateNaming(const NamingPtr &naming, gui_tree::GUITree &tree,
-                                                   const std::shared_ptr<gui_tree::GUITreeDomBridge> &dom);
+                                                   const std::shared_ptr<gui_tree::XPathNodeMapper> &dom);
 
         /** evaluateNaming + setCurrentNaming + sync xpath/namelet on nodes. */
         static bool rebuildTree(const NamingPtr &naming, gui_tree::GUITree &tree,
-                                const std::shared_ptr<gui_tree::GUITreeDomBridge> &dom);
+                                const std::shared_ptr<gui_tree::XPathNodeMapper> &dom);
 
         /** One Namelet (root XPath for all nodes) with TYPE-only BitmaskNamer (coarsest non-empty namer in the cube). */
         static NamingPtr defaultRootNaming();
@@ -59,7 +77,7 @@ namespace naming {
          */
         static NamingPtr batchRefineWithRebuildFixedPoint(const NamingPtr &naming, const NamerLattice &lattice,
                                                           gui_tree::GUITree &tree,
-                                                          const std::shared_ptr<gui_tree::GUITreeDomBridge> &dom,
+                                                          const std::shared_ptr<gui_tree::XPathNodeMapper> &dom,
                                                           int max_steps);
 
         /** Repeated abstractNaming (greedy) until no coarser step or max_steps. */

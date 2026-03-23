@@ -1,3 +1,7 @@
+/**
+ * @authors Zhao Zhang
+ */
+ 
 #include "LocalXPathName.h"
 
 namespace fastbotx {

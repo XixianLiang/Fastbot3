@@ -1,3 +1,7 @@
+/**
+ * @authors Zhao Zhang
+ */
+
 #include "StateKey.h"
 #include "../gui_tree/GUITree.h"
 

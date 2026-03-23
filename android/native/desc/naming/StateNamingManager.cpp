@@ -1,10 +1,29 @@
+/*
+ * Copyright 2020 Advanced Software Technologies Lab at ETH Zurich, Switzerland
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**
+ * @authors Tianxiao Gu, Zhao Zhang
+ */
+
 #include "StateNamingManager.h"
 #include "NamingFactory.h"
 #include "StateKey.h"
 #include "NamerFactory.h"
 #include "NamerLattice.h"
 #include "../gui_tree/GUITree.h"
-#include "../xpath/GUITreeDomBridge.h"
+#include "../xpath/XPathNodeMapper.h"
 
 namespace fastbotx {
 namespace naming {
@@ -67,7 +86,7 @@ namespace {
     }
 
     NamingPtr StateNamingManager::getNamingFixedPoint(const std::string &activity_key, gui_tree::GUITree &tree,
-                                                      const std::shared_ptr<gui_tree::GUITreeDomBridge> &dom,
+                                                      const std::shared_ptr<gui_tree::XPathNodeMapper> &dom,
                                                       int max_iter) {
         if (!dom) {
             return getNamingFixedPoint(activity_key, tree, max_iter);

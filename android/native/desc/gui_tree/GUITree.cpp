@@ -1,3 +1,23 @@
+/*
+ * Copyright 2020 Advanced Software Technologies Lab at ETH Zurich, Switzerland
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**
+ * @authors Tianxiao Gu, Zhao Zhang
+ */
+
+
 #include "GUITree.h"
 
 #include <atomic>
@@ -9,12 +29,12 @@ namespace fastbotx {
 namespace gui_tree {
 
     namespace {
-
-        bool namePtrLess(const naming::NamePtr &a, const naming::NamePtr &b) {
-            if (!a || !b) return a.get() < b.get();
-            return a->toXPath() < b->toXPath();
-        }
-
+        struct NamingGroupEntry {
+            naming::NamePtr name;
+            std::string xpathKey;
+            const void *ptrKey{nullptr};
+            std::vector<GUITreeNodePtr> nodes;
+        };
     } // namespace
 
     static std::atomic<int> g_tree_id{0};
@@ -30,35 +50,50 @@ namespace gui_tree {
           activity_class_(std::move(activity_class)) {}
 
     bool GUITree::hasFocusedNode() const {
-        for (const auto &group : current_node_groups_) {
-            for (const auto &n : group) {
-                if (n && n->isFocused()) return true;
-            }
-        }
-        return false;
+        return has_focused_node_;
     }
 
     void GUITree::rebuild(std::vector<naming::NamePtr> names, std::vector<std::vector<GUITreeNodePtr>> node_groups) {
         if (names.size() != node_groups.size()) {
             throw std::invalid_argument("GUITree::rebuild: names and node_groups size mismatch");
         }
-        std::vector<std::pair<naming::NamePtr, std::vector<GUITreeNodePtr>>> pairs;
-        pairs.reserve(names.size());
+        std::vector<NamingGroupEntry> entries;
+        entries.reserve(names.size());
         for (size_t i = 0; i < names.size(); ++i) {
-            pairs.emplace_back(std::move(names[i]), std::move(node_groups[i]));
+            NamingGroupEntry e;
+            e.name = std::move(names[i]);
+            e.nodes = std::move(node_groups[i]);
+            e.ptrKey = e.name.get();
+            if (e.name) {
+                // Precompute XPath string once to avoid repeated allocations in sort comparisons.
+                e.xpathKey = e.name->toXPath();
+            }
+            entries.emplace_back(std::move(e));
         }
-        std::sort(pairs.begin(), pairs.end(),
-                  [](const std::pair<naming::NamePtr, std::vector<GUITreeNodePtr>> &a,
-                     const std::pair<naming::NamePtr, std::vector<GUITreeNodePtr>> &b) {
-                      return namePtrLess(a.first, b.first);
+        std::sort(entries.begin(), entries.end(),
+                  [](const NamingGroupEntry &a, const NamingGroupEntry &b) {
+                      if (!a.name || !b.name) {
+                          return a.ptrKey < b.ptrKey;
+                      }
+                      return a.xpathKey < b.xpathKey;
                   });
         current_names_.clear();
         current_node_groups_.clear();
-        current_names_.reserve(pairs.size());
-        current_node_groups_.reserve(pairs.size());
-        for (auto &p : pairs) {
-            current_names_.push_back(std::move(p.first));
-            current_node_groups_.push_back(std::move(p.second));
+        current_names_.reserve(entries.size());
+        current_node_groups_.reserve(entries.size());
+        has_focused_node_ = false;
+        for (auto &e : entries) {
+            current_names_.push_back(std::move(e.name));
+            // Update focus cache while we still have the nodes in hand.
+            bool anyFocused = false;
+            for (const auto &n : e.nodes) {
+                if (n && n->isFocused()) {
+                    anyFocused = true;
+                    break;
+                }
+            }
+            has_focused_node_ = has_focused_node_ || anyFocused;
+            current_node_groups_.push_back(std::move(e.nodes));
         }
     }
 
@@ -76,11 +111,15 @@ namespace gui_tree {
         }
         for (size_t i = 0; i < n; ++i) {
             const naming::NamePtr &w = current_names_[i];
+            if (!w) {
+                continue;
+            }
             const auto &group = current_node_groups_[i];
             for (const auto &node : group) {
-                if (!node || !w) continue;
+                if (!node) continue;
                 naming::NamePtr xn = node->getXPathName();
-                if (!xn || !(*xn == *w)) {
+                // Fast path: same shared_ptr instance is guaranteed equal.
+                if (!xn || (xn.get() != w.get() && !(*xn == *w))) {
                     throw std::runtime_error("GUITree::validate: mismatched node and name");
                 }
             }

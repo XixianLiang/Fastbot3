@@ -1,12 +1,30 @@
+/*
+ * Copyright 2020 Advanced Software Technologies Lab at ETH Zurich, Switzerland
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**
+ * @authors Tianxiao Gu, Zhao Zhang
+ */
+
 #include "GUITreeBuilder.h"
-#include "GUITreeDomBridge.h"
+#include "XPathNodeMapper.h"
 #include "../Element.h"
 
 #include "../../Base.h"
 
 #include <algorithm>
 #include <cstring>
-#include <map>
 #include <utility>
 #include <vector>
 
@@ -120,15 +138,15 @@ namespace {
     }
 
     GUITreeNodePtr parseElement(pugi::xml_node xe, const GUITreeNodeWeakPtr &parentWeak,
-                                std::map<pugi::xml_node, GUITreeNodePtr> *dom_map) {
+                                XPathNodeMapper &dom) {
         GUITreeNodePtr gn = GUITreeNode::create(parentWeak);
         if (xe.type() == pugi::node_element) {
-            (*dom_map)[xe] = gn;
+            dom.registerNode(xe, gn);
         }
         fillFromAttributes(xe, gn);
         for (pugi::xml_node ch = xe.first_child(); ch; ch = ch.next_sibling()) {
             if (ch.type() != pugi::node_element) continue;
-            GUITreeNodePtr child = parseElement(ch, gn, dom_map);
+            GUITreeNodePtr child = parseElement(ch, gn, dom);
             gn->appendChild(std::move(child));
         }
         return gn;
@@ -193,61 +211,20 @@ namespace {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 
-    struct GUITreeDomBridge::Impl {
-        pugi::xml_document doc;
-        std::map<pugi::xml_node, GUITreeNodePtr> node_map;
-    };
-
-    GUITreeDomBridge::GUITreeDomBridge() = default;
-    GUITreeDomBridge::~GUITreeDomBridge() = default;
-    GUITreeDomBridge::GUITreeDomBridge(GUITreeDomBridge &&) noexcept = default;
-    GUITreeDomBridge &GUITreeDomBridge::operator=(GUITreeDomBridge &&) noexcept = default;
-
-    std::vector<GUITreeNodePtr> GUITreeDomBridge::nodesForXPath(const std::string &expr) const {
-        std::vector<GUITreeNodePtr> out;
-        if (!impl_ || expr.empty()) {
-            return out;
-        }
-        try {
-            pugi::xpath_query q(expr.c_str());
-            pugi::xml_node ctx = impl_->doc.document_element();
-            if (!ctx) {
-                return out;
-            }
-            pugi::xpath_node_set ns = q.evaluate_node_set(ctx);
-            for (size_t i = 0; i < ns.size(); ++i) {
-                pugi::xpath_node xn = ns[i];
-                pugi::xml_node n = xn.node();
-                if (!n) {
-                    continue;
-                }
-                auto it = impl_->node_map.find(n);
-                if (it != impl_->node_map.end()) {
-                    out.push_back(it->second);
-                }
-            }
-        } catch (...) {
-        }
-        return out;
-    }
-
     GUITreeBuildResult GUITreeBuilder::buildFromXml(const std::string &utf8, const std::string &activity_package,
                                                     const std::string &activity_class) {
         GUITreeBuildResult r;
-        auto bridge = std::make_shared<GUITreeDomBridge>();
-        bridge->impl_ = std::make_unique<GUITreeDomBridge::Impl>();
-        pugi::xml_parse_result pr =
-            bridge->impl_->doc.load_string(utf8.c_str(), pugi::parse_default | pugi::parse_declaration);
-        if (!pr) {
+        auto bridge = std::make_shared<XPathNodeMapper>();
+        if (!bridge->loadXmlString(utf8)) {
             bridge.reset();
             return r;
         }
-        pugi::xml_node root = bridge->impl_->doc.document_element();
+        pugi::xml_node root = bridge->documentElement();
         if (!root) {
             bridge.reset();
             return r;
         }
-        GUITreeNodePtr rootGn = parseElement(root, GUITreeNodeWeakPtr(), &bridge->impl_->node_map);
+        GUITreeNodePtr rootGn = parseElement(root, GUITreeNodeWeakPtr(), *bridge);
         postOrderStats(rootGn);
         r.tree = std::make_shared<GUITree>(std::move(rootGn), activity_package, activity_class);
         r.dom = std::move(bridge);
@@ -261,15 +238,12 @@ namespace {
             return r;
         }
         const std::string xml = root->toXML();
-        auto bridge = std::make_shared<GUITreeDomBridge>();
-        bridge->impl_ = std::make_unique<GUITreeDomBridge::Impl>();
-        pugi::xml_parse_result pr =
-            bridge->impl_->doc.load_string(xml.c_str(), pugi::parse_default | pugi::parse_declaration);
-        if (!pr) {
+        auto bridge = std::make_shared<XPathNodeMapper>();
+        if (!bridge->loadXmlString(xml)) {
             bridge.reset();
             return r;
         }
-        pugi::xml_node xmlRoot = bridge->impl_->doc.document_element();
+        pugi::xml_node xmlRoot = bridge->documentElement();
         if (!xmlRoot) {
             bridge.reset();
             return r;
@@ -283,7 +257,7 @@ namespace {
             return r;
         }
         for (size_t i = 0; i < pugi_order.size(); ++i) {
-            bridge->impl_->node_map[pugi_order[i]] = gui_order[i];
+            bridge->registerNode(pugi_order[i], gui_order[i]);
         }
         postOrderStats(rootGn);
         r.tree = std::make_shared<GUITree>(std::move(rootGn), activity_package, activity_class);
@@ -292,15 +266,6 @@ namespace {
     }
 
 #else
-
-    struct GUITreeDomBridge::Impl {};
-
-    GUITreeDomBridge::GUITreeDomBridge() = default;
-    GUITreeDomBridge::~GUITreeDomBridge() = default;
-    GUITreeDomBridge::GUITreeDomBridge(GUITreeDomBridge &&) noexcept = default;
-    GUITreeDomBridge &GUITreeDomBridge::operator=(GUITreeDomBridge &&) noexcept = default;
-
-    std::vector<GUITreeNodePtr> GUITreeDomBridge::nodesForXPath(const std::string &) const { return {}; }
 
     GUITreeBuildResult GUITreeBuilder::buildFromXml(const std::string &, const std::string &, const std::string &) {
         return GUITreeBuildResult{};

@@ -1,6 +1,25 @@
 /*
- * Coordinates Naming lattice navigation per activity (Java StateNamingManager subset).
- * treeToNaming / refine fixed-point — full logic in NamingFactory (ape-9).
+ * Copyright 2020 Advanced Software Technologies Lab at ETH Zurich, Switzerland
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+/**
+ * @authors Tianxiao Gu, Zhao Zhang
+ */
+
+/*
+ * Coordinates Naming lattice navigation per activity.
+ * treeToNaming / refine fixed-point — full logic in NamingFactory.
  */
 #ifndef FASTBOTX_DESC_NAMING_STATENAMINGMANAGER_H_
 #define FASTBOTX_DESC_NAMING_STATENAMINGMANAGER_H_
@@ -14,7 +33,7 @@
 namespace fastbotx {
 namespace gui_tree {
     class GUITree;
-    class GUITreeDomBridge;
+    class XPathNodeMapper;
 }
 namespace naming {
 
@@ -49,7 +68,7 @@ namespace naming {
          * Persists result in ActivityNamingManager.
          */
         NamingPtr getNamingFixedPoint(const std::string &activity_key, gui_tree::GUITree &tree,
-                                      const std::shared_ptr<gui_tree::GUITreeDomBridge> &dom, int max_iter);
+                                      const std::shared_ptr<gui_tree::XPathNodeMapper> &dom, int max_iter);
 
     private:
         std::shared_ptr<ActivityNamingManager> activity_mgr_;

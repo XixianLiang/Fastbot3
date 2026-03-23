@@ -14,7 +14,7 @@
 #include "../desc/reuse/ActivityNameAction.h"
 #endif
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-#include "../desc/xpath/GUITreeBuilder.h"
+#include "../desc/gui_tree/GUITreeBuilder.h"
 #include "../desc/gui_tree/GUITree.h"
 #include "../desc/naming/NamingFactory.h"
 #endif
@@ -626,8 +626,15 @@ namespace fastbotx {
             bool haveApeKey = false;
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
             const bool wantApeRlIdentity = !_preference || !_preference->useStaticReuseAbstraction();
-            haveApeKey = buildApeStateKeyFromElementTree(
-                element, activity, &apeKey, wantApeRlIdentity ? built : StatePtr());
+            const bool wantApeGraphDedup =
+                _preference && _preference->useApeGraphDedupByStateKey();
+            const bool wantApeStateKey = wantApeRlIdentity || wantApeGraphDedup;
+            if (wantApeStateKey) {
+                haveApeKey = buildApeStateKeyFromElementTree(
+                    element, activity, &apeKey, wantApeRlIdentity ? built : StatePtr());
+            } else {
+                haveApeKey = false;
+            }
             if (wantApeRlIdentity) {
                 if (haveApeKey) {
                     built->applyDynamicAbstractionIdentityHash(apeKey.hash());
@@ -1491,6 +1498,11 @@ namespace fastbotx {
         if (!element || !outKey) {
             return false;
         }
+        // When static reuse abstraction is enabled, we must not sync APE naming fixed-point
+        // refinement or update dynamic naming bookkeeping; we only need enough naming to
+        // compute the StateKey identity.
+        const bool wantApeRlIdentity =
+            !_preference || !_preference->useStaticReuseAbstraction();
         std::string pkg;
         std::string cls;
         naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
@@ -1504,7 +1516,9 @@ namespace fastbotx {
             return false;
         }
         naming::ActivityNamingManager &mgr = _apeStateNamingManager->activityManager();
-        const int fpSteps = _preference ? _preference->getApeNamingFixedPointMaxIter() : 0;
+        const int fpSteps = (_preference && wantApeRlIdentity)
+                                ? _preference->getApeNamingFixedPointMaxIter()
+                                : 0;
         naming::NamingPtr naming;
         if (fpSteps > 0) {
             naming = _apeStateNamingManager->getNamingFixedPoint(actKey, *built.tree, built.dom, fpSteps);
@@ -1515,7 +1529,8 @@ namespace fastbotx {
             naming = mgr.getNaming(actKey);
             if (!naming) {
                 naming = naming::NamingFactory::defaultRootNaming();
-                if (naming) {
+                // In static reuse abstraction mode, avoid syncing a newly created naming into the manager.
+                if (naming && wantApeRlIdentity) {
                     mgr.setNaming(actKey, naming);
                 }
             }
@@ -1527,21 +1542,23 @@ namespace fastbotx {
             }
         }
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        auto itCtx = _apeNamingContext.find(actKey);
-        if (itCtx != _apeNamingContext.end() && itCtx->second.previousNamingBeforeRefine) {
-            naming::NamingPtr prevN = itCtx->second.previousNamingBeforeRefine;
-            if (!naming::NamingFactory::rebuildTree(prevN, *built.tree, built.dom)) {
-                return false;
-            }
-            naming::StateKey kOld = naming::StateKey::fromGUITree(*built.tree);
-            if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
-                return false;
-            }
-            naming::StateKey kNewAfter = naming::StateKey::fromGUITree(*built.tree);
-            uintptr_t oldH = kOld.hash();
-            uintptr_t newH = kNewAfter.hash();
-            if (oldH != newH) {
-                itCtx->second.oldKeyHashToNewKeyHashes[oldH].insert(newH);
+        if (wantApeRlIdentity) {
+            auto itCtx = _apeNamingContext.find(actKey);
+            if (itCtx != _apeNamingContext.end() && itCtx->second.previousNamingBeforeRefine) {
+                naming::NamingPtr prevN = itCtx->second.previousNamingBeforeRefine;
+                if (!naming::NamingFactory::rebuildTree(prevN, *built.tree, built.dom)) {
+                    return false;
+                }
+                naming::StateKey kOld = naming::StateKey::fromGUITree(*built.tree);
+                if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
+                    return false;
+                }
+                naming::StateKey kNewAfter = naming::StateKey::fromGUITree(*built.tree);
+                uintptr_t oldH = kOld.hash();
+                uintptr_t newH = kNewAfter.hash();
+                if (oldH != newH) {
+                    itCtx->second.oldKeyHashToNewKeyHashes[oldH].insert(newH);
+                }
             }
         }
 #endif

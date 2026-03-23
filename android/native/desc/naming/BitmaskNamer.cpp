@@ -1,3 +1,7 @@
+/**
+ * @authors Zhao Zhang
+ */
+
 #include "BitmaskNamer.h"
 #include "LocalXPathName.h"
 #include "../gui_tree/GUITreeNode.h"

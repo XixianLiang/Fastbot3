@@ -1,4 +1,7 @@
-/*
+/**
+ * @authors Zhao Zhang
+ */
+ /*
  * APE state identity: activity + Naming fingerprint + sorted widget Name XPaths (Java StateKey analogue).
  * Hash mixes the same way as fastbotx::State (activity term + xor-combined name hashes).
  */

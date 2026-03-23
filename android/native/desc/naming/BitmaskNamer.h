@@ -1,4 +1,7 @@
-/*
+/**
+ * @authors Zhao Zhang
+ */
+ /*
  * Namer keyed by NamerType bitmask (APE AbstractNamer + concrete namers, unified).
  */
 #ifndef FASTBOTX_DESC_NAMING_BITMASKNAMER_H_
