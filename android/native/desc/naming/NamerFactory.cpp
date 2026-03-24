@@ -27,12 +27,7 @@ namespace naming {
 namespace {
 
     int popcount32(uint32_t x) {
-        int c = 0;
-        while (x) {
-            c++;
-            x &= x - 1u;
-        }
-        return c;
+        return __builtin_popcount(x);
     }
 
 } // namespace

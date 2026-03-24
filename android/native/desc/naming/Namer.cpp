@@ -18,6 +18,7 @@
  */
 
 #include "Namer.h"
+#include "BitmaskNamer.h"
 
 #include <algorithm>
 
@@ -25,6 +26,21 @@ namespace fastbotx {
 namespace naming {
 
     int compareNamer(const Namer &a, const Namer &b) {
+        const auto *ab = dynamic_cast<const BitmaskNamer *>(&a);
+        const auto *bb = dynamic_cast<const BitmaskNamer *>(&b);
+        if (ab && bb) {
+            const uint32_t ma = ab->getMask();
+            const uint32_t mb = bb->getMask();
+            const int pa = __builtin_popcount(ma);
+            const int pb = __builtin_popcount(mb);
+            if (pa != pb) {
+                return pa < pb ? -1 : 1;
+            }
+            if (ma != mb) {
+                return ma < mb ? -1 : 1;
+            }
+            return 0;
+        }
         std::vector<NamerType> ta = a.getNamerTypes();
         std::vector<NamerType> tb = b.getNamerTypes();
         std::sort(ta.begin(), ta.end(), [](NamerType x, NamerType y) {

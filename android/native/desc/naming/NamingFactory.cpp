@@ -181,10 +181,9 @@ namespace {
                     continue;
                 }
                 gui_tree::GUITreeNode *raw = nptr.get();
-                if (visited.count(raw) != 0) {
+                if (!visited.insert(raw).second) {
                     continue;
                 }
-                visited.insert(raw);
                 Namer &namer = nl->getNamer();
                 const std::string kPrecheck = namer.xpathKeyForNode(*nptr);
                 if (!kPrecheck.empty()) {

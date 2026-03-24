@@ -27,12 +27,7 @@ namespace naming {
 namespace {
 
     int popcount32(uint32_t x) {
-        int c = 0;
-        while (x) {
-            c++;
-            x &= x - 1u;
-        }
-        return c;
+        return __builtin_popcount(x);
     }
 
     uint32_t maskOf(const Namer &n) {
@@ -56,6 +51,7 @@ namespace {
         if (!coarse) {
             return out;
         }
+        out.reserve(factory_->all().size());
         const uint32_t cm = maskOf(*coarse);
         const int cpc = popcount32(cm);
         for (const auto &n : factory_->all()) {
@@ -93,6 +89,7 @@ namespace {
         if (!fine) {
             return out;
         }
+        out.reserve(factory_->all().size());
         const uint32_t fm = maskOf(*fine);
         const int fpc = popcount32(fm);
         if (fpc == 0) {

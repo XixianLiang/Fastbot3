@@ -18,6 +18,7 @@
  */
 
 #include "Naming.h"
+#include "BitmaskNamer.h"
 #include "NamerType.h"
 
 #include <algorithm>
@@ -25,6 +26,13 @@
 
 namespace fastbotx {
 namespace naming {
+namespace {
+
+    int bitCount(uint32_t x) {
+        return __builtin_popcount(x);
+    }
+
+}
 
     std::atomic<int> Naming::naming_counter_{0};
 
@@ -50,7 +58,13 @@ namespace naming {
         fineness_ = -1;
         for (const auto &nl : namelets_) {
             if (!nl) continue;
-            int f = static_cast<int>(nl->getNamerPtr()->getNamerTypes().size());
+            int f = 0;
+            const auto *bn = dynamic_cast<const BitmaskNamer *>(nl->getNamerPtr().get());
+            if (bn) {
+                f = bitCount(bn->getMask());
+            } else {
+                f = static_cast<int>(nl->getNamerPtr()->getNamerTypes().size());
+            }
             if (fineness_ < 0 || f > fineness_) {
                 fineness_ = f;
             }
@@ -91,12 +105,22 @@ namespace naming {
             }
             std::string s = nl->getExprString();
             s.push_back('\x1e');
-            std::vector<NamerType> types = nl->getNamer().getNamerTypes();
-            std::sort(types.begin(), types.end(), [](NamerType a, NamerType b) {
-                return static_cast<unsigned char>(a) < static_cast<unsigned char>(b);
-            });
-            for (NamerType t : types) {
-                s.push_back(static_cast<char>(static_cast<unsigned char>(t)));
+            const auto *bn = dynamic_cast<const BitmaskNamer *>(&nl->getNamer());
+            if (bn) {
+                uint32_t mask = bn->getMask();
+                for (unsigned i = 0; i < 32; ++i) {
+                    if ((mask & (1u << i)) != 0) {
+                        s.push_back(static_cast<char>(i));
+                    }
+                }
+            } else {
+                std::vector<NamerType> types = nl->getNamer().getNamerTypes();
+                std::sort(types.begin(), types.end(), [](NamerType a, NamerType b) {
+                    return static_cast<unsigned char>(a) < static_cast<unsigned char>(b);
+                });
+                for (NamerType t : types) {
+                    s.push_back(static_cast<char>(static_cast<unsigned char>(t)));
+                }
             }
             parts.push_back(std::move(s));
         }
