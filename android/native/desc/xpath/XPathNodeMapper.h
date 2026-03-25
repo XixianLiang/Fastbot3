@@ -17,7 +17,7 @@
 namespace fastbotx {
 namespace gui_tree {
 
-    class GUITreeBuilder;
+    class GUITreeFactory;
 
     class XPathNodeMapper {
     public:
@@ -35,8 +35,8 @@ namespace gui_tree {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
         /**
-         * DOM setup helpers used by GUITreeBuilder.
-         * They keep pugixml details inside this module after splitting GUITreeBuilder.cpp.
+         * DOM setup helpers used by GUITreeFactory.
+         * They keep pugixml details inside this module after splitting GUITreeFactory.cpp.
          */
         bool loadXmlString(const std::string &utf8);
         pugi::xml_node documentElement() const;
@@ -44,7 +44,7 @@ namespace gui_tree {
 #endif
 
     private:
-        friend class GUITreeBuilder;
+        friend class GUITreeFactory;
 
         struct Impl;
         std::unique_ptr<Impl> impl_;

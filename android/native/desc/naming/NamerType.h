@@ -38,6 +38,9 @@ namespace naming {
 
     /** Ordered list used in lattice (Config.useAncestorNamer in Java). */
     const std::vector<NamerType> &namerTypesUsed();
+    /** Runtime switch for Config.useAncestorNamer-style behavior. */
+    void setUseAncestorNamer(bool enabled);
+    bool useAncestorNamer();
 
 } // namespace naming
 } // namespace fastbotx

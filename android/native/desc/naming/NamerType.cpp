@@ -25,17 +25,21 @@ namespace naming {
 #ifndef FASTBOTX_USE_ANCESTOR_NAMER
 #define FASTBOTX_USE_ANCESTOR_NAMER 0
 #endif
+namespace {
+    bool g_use_ancestor_namer = (FASTBOTX_USE_ANCESTOR_NAMER != 0);
+}
+
+    void setUseAncestorNamer(bool enabled) { g_use_ancestor_namer = enabled; }
+
+    bool useAncestorNamer() { return g_use_ancestor_namer; }
 
     const std::vector<NamerType> &namerTypesUsed() {
-#if FASTBOTX_USE_ANCESTOR_NAMER
-        static const std::vector<NamerType> kUsed = {
+        static const std::vector<NamerType> kUsedWithAncestor = {
             NamerType::TYPE, NamerType::INDEX, NamerType::PARENT,
             NamerType::TEXT, NamerType::ANCESTOR};
-#else
-        static const std::vector<NamerType> kUsed = {
+        static const std::vector<NamerType> kUsedWithoutAncestor = {
             NamerType::TYPE, NamerType::INDEX, NamerType::PARENT, NamerType::TEXT};
-#endif
-        return kUsed;
+        return g_use_ancestor_namer ? kUsedWithAncestor : kUsedWithoutAncestor;
     }
 
 } // namespace naming

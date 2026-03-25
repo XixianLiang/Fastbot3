@@ -145,8 +145,8 @@ if (FASTBOT_HAS_PUGIXML)
     target_compile_definitions(fastbot_native PRIVATE FASTBOT_HAS_PUGIXML=1)
 endif()
 
-# Optional: APE StateKey sidecar in Model (Element::toXML → GUITreeBuilder + StateKey::fromGUITree); costs extra XML parse per step.
-option(FASTBOTX_APE_NATIVE_RECORD "Record APE StateKey via GUITreeBuilder (requires pugixml.cpp)" OFF)
+# Optional: APE StateKey sidecar in Model (Element::toXML → GUITreeFactory + StateKey::fromGUITree); costs extra XML parse per step.
+option(FASTBOTX_APE_NATIVE_RECORD "Record APE StateKey via GUITreeFactory (requires pugixml.cpp)" OFF)
 if (FASTBOTX_APE_NATIVE_RECORD)
     if (FASTBOT_HAS_PUGIXML)
         target_compile_definitions(fastbot_native PRIVATE FASTBOTX_APE_NATIVE_RECORD=1)

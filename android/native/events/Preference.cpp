@@ -12,8 +12,11 @@
 #include <cstring>
 #include <cstdlib>
 #include <climits>
+#include <cctype>
 #include "utils.hpp"
 #include "Preference.h"
+#include "../desc/naming/NamerType.h"
+#include "../desc/naming/NamingFactory.h"
 #include "../thirdpart/json/json.hpp"
 
 // Performance optimization: Maximum number of page texts to cache
@@ -1197,6 +1200,10 @@ namespace fastbotx {
 #define ApeNamingActionRefineMinStateDeltaSTR "max.apeNamingActionRefineMinStateDelta"
 #define ApeNamingActionRefineMinNonDetPairDeltaSTR "max.apeNamingActionRefineMinNonDetPairDelta"
 #define ApeNamingActionRefineRuleProfileSTR "max.apeNamingActionRefineRuleProfile"
+#define ApeNamingCandidateTransitionReplaySTR "max.apeNamingCandidateTransitionReplay"
+#define ApeNamingActionRefinementFirstSTR "max.apeNamingActionRefinementFirst"
+#define ApeBaseNamingSTR "max.ape.baseNaming"
+#define UseAncestorNamerSTR "max.useAncestorNamer"
 #define LlmEnabledSTR             "max.llm.enabled"
 #define LlmKnowledgeSTR           "max.llm.knowledge"
 #define LlmWidgetPrioritySTR      "max.llm.widgetpriority"
@@ -1473,6 +1480,34 @@ namespace fastbotx {
                 } else {
                     BLOGE("invalid max.apeNamingActionRefineRuleProfile value: %s", value.c_str());
                 }
+            } else if (key == ApeNamingCandidateTransitionReplaySTR) {
+                this->_apeNamingCandidateTransitionReplay = (value == "true");
+                BLOG("APE: candidate transition replay=%s (%s)",
+                     this->_apeNamingCandidateTransitionReplay ? "true" : "false",
+                     ApeNamingCandidateTransitionReplaySTR);
+            } else if (key == ApeNamingActionRefinementFirstSTR) {
+                this->_apeNamingActionRefinementFirst = (value == "true");
+                BLOG("APE: actionRefinementFirst pass order=%s (%s)",
+                     this->_apeNamingActionRefinementFirst ? "true" : "false",
+                     ApeNamingActionRefinementFirstSTR);
+            } else if (key == ApeBaseNamingSTR) {
+                std::string mode = value;
+                std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
+                    return static_cast<char>(std::tolower(c));
+                });
+                if (mode == "actiontype" || mode == "ape" || mode == "default") {
+                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::ActionType);
+                    BLOG("APE: base naming mode=actiontype (%s)", ApeBaseNamingSTR);
+                } else if (mode == "type" || mode == "type_only" || mode == "legacy") {
+                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::TypeOnly);
+                    BLOG("APE: base naming mode=type_only (%s)", ApeBaseNamingSTR);
+                } else {
+                    BLOGE("invalid max.ape.baseNaming value: %s", value.c_str());
+                }
+            } else if (key == UseAncestorNamerSTR) {
+                const bool enabled = (value == "true");
+                naming::setUseAncestorNamer(enabled);
+                BLOG("APE: useAncestorNamer=%s (%s)", enabled ? "true" : "false", UseAncestorNamerSTR);
             } else if (key == LlmEnabledSTR) {
                 this->_llmRuntimeConfig.enabled = (value == "true");
             } else if (key == LlmKnowledgeSTR) {
@@ -1529,6 +1564,22 @@ namespace fastbotx {
                 }
             }
         }
+        const char *baseNamingMode =
+            (naming::NamingFactory::getDefaultRootNamingMode() == naming::ApeBaseNamingMode::ActionType)
+                ? "actiontype"
+                : "type_only";
+        BLOG("APE config snapshot: baseNaming=%s useAncestorNamer=%s periodicRefine=%s fixedPointSteps=%d "
+             "ruleProfile=%s predicateMode=%s selectionMode=%s candidateTransitionReplay=%s "
+             "actionRefinementFirst=%s",
+             baseNamingMode,
+             naming::useAncestorNamer() ? "true" : "false",
+             _apeNamingPeriodicRefinement ? "true" : "false",
+             _apeNamingFixedPointMaxIter,
+             _apeNamingActionRefineRuleProfile.c_str(),
+             _apeNamingActionRefinePredicateMode.c_str(),
+             _apeNamingActionRefineSelectionMode.c_str(),
+             _apeNamingCandidateTransitionReplay ? "true" : "false",
+             _apeNamingActionRefinementFirst ? "true" : "false");
     }
 
     /**

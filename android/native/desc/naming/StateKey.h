@@ -28,7 +28,7 @@ namespace naming {
 
         static StateKey fromGUITree(const gui_tree::GUITree &tree);
 
-        /** Split at first `/` (same convention as GUITreeBuilder / JNI activity). */
+        /** Split at first `/` (same convention as GUITreeFactory / JNI activity). */
         static void splitActivityPackageClass(const std::string &activity, std::string *pkg, std::string *cls);
 
         /** Activity string for `fromGUITree` (pkg + cls on tree). */
@@ -37,7 +37,7 @@ namespace naming {
         /**
          * Canonical activity for `StateKey` and `ActivityNamingManager` keys: recomposes pkg/cls like `fromGUITree`.
          * Use this when indexing naming state so it matches `StateKey::activity()` from a `GUITree` built with
-         * `splitActivityPackageClass` + `GUITreeBuilder`.
+         * `splitActivityPackageClass` + `GUITreeFactory`.
          */
         static std::string canonicalActivityString(const std::string &activity);
 

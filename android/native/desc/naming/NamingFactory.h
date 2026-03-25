@@ -37,6 +37,8 @@ namespace gui_tree {
 }
 namespace naming {
 
+    enum class ApeBaseNamingMode : unsigned char { ActionType = 0, TypeOnly = 1 };
+
     class NamingFactory {
     public:
         struct ActionRefinementOptions {
@@ -60,6 +62,8 @@ namespace naming {
 
         /** One Namelet (root XPath for all nodes) with TYPE-only BitmaskNamer (coarsest non-empty namer in the cube). */
         static NamingPtr defaultRootNaming();
+        static void setDefaultRootNamingMode(ApeBaseNamingMode mode);
+        static ApeBaseNamingMode getDefaultRootNamingMode();
 
         /** First applicable immediate refinement on the bitmask lattice (one Namelet step). */
         static NamingPtr refineNaming(const NamingPtr &naming, const NamerLattice &lattice);
@@ -99,6 +103,13 @@ namespace naming {
         /** Action refinement with pluggable acceptance predicate / blacklist skipping. */
         static NamingPtr actionRefinementWithOptions(const NamingPtr &naming, const NamerLattice &lattice,
                                                      const ActionRefinementOptions &options);
+
+        /**
+         * Enumerate refinement candidates within max_steps using the same blacklist/predicate options.
+         * Used by Model-level "resolve -> filter -> pick best" flow.
+         */
+        static std::vector<NamingPtr> actionRefinementCandidatesWithOptions(
+            const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options);
 
         /**
          * True when NamingResult is structurally inconsistent (parallel arrays, per-group

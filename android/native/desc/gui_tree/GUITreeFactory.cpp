@@ -17,7 +17,7 @@
  * @authors Tianxiao Gu, Zhao Zhang
  */
 
-#include "GUITreeBuilder.h"
+#include "GUITreeFactory.h"
 #include "XPathNodeMapper.h"
 #include "../Element.h"
 
@@ -211,7 +211,7 @@ namespace {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 
-    GUITreeBuildResult GUITreeBuilder::buildFromXml(const std::string &utf8, const std::string &activity_package,
+    GUITreeBuildResult GUITreeFactory::buildFromXml(const std::string &utf8, const std::string &activity_package,
                                                     const std::string &activity_class) {
         GUITreeBuildResult r;
         auto bridge = std::make_shared<XPathNodeMapper>();
@@ -231,7 +231,7 @@ namespace {
         return r;
     }
 
-    GUITreeBuildResult GUITreeBuilder::buildFromElement(const ElementPtr &root, const std::string &activity_package,
+    GUITreeBuildResult GUITreeFactory::buildFromElement(const ElementPtr &root, const std::string &activity_package,
                                                         const std::string &activity_class) {
         GUITreeBuildResult r;
         if (!root) {
@@ -267,11 +267,11 @@ namespace {
 
 #else
 
-    GUITreeBuildResult GUITreeBuilder::buildFromXml(const std::string &, const std::string &, const std::string &) {
+    GUITreeBuildResult GUITreeFactory::buildFromXml(const std::string &, const std::string &, const std::string &) {
         return GUITreeBuildResult{};
     }
 
-    GUITreeBuildResult GUITreeBuilder::buildFromElement(const ElementPtr &, const std::string &, const std::string &) {
+    GUITreeBuildResult GUITreeFactory::buildFromElement(const ElementPtr &, const std::string &, const std::string &) {
         return GUITreeBuildResult{};
     }
 

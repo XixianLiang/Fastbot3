@@ -222,6 +222,20 @@ namespace fastbotx {
             return _apeNamingActionRefineRuleProfile;
         }
 
+        /**
+         * When true (default), refine candidate selection uses transition replay: rebuildTree(candidate) on
+         * cached page XML and rank by distinct target StateKey fan-out (APE-style effect check).
+         * max.config: max.apeNamingCandidateTransitionReplay=true|false
+         */
+        bool useApeNamingCandidateTransitionReplay() const { return _apeNamingCandidateTransitionReplay; }
+
+        /**
+         * Mirrors APE Config.actionRefinementFirst: when true (default), try a strict multi-branch refine pass
+         * before the user ruleProfile/predicate-driven pass in Model::refineActivityApeNaming.
+         * max.config: max.apeNamingActionRefinementFirst=true|false
+         */
+        bool useApeNamingActionRefinementFirst() const { return _apeNamingActionRefinementFirst; }
+
         bool isForceUseTextModel() const { return this->_forceUseTextModel; }
 
         int getForceMaxBlockStateTimes() const { return this->_forceMaxBlockStateTimes; }
@@ -358,6 +372,9 @@ namespace fastbotx {
         int _apeNamingActionRefineMinStateDelta{1};
         int _apeNamingActionRefineMinNonDetPairDelta{0};
         std::string _apeNamingActionRefineRuleProfile{"baseline"};
+        bool _apeNamingCandidateTransitionReplay{true};
+        /// Default true, same as Java Config.actionRefinementFirst.
+        bool _apeNamingActionRefinementFirst{true};
         bool _forceUseTextModel{};
         int _forceMaxBlockStateTimes{};
         RectPtr _rootScreenSize;

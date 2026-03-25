@@ -19,8 +19,8 @@
  /*
  * One-shot parse: UTF-8 UI hierarchy XML → GUITree + optional pugixml bridge for Namelet XPath.
  */
-#ifndef FASTBOTX_DESC_GUI_TREE_GUITREEBUILDER_H_
-#define FASTBOTX_DESC_GUI_TREE_GUITREEBUILDER_H_
+#ifndef FASTBOTX_DESC_GUI_TREE_GUITREEFACTORY_H_
+#define FASTBOTX_DESC_GUI_TREE_GUITREEFACTORY_H_
 
 #include "XPathNodeMapper.h"
 #include "GUITree.h"
@@ -40,7 +40,7 @@ namespace gui_tree {
         GUITreePtr tree;
     };
 
-    class GUITreeBuilder {
+    class GUITreeFactory {
     public:
         /** Same attribute conventions as Element::fromXMLNode (short/long names). */
         static GUITreeBuildResult buildFromXml(const std::string &utf8, const std::string &activity_package,

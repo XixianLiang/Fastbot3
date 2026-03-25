@@ -44,7 +44,8 @@ namespace naming {
         void clear();
 
     private:
-        std::unordered_map<std::string, NamingPtr> current_{};
+        // Mutable to keep APE semantics: getNaming() lazily initializes unseen activities.
+        mutable std::unordered_map<std::string, NamingPtr> current_{};
     };
 
 } // namespace naming

@@ -16,8 +16,9 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
- 
+
 #include "ActivityNamingManager.h"
+#include "NamingFactory.h"
 
 namespace fastbotx {
 namespace naming {
@@ -25,7 +26,11 @@ namespace naming {
     NamingPtr ActivityNamingManager::getNaming(const std::string &activity_key) const {
         auto it = current_.find(activity_key);
         if (it == current_.end()) {
-            return nullptr;
+            // APE ActivityNamingManager behavior: unseen activity falls back to base naming
+            // and persists the mapping on first access.
+            NamingPtr base = NamingFactory::defaultRootNaming();
+            current_[activity_key] = base;
+            return base;
         }
         return it->second;
     }
