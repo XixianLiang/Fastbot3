@@ -34,7 +34,7 @@ namespace naming {
 
     class NamerLattice {
     public:
-        explicit NamerLattice(const NamerFactory &factory = NamerFactory::CURRENT);
+        explicit NamerLattice(const NamerFactory &factory = NamerFactory::current());
 
         /** Namers obtained by adding exactly one NamerType w.r.t. {@code coarse}; sorted by bitmask for stable picks. */
         std::vector<NamerPtr> immediateRefinements(const NamerPtr &coarse) const;

@@ -18,9 +18,12 @@
  */
 
 #include "NamerFactory.h"
+#include "ActionPatchNamer.h"
+#include "BitmaskNamer.h"
 #include "NamerType.h"
 
 #include <algorithm>
+#include <memory>
 
 namespace fastbotx {
 namespace naming {
@@ -46,14 +49,20 @@ namespace {
                 }
             }
             auto bn = BitmaskNamer::create(mask);
-            by_mask_[mask] = bn;
-            ordered_.push_back(bn);
+            NamerPtr pub = usePatchNamer() ? std::static_pointer_cast<Namer>(std::make_shared<ActionPatchNamer>(
+                                                 std::static_pointer_cast<Namer>(bn)))
+                                           : std::static_pointer_cast<Namer>(bn);
+            by_mask_[mask] = pub;
+            ordered_.push_back(std::move(pub));
         }
 
         std::sort(ordered_.begin(), ordered_.end(),
-                  [](const std::shared_ptr<BitmaskNamer> &a, const std::shared_ptr<BitmaskNamer> &b) {
-                      const uint32_t ma = a->getMask();
-                      const uint32_t mb = b->getMask();
+                  [](const NamerPtr &a, const NamerPtr &b) {
+                      if (!a || !b) {
+                          return a.get() < b.get();
+                      }
+                      const uint32_t ma = a->typeDimensionMask();
+                      const uint32_t mb = b->typeDimensionMask();
                       const int pa = popcount32(ma);
                       const int pb = popcount32(mb);
                       if (pa != pb) {
@@ -68,9 +77,23 @@ namespace {
         }
     }
 
-    const NamerFactory NamerFactory::CURRENT{};
+    const NamerFactory &NamerFactory::current() {
+        static std::unique_ptr<NamerFactory> inst;
+        static bool have = false;
+        static bool snap_a = false;
+        static bool snap_p = false;
+        const bool a = useAncestorNamer();
+        const bool p = usePatchNamer();
+        if (!have || snap_a != a || snap_p != p) {
+            inst = std::make_unique<NamerFactory>();
+            snap_a = a;
+            snap_p = p;
+            have = true;
+        }
+        return *inst;
+    }
 
-    std::shared_ptr<BitmaskNamer> NamerFactory::getByMask(uint32_t mask) const {
+    NamerPtr NamerFactory::getByMask(uint32_t mask) const {
         auto it = by_mask_.find(mask);
         if (it == by_mask_.end()) {
             return nullptr;

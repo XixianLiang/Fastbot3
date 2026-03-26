@@ -25,13 +25,21 @@ namespace naming {
 #ifndef FASTBOTX_USE_ANCESTOR_NAMER
 #define FASTBOTX_USE_ANCESTOR_NAMER 0
 #endif
+#ifndef FASTBOTX_USE_PATCH_NAMER
+#define FASTBOTX_USE_PATCH_NAMER 1
+#endif
 namespace {
     bool g_use_ancestor_namer = (FASTBOTX_USE_ANCESTOR_NAMER != 0);
+    bool g_use_patch_namer = (FASTBOTX_USE_PATCH_NAMER != 0);
 }
 
     void setUseAncestorNamer(bool enabled) { g_use_ancestor_namer = enabled; }
 
     bool useAncestorNamer() { return g_use_ancestor_namer; }
+
+    void setUsePatchNamer(bool enabled) { g_use_patch_namer = enabled; }
+
+    bool usePatchNamer() { return g_use_patch_namer; }
 
     const std::vector<NamerType> &namerTypesUsed() {
         static const std::vector<NamerType> kUsedWithAncestor = {

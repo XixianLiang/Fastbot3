@@ -18,7 +18,6 @@
  */
 
 #include "NamerLattice.h"
-#include "BitmaskNamer.h"
 
 #include <algorithm>
 
@@ -30,17 +29,7 @@ namespace {
         return __builtin_popcount(x);
     }
 
-    uint32_t maskOf(const Namer &n) {
-        const auto *b = dynamic_cast<const BitmaskNamer *>(&n);
-        if (b) {
-            return b->getMask();
-        }
-        uint32_t m = 0;
-        for (NamerType t : n.getNamerTypes()) {
-            m |= (1u << static_cast<unsigned>(t));
-        }
-        return m;
-    }
+    uint32_t maskOf(const Namer &n) { return n.typeDimensionMask(); }
 
 } // namespace
 
@@ -55,7 +44,10 @@ namespace {
         const uint32_t cm = maskOf(*coarse);
         const int cpc = popcount32(cm);
         for (const auto &n : factory_->all()) {
-            const uint32_t fm = n->getMask();
+            if (!n) {
+                continue;
+            }
+            const uint32_t fm = maskOf(*n);
             if (fm == cm) {
                 continue;
             }
@@ -96,7 +88,10 @@ namespace {
             return out;
         }
         for (const auto &n : factory_->all()) {
-            const uint32_t cm = n->getMask();
+            if (!n) {
+                continue;
+            }
+            const uint32_t cm = maskOf(*n);
             if (cm == fm) {
                 continue;
             }

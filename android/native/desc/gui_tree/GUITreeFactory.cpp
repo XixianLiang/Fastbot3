@@ -117,6 +117,7 @@ namespace {
         const char *content_desc = nullptr;
         if (readString(xmlNode, "cd", "content-desc", content_desc)) gn->setContentDesc(std::string(content_desc));
         bool b = false;
+        if (readBool(xmlNode, "en", "enabled", b)) gn->setEnabled(b);
         if (readBool(xmlNode, "ck", "checkable", b)) gn->setCheckable(b);
         if (readBool(xmlNode, "clk", "clickable", b)) gn->setClickable(b);
         if (readBool(xmlNode, "fcd", "focused", b)) gn->setFocused(b);
@@ -166,6 +167,7 @@ namespace {
         gn->setClassName(el->getClassname());
         gn->setPackageName(el->getPackageName());
         gn->setContentDesc(el->getContentDesc());
+        gn->setEnabled(el->getEnable());
         gn->setCheckable(el->getCheckable());
         gn->setClickable(el->getClickable());
         gn->setFocused(el->getFocused());

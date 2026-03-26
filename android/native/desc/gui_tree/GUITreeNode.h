@@ -80,6 +80,9 @@ namespace gui_tree {
         const std::string &getContentDesc() const { return content_desc_; }
         void setContentDesc(std::string v) { content_desc_ = std::move(v); }
 
+        bool isEnabled() const { return enabled_; }
+        void setEnabled(bool v) { enabled_ = v; }
+
         bool isClickable() const { return clickable_; }
         void setClickable(bool v) { clickable_ = v; }
         bool isLongClickable() const { return long_clickable_; }

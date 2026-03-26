@@ -457,7 +457,7 @@ namespace {
         NamingPtr n = treeToNaming(tree, dom);
         if (!n) return nullptr;
         const int steps = max_iter > 0 ? max_iter : 64;
-        NamerLattice lat(NamerFactory::CURRENT);
+        NamerLattice lat(NamerFactory::current());
         n = NamingFactory::batchRefineWithRebuildFixedPoint(n, lat, tree, dom, steps);
         if (!n) {
             return nullptr;

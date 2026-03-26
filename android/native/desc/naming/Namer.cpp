@@ -18,46 +18,34 @@
  */
 
 #include "Namer.h"
-#include "BitmaskNamer.h"
-
-#include <algorithm>
 
 namespace fastbotx {
 namespace naming {
 
+    uint32_t Namer::typeDimensionMask() const {
+        uint32_t m = 0;
+        for (NamerType t : getNamerTypes()) {
+            m |= 1u << static_cast<unsigned>(t);
+        }
+        return m;
+    }
+
     int compareNamer(const Namer &a, const Namer &b) {
-        const auto *ab = dynamic_cast<const BitmaskNamer *>(&a);
-        const auto *bb = dynamic_cast<const BitmaskNamer *>(&b);
-        if (ab && bb) {
-            const uint32_t ma = ab->getMask();
-            const uint32_t mb = bb->getMask();
-            const int pa = __builtin_popcount(ma);
-            const int pb = __builtin_popcount(mb);
-            if (pa != pb) {
-                return pa < pb ? -1 : 1;
-            }
-            if (ma != mb) {
-                return ma < mb ? -1 : 1;
-            }
+        const uint32_t ma = a.typeDimensionMask();
+        const uint32_t mb = b.typeDimensionMask();
+        const int pa = __builtin_popcount(ma);
+        const int pb = __builtin_popcount(mb);
+        if (pa != pb) {
+            return pa < pb ? -1 : 1;
+        }
+        if (ma != mb) {
+            return ma < mb ? -1 : 1;
+        }
+        if (&a == &b) {
             return 0;
         }
-        std::vector<NamerType> ta = a.getNamerTypes();
-        std::vector<NamerType> tb = b.getNamerTypes();
-        std::sort(ta.begin(), ta.end(), [](NamerType x, NamerType y) {
-            return static_cast<unsigned char>(x) < static_cast<unsigned char>(y);
-        });
-        std::sort(tb.begin(), tb.end(), [](NamerType x, NamerType y) {
-            return static_cast<unsigned char>(x) < static_cast<unsigned char>(y);
-        });
-        if (ta.size() != tb.size()) {
-            return ta.size() < tb.size() ? -1 : 1;
-        }
-        for (size_t i = 0; i < ta.size(); ++i) {
-            if (ta[i] != tb[i]) {
-                return static_cast<unsigned char>(ta[i]) < static_cast<unsigned char>(tb[i]) ? -1 : 1;
-            }
-        }
-        return 0;
+        /* Same lattice mask (e.g. wrap vs base): tie-break by object address for strict weak ordering. */
+        return &a < &b ? -1 : 1;
     }
 
 } // namespace naming

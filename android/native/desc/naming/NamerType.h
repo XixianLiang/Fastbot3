@@ -42,6 +42,10 @@ namespace naming {
     void setUseAncestorNamer(bool enabled);
     bool useAncestorNamer();
 
+    /** Runtime switch for Config.usePatchNamer (default true in APE). */
+    void setUsePatchNamer(bool enabled);
+    bool usePatchNamer();
+
 } // namespace naming
 } // namespace fastbotx
 

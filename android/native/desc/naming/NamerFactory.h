@@ -3,27 +3,19 @@
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
- * You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
  */
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
 
 /*
- * Pre-registered BitmaskNamers for every subset of namerTypesUsed() (APE NamerFactory).
+ * Pre-registered namers for every subset of namerTypesUsed() (APE NamerFactory).
+ * When usePatchNamer() is true (APE default), each namer is ActionPatchNamer(BitmaskNamer(mask)).
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMERFACTORY_H_
 #define FASTBOTX_DESC_NAMING_NAMERFACTORY_H_
 
-#include "BitmaskNamer.h"
+#include "Namer.h"
 
 #include <cstdint>
 #include <memory>
@@ -35,27 +27,29 @@ namespace naming {
 
     class NamerFactory {
     public:
-        /** Singleton: all non-empty subsets of {@link namerTypesUsed()} plus mask 0 (empty namer). */
-        static const NamerFactory CURRENT;
+        /**
+         * Live factory: rebuilt when {@link useAncestorNamer()} or {@link usePatchNamer()} changes
+         * (e.g. after max.config sets max.useAncestorNamer / max.usePatchNamer).
+         */
+        static const NamerFactory &current();
 
-        /** Builds the full bitmask cube for {@link namerTypesUsed()}; prefer {@link CURRENT}. */
+        /** Builds the full bitmask cube for {@link namerTypesUsed()} at construction time. */
         NamerFactory();
 
         NamerFactory(const NamerFactory &) = delete;
         NamerFactory &operator=(const NamerFactory &) = delete;
 
         /** Bitmask uses {@code 1u << static_cast<unsigned>(NamerType)}. */
-        std::shared_ptr<BitmaskNamer> getByMask(uint32_t mask) const;
+        NamerPtr getByMask(uint32_t mask) const;
 
-        const std::vector<std::shared_ptr<BitmaskNamer>> &all() const { return ordered_; }
+        const std::vector<NamerPtr> &all() const { return ordered_; }
 
-        std::shared_ptr<BitmaskNamer> empty() const { return empty_; }
+        NamerPtr empty() const { return empty_; }
 
     private:
-
-        std::unordered_map<uint32_t, std::shared_ptr<BitmaskNamer>> by_mask_;
-        std::vector<std::shared_ptr<BitmaskNamer>> ordered_;
-        std::shared_ptr<BitmaskNamer> empty_{};
+        std::unordered_map<uint32_t, NamerPtr> by_mask_;
+        std::vector<NamerPtr> ordered_;
+        NamerPtr empty_{};
     };
 
 } // namespace naming

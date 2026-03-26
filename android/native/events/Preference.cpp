@@ -1204,6 +1204,7 @@ namespace fastbotx {
 #define ApeNamingActionRefinementFirstSTR "max.apeNamingActionRefinementFirst"
 #define ApeBaseNamingSTR "max.ape.baseNaming"
 #define UseAncestorNamerSTR "max.useAncestorNamer"
+#define UsePatchNamerSTR "max.usePatchNamer"
 #define LlmEnabledSTR             "max.llm.enabled"
 #define LlmKnowledgeSTR           "max.llm.knowledge"
 #define LlmWidgetPrioritySTR      "max.llm.widgetpriority"
@@ -1508,6 +1509,11 @@ namespace fastbotx {
                 const bool enabled = (value == "true");
                 naming::setUseAncestorNamer(enabled);
                 BLOG("APE: useAncestorNamer=%s (%s)", enabled ? "true" : "false", UseAncestorNamerSTR);
+            } else if (key == UsePatchNamerSTR) {
+                const bool enabled = (value == "true");
+                naming::setUsePatchNamer(enabled);
+                BLOG("APE: usePatchNamer=%s (%s) — matches ape.usePatchNamer", enabled ? "true" : "false",
+                     UsePatchNamerSTR);
             } else if (key == LlmEnabledSTR) {
                 this->_llmRuntimeConfig.enabled = (value == "true");
             } else if (key == LlmKnowledgeSTR) {
@@ -1568,11 +1574,13 @@ namespace fastbotx {
             (naming::NamingFactory::getDefaultRootNamingMode() == naming::ApeBaseNamingMode::ActionType)
                 ? "actiontype"
                 : "type_only";
-        BLOG("APE config snapshot: baseNaming=%s useAncestorNamer=%s periodicRefine=%s fixedPointSteps=%d "
+        BLOG("APE config snapshot: baseNaming=%s useAncestorNamer=%s usePatchNamer=%s periodicRefine=%s "
+             "fixedPointSteps=%d "
              "ruleProfile=%s predicateMode=%s selectionMode=%s candidateTransitionReplay=%s "
              "actionRefinementFirst=%s",
              baseNamingMode,
              naming::useAncestorNamer() ? "true" : "false",
+             naming::usePatchNamer() ? "true" : "false",
              _apeNamingPeriodicRefinement ? "true" : "false",
              _apeNamingFixedPointMaxIter,
              _apeNamingActionRefineRuleProfile.c_str(),

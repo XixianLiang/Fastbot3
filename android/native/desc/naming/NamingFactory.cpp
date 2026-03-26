@@ -21,6 +21,7 @@
 #include "Namelet.h"
 #include "NamerFactory.h"
 #include "NamerType.h"
+#include "NamingRuntime.h"
 #include "StateKey.h"
 #include "../gui_tree/GUITree.h"
 
@@ -117,6 +118,15 @@ namespace {
         }
         return candidates.back();
     }
+
+    struct NamingEvalGuard {
+        explicit NamingEvalGuard(const std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> *m) {
+            namingEvalSetNodeToNamer(m);
+        }
+        ~NamingEvalGuard() { namingEvalClear(); }
+        NamingEvalGuard(const NamingEvalGuard &) = delete;
+        NamingEvalGuard &operator=(const NamingEvalGuard &) = delete;
+    };
 
     NamingPtr actionRefinementSearch(const NamingPtr &naming, const NamerLattice &lattice,
                                      int max_steps,
@@ -257,6 +267,20 @@ namespace {
             }
         }
 
+        std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> node_to_namer;
+        node_to_namer.reserve(all_nodes.size());
+        for (gui_tree::GUITreeNode *n : all_nodes) {
+            auto itNl = node_to_namelets.find(n);
+            if (itNl == node_to_namelets.end()) {
+                continue;
+            }
+            NameletPtr sel = selectNameletForNode(itNl->second);
+            if (sel && sel->getNamerPtr()) {
+                node_to_namer[n] = &sel->getNamer();
+            }
+        }
+        NamingEvalGuard namingEvalGuard(&node_to_namer);
+
         for (gui_tree::GUITreeNode *raw : node_order) {
             auto itNode = node_ref.find(raw);
             if (itNode == node_ref.end()) {
@@ -340,7 +364,7 @@ namespace {
     NamingPtr NamingFactory::defaultRootNaming() {
         std::vector<NameletPtr> v;
         const uint32_t typeMask = 1u << static_cast<unsigned>(NamerType::TYPE);
-        NamerPtr typeNamer = NamerFactory::CURRENT.getByMask(typeMask);
+        NamerPtr typeNamer = NamerFactory::current().getByMask(typeMask);
         if (!typeNamer) {
             return nullptr;
         }
@@ -351,7 +375,7 @@ namespace {
         }
 
         v.reserve(2);
-        NamerPtr bottomNamer = NamerFactory::CURRENT.empty();
+        NamerPtr bottomNamer = NamerFactory::current().empty();
         if (!bottomNamer) {
             return nullptr;
         }

@@ -24,6 +24,8 @@ namespace naming {
 
         uint32_t getMask() const { return mask_; }
 
+        uint32_t typeDimensionMask() const override { return mask_; }
+
         std::vector<NamerType> getNamerTypes() const override;
 
         NamePtr naming(gui_tree::GUITreeNode &node) override;

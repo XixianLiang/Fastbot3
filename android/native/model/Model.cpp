@@ -1484,7 +1484,7 @@ namespace fastbotx {
             }
             _apeStateNamingManager->updateNaming(actKey, naming::NamingUpdateKind::Refine, cur);
         }
-        naming::NamerLattice lat(naming::NamerFactory::CURRENT);
+        naming::NamerLattice lat(naming::NamerFactory::current());
         std::set<std::string> blk;
         for (const auto &p : _apeNamingCoarseningBlacklist) {
             if (p.first == actKey) {

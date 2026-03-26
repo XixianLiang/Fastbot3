@@ -40,6 +40,25 @@ namespace naming {
         return "//*" + predicates;
     }
 
+    /**
+     * APE AncestorName / ParentName-style full XPath (not always descendant-or-self wildcard + tail).
+     * toXPath() returns the stored path verbatim (Java Name::toXPath).
+     */
+    class FullPathName : public Name {
+    public:
+        FullPathName(NamerPtr namer, std::string xpath);
+
+        std::shared_ptr<Namer> getNamer() const override { return namer_; }
+
+        std::string toXPath() const override { return xpath_; }
+
+        void appendXPathLocalProperties(std::string &sb) const override { (void)sb; }
+
+    private:
+        NamerPtr namer_{};
+        std::string xpath_;
+    };
+
 } // namespace naming
 } // namespace fastbotx
 

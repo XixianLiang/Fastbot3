@@ -15,5 +15,9 @@ namespace naming {
 
     void LocalXPathName::appendXPathLocalProperties(std::string &sb) const { sb.append(predicates_); }
 
+    FullPathName::FullPathName(NamerPtr namer, std::string xpath)
+        : namer_(std::move(namer)),
+          xpath_(std::move(xpath)) {}
+
 } // namespace naming
 } // namespace fastbotx
