@@ -71,6 +71,9 @@ namespace gui_tree {
 
         const std::vector<std::vector<GUITreeNodePtr>> &getCurrentNodeGroups() const { return current_node_groups_; }
 
+        /** Cached sorted widget xpaths aligned with current_names_/current_node_groups_. */
+        const std::vector<std::string> &getCurrentXPaths() const { return current_xpaths_; }
+
         /** Validate that each node's xpath Name matches the parallel Name entry (Java validate). */
         void validate() const;
 
@@ -87,6 +90,7 @@ namespace gui_tree {
         naming::NamingPtr current_naming_{nullptr};
         std::vector<naming::NamePtr> current_names_{};
         std::vector<std::vector<GUITreeNodePtr>> current_node_groups_{};
+        std::vector<std::string> current_xpaths_{};
         bool has_focused_node_{false};
     };
 

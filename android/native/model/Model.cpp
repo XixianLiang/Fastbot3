@@ -174,11 +174,11 @@ namespace {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
 namespace {
-bool apeStateKeyFromXmlWithNaming(const std::string &activity, const std::string &xml,
-                                  const fastbotx::naming::NamingPtr &naming,
-                                  fastbotx::naming::StateKey *out) {
+bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::string &xml,
+                                    const fastbotx::naming::NamingPtr &naming,
+                                    uintptr_t *outHash) {
     using namespace fastbotx;
-    if (!out || !naming || xml.empty()) {
+    if (!outHash || !naming || xml.empty()) {
         return false;
     }
     std::string pkg;
@@ -191,7 +191,7 @@ bool apeStateKeyFromXmlWithNaming(const std::string &activity, const std::string
     if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
         return false;
     }
-    *out = naming::StateKey::fromGUITree(*built.tree);
+    *outHash = naming::StateKey::hashFromGUITree(*built.tree);
     return true;
 }
 
@@ -212,11 +212,11 @@ bool evalApeSourcePartitionPredicateImpl(
             if (it == xmlByHash.end() || it->second.empty()) {
                 continue;
             }
-            naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-            if (!apeStateKeyFromXmlWithNaming(activity, it->second, naming, &k)) {
+            uintptr_t h = 0;
+            if (!apeStateHashFromXmlWithNaming(activity, it->second, naming, &h)) {
                 return false;
             }
-            if (seen.count(k.hash()) != 0) {
+            if (seen.count(h) != 0) {
                 return false;
             }
         }
@@ -225,11 +225,11 @@ bool evalApeSourcePartitionPredicateImpl(
             if (it == xmlByHash.end() || it->second.empty()) {
                 continue;
             }
-            naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-            if (!apeStateKeyFromXmlWithNaming(activity, it->second, naming, &k)) {
+            uintptr_t h = 0;
+            if (!apeStateHashFromXmlWithNaming(activity, it->second, naming, &h)) {
                 return false;
             }
-            seen.insert(k.hash());
+            seen.insert(h);
         }
     }
     return true;
@@ -255,11 +255,11 @@ bool evalApeSourcePartitionPredicateImplTwoNamings(
             }
             const naming::NamingPtr &namingToUse =
                 affectedStateHashes.count(sh) != 0 ? namingPrev : namingCur;
-            naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-            if (!apeStateKeyFromXmlWithNaming(activity, it->second, namingToUse, &k)) {
+            uintptr_t h = 0;
+            if (!apeStateHashFromXmlWithNaming(activity, it->second, namingToUse, &h)) {
                 return false;
             }
-            if (seen.count(k.hash()) != 0) {
+            if (seen.count(h) != 0) {
                 return false;
             }
         }
@@ -270,11 +270,11 @@ bool evalApeSourcePartitionPredicateImplTwoNamings(
             }
             const naming::NamingPtr &namingToUse =
                 affectedStateHashes.count(sh) != 0 ? namingPrev : namingCur;
-            naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-            if (!apeStateKeyFromXmlWithNaming(activity, it->second, namingToUse, &k)) {
+            uintptr_t h = 0;
+            if (!apeStateHashFromXmlWithNaming(activity, it->second, namingToUse, &h)) {
                 return false;
             }
-            seen.insert(k.hash());
+            seen.insert(h);
         }
     }
     return true;
@@ -414,8 +414,8 @@ bool evalApeStatesFewerThanPredicateImpl(
         if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
             return false;
         }
-        naming::StateKey k = naming::StateKey::fromGUITree(*built.tree);
-        distinct.insert(k.hash());
+        const uintptr_t h = naming::StateKey::hashFromGUITree(*built.tree);
+        distinct.insert(h);
         if (static_cast<int>(distinct.size()) > threshold) {
             return false;
         }
@@ -452,8 +452,8 @@ bool evalApeStatesFewerThanPredicateImplTwoNamings(
         if (!naming::NamingFactory::rebuildTree(namingToUse, *built.tree, built.dom)) {
             return false;
         }
-        naming::StateKey k = naming::StateKey::fromGUITree(*built.tree);
-        distinct.insert(k.hash());
+        const uintptr_t h = naming::StateKey::hashFromGUITree(*built.tree);
+        distinct.insert(h);
         if (static_cast<int>(distinct.size()) > threshold) {
             return false;
         }
@@ -1599,8 +1599,8 @@ namespace fastbotx {
                 if (a != actKey) {
                     continue;
                 }
-                naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                if (tryGetApeStateKey(sp->hash(), &k) && k.hash() == dominantSourceKeyHash) {
+                uintptr_t kH = 0;
+                if (tryGetApeStateKeyHash(sp->hash(), &kH) && kH == dominantSourceKeyHash) {
                     triggerSourceStateHashesForReplay.push_back(sp->hash());
                 }
             }
@@ -1623,8 +1623,8 @@ namespace fastbotx {
                     if (a != actKey) {
                         continue;
                     }
-                    naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (tryGetApeStateKey(sp->hash(), &k) && k.hash() == keyH) {
+                    uintptr_t kH = 0;
+                    if (tryGetApeStateKeyHash(sp->hash(), &kH) && kH == keyH) {
                         return sp->hash();
                     }
                 }
@@ -1675,8 +1675,8 @@ namespace fastbotx {
                     if (a != actKey) {
                         continue;
                     }
-                    naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (tryGetApeStateKey(sp->hash(), &k) && k.hash() == dominantSourceKeyHash) {
+                    uintptr_t kH = 0;
+                    if (tryGetApeStateKeyHash(sp->hash(), &kH) && kH == dominantSourceKeyHash) {
                         guiTreeBlacklistCheckHashes.push_back(sp->hash());
                         ++srcReprAdded;
                     }
@@ -1696,8 +1696,8 @@ namespace fastbotx {
                     if (a2 != actKey) {
                         continue;
                     }
-                    naming::StateKey k2 = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (tryGetApeStateKey(sp->hash(), &k2) && k2.hash() == tkh) {
+                    uintptr_t k2H = 0;
+                    if (tryGetApeStateKeyHash(sp->hash(), &k2H) && k2H == tkh) {
                         const uintptr_t sh = sp->hash();
                         if (seenGtb.insert(sh).second) {
                             guiTreeBlacklistCheckHashes.push_back(sh);
@@ -1745,17 +1745,17 @@ namespace fastbotx {
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
             if (replayActive) {
                 e.replayUsed = true;
-                naming::StateKey srcKeyCand = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                naming::StateKey srcKeyCur = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                if (apeStateKeyFromXmlWithNaming(activity, replaySrcXml, cand, &srcKeyCand) &&
-                    apeStateKeyFromXmlWithNaming(activity, replaySrcXml, cur, &srcKeyCur)) {
-                    e.replaySourceChanged = (srcKeyCand.hash() != srcKeyCur.hash()) ? 1 : 0;
+                uintptr_t srcKeyCandH = 0;
+                uintptr_t srcKeyCurH = 0;
+                if (apeStateHashFromXmlWithNaming(activity, replaySrcXml, cand, &srcKeyCandH) &&
+                    apeStateHashFromXmlWithNaming(activity, replaySrcXml, cur, &srcKeyCurH)) {
+                    e.replaySourceChanged = (srcKeyCandH != srcKeyCurH) ? 1 : 0;
                 }
                 std::unordered_set<uintptr_t> uniqTgt;
                 for (const auto &tx : replayTgtXmls) {
-                    naming::StateKey tk = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (apeStateKeyFromXmlWithNaming(activity, tx, cand, &tk)) {
-                        uniqTgt.insert(tk.hash());
+                    uintptr_t tkH = 0;
+                    if (apeStateHashFromXmlWithNaming(activity, tx, cand, &tkH)) {
+                        uniqTgt.insert(tkH);
                     }
                 }
                 e.replayDistinctTargets = static_cast<int>(uniqTgt.size());
@@ -1769,15 +1769,15 @@ namespace fastbotx {
                     if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
                         continue;
                     }
-                    naming::StateKey sk = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (apeStateKeyFromXmlWithNaming(activity, itXml->second, cand, &sk)) {
-                        srcKeysUnderCand.insert(sk.hash());
+                    uintptr_t skH = 0;
+                    if (apeStateHashFromXmlWithNaming(activity, itXml->second, cand, &skH)) {
+                        srcKeysUnderCand.insert(skH);
                     }
                 }
                 if (srcKeysUnderCand.empty() && !replaySrcXml.empty()) {
-                    naming::StateKey sk = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (apeStateKeyFromXmlWithNaming(activity, replaySrcXml, cand, &sk)) {
-                        srcKeysUnderCand.insert(sk.hash());
+                    uintptr_t skH = 0;
+                    if (apeStateHashFromXmlWithNaming(activity, replaySrcXml, cand, &skH)) {
+                        srcKeysUnderCand.insert(skH);
                     }
                 }
                 bool tgtIntersectsSrc = false;
@@ -1874,8 +1874,8 @@ namespace fastbotx {
                     if (a != actKey) {
                         continue;
                     }
-                    naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (tryGetApeStateKey(sp->hash(), &k) && k.hash() == dominantSourceKeyHash) {
+                    uintptr_t kH = 0;
+                    if (tryGetApeStateKeyHash(sp->hash(), &kH) && kH == dominantSourceKeyHash) {
                         partA.push_back(sp->hash());
                         if (partA.size() >= kMaxSourcePartitionRepr) {
                             break;
@@ -1903,8 +1903,8 @@ namespace fastbotx {
                     if (a2 != actKey) {
                         continue;
                     }
-                    naming::StateKey k2 = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (tryGetApeStateKey(sp->hash(), &k2) && k2.hash() == tkh) {
+                    uintptr_t k2H = 0;
+                    if (tryGetApeStateKeyHash(sp->hash(), &k2H) && k2H == tkh) {
                         partT.push_back(sp->hash());
                         if (partT.size() >= kMaxTargetPartitionReprPerKey) {
                             break;
@@ -2438,9 +2438,9 @@ namespace fastbotx {
                         continue;
                     }
                     const uintptr_t ghBa = sp->hash();
-                    naming::StateKey kStored = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    const bool haveStoredApeKey = tryGetApeStateKey(ghBa, &kStored);
-                    const uintptr_t khBa = haveStoredApeKey ? kStored.hash() : ghBa;
+                    uintptr_t storedKeyH = 0;
+                    const bool haveStoredApeKey = tryGetApeStateKeyHash(ghBa, &storedKeyH);
+                    const uintptr_t khBa = haveStoredApeKey ? storedKeyH : ghBa;
 
                     // Approximate Java targetStates membership by checking whether this state belongs to
                     // targetNaming (`cur`) key space (i.e., its StateKey under `cur` is in `totalNewKeys`).
@@ -2453,9 +2453,9 @@ namespace fastbotx {
                     }
                     uintptr_t tgtKeyHash = 0;
                     if (haveXml) {
-                        naming::StateKey kTgt = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                        if (apeStateKeyFromXmlWithNaming(activity, itXml->second, cur, &kTgt)) {
-                            tgtKeyHash = kTgt.hash();
+                        uintptr_t tgtH = 0;
+                        if (apeStateHashFromXmlWithNaming(activity, itXml->second, cur, &tgtH)) {
+                            tgtKeyHash = tgtH;
                         }
                     }
 
@@ -2466,9 +2466,9 @@ namespace fastbotx {
                     }
 
                     bool affectedBa = false;
-                    naming::StateKey kOld = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (apeStateKeyFromXmlWithNaming(activity, itXml->second, prev, &kOld)) {
-                        affectedBa = (kOld.hash() == triggerSource);
+                    uintptr_t oldH = 0;
+                    if (apeStateHashFromXmlWithNaming(activity, itXml->second, prev, &oldH)) {
+                        affectedBa = (oldH == triggerSource);
                     }
 
                     if (affectedBa) {
@@ -2585,11 +2585,11 @@ namespace fastbotx {
                     continue;
                 }
                 // target membership under @cur
-                naming::StateKey kTgt = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                if (!apeStateKeyFromXmlWithNaming(activity, xml, cur, &kTgt)) {
+                uintptr_t tgtH = 0;
+                if (!apeStateHashFromXmlWithNaming(activity, xml, cur, &tgtH)) {
                     continue;
                 }
-                const uintptr_t tgtKeyHash = kTgt.hash();
+                const uintptr_t tgtKeyHash = tgtH;
                 if (!totalNewKeys.empty() && totalNewKeys.count(tgtKeyHash) == 0) {
                     continue;
                 }
@@ -2597,9 +2597,9 @@ namespace fastbotx {
                 bool affectedBa = false;
                 if (triggerSource != 0) {
                     // originState.equals(oldState) under @prev.
-                    naming::StateKey kOld = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (apeStateKeyFromXmlWithNaming(activity, xml, prev, &kOld)) {
-                        affectedBa = (kOld.hash() == triggerSource);
+                    uintptr_t oldH = 0;
+                    if (apeStateHashFromXmlWithNaming(activity, xml, prev, &oldH)) {
+                        affectedBa = (oldH == triggerSource);
                     }
                 } else {
                     // Fallback when triggerSource is missing: use old->new mapping evidence.
@@ -2655,11 +2655,11 @@ namespace fastbotx {
                 }
 
                 // Membership in targetNaming: use cur to derive tgtStateKey and check totalNewKeys.
-                naming::StateKey kTgt = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                if (!apeStateKeyFromXmlWithNaming(activity, xml, cur, &kTgt)) {
+                uintptr_t tgtH = 0;
+                if (!apeStateHashFromXmlWithNaming(activity, xml, cur, &tgtH)) {
                     continue;
                 }
-                const uintptr_t tgtKeyHash = kTgt.hash();
+                const uintptr_t tgtKeyHash = tgtH;
                 if (!totalNewKeys.empty() && totalNewKeys.count(tgtKeyHash) == 0) {
                     continue;
                 }
@@ -2667,9 +2667,9 @@ namespace fastbotx {
                 bool affectedBa = false;
                 if (triggerSource != 0) {
                     // originState.equals(oldState): prev should derive oldState key hash == triggerSource.
-                    naming::StateKey kOld = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    if (apeStateKeyFromXmlWithNaming(activity, xml, prev, &kOld)) {
-                        affectedBa = (kOld.hash() == triggerSource);
+                        uintptr_t oldH = 0;
+                        if (apeStateHashFromXmlWithNaming(activity, xml, prev, &oldH)) {
+                            affectedBa = (oldH == triggerSource);
                     }
                 } else {
                     // Fallback when triggerSource is missing: match against old->new mapping evidence.
@@ -2746,9 +2746,9 @@ namespace fastbotx {
                         continue;
                     }
                     const uintptr_t ghBa = sp->hash();
-                    naming::StateKey kBa = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                    const bool haveStoredApeKey = tryGetApeStateKey(ghBa, &kBa);
-                    const uintptr_t khBa = haveStoredApeKey ? kBa.hash() : ghBa;
+                    uintptr_t kBaH = 0;
+                    const bool haveStoredApeKey = tryGetApeStateKeyHash(ghBa, &kBaH);
+                    const uintptr_t khBa = haveStoredApeKey ? kBaH : ghBa;
                     // Optimization 5: AssertStatesFewerThan distinct-key must match Java,
                     // i.e. distinct StateKeys computed under `prev` (targetParentNaming).
                     // Default to stored APE key hash; if we can rebuild oldState under `prev`,
@@ -2763,9 +2763,9 @@ namespace fastbotx {
                         auto itXml = _apeStateXmlByStateHash.find(ghBa);
                         const bool haveXml = (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty());
                         if (haveXml) {
-                            naming::StateKey kTgt = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                            if (apeStateKeyFromXmlWithNaming(activity, itXml->second, cur, &kTgt)) {
-                                tgtKeyHashForMembership = kTgt.hash();
+                            uintptr_t tgtH = 0;
+                            if (apeStateHashFromXmlWithNaming(activity, itXml->second, cur, &tgtH)) {
+                                tgtKeyHashForMembership = tgtH;
                             }
                         }
                     }
@@ -2784,10 +2784,10 @@ namespace fastbotx {
                         // recompute oldState under prev using cached XML.
                         auto itXml = _apeStateXmlByStateHash.find(ghBa);
                         if (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty()) {
-                            naming::StateKey kOld = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                            if (apeStateKeyFromXmlWithNaming(activity, itXml->second, prev, &kOld)) {
-                                dedupKey = kOld.hash();
-                                affectedBa = (kOld.hash() == originOldKeyHash);
+                            uintptr_t oldH = 0;
+                            if (apeStateHashFromXmlWithNaming(activity, itXml->second, prev, &oldH)) {
+                                dedupKey = oldH;
+                                affectedBa = (oldH == originOldKeyHash);
                             }
                         }
                     } else
@@ -3277,13 +3277,11 @@ namespace fastbotx {
                 if (!naming::NamingFactory::rebuildTree(prevN, *built.tree, built.dom)) {
                     return false;
                 }
-                naming::StateKey kOld = naming::StateKey::fromGUITree(*built.tree);
+                const uintptr_t oldH = naming::StateKey::hashFromGUITree(*built.tree);
                 if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
                     return false;
                 }
-                naming::StateKey kNewAfter = naming::StateKey::fromGUITree(*built.tree);
-                uintptr_t oldH = kOld.hash();
-                uintptr_t newH = kNewAfter.hash();
+                const uintptr_t newH = naming::StateKey::hashFromGUITree(*built.tree);
                 if (oldH != newH) {
                     itCtx->second.oldKeyHashToNewKeyHashes[oldH].insert(newH);
                     itCtx->second.oldKeyHashToObservationCount[oldH]++;
@@ -3324,6 +3322,17 @@ namespace fastbotx {
         }
         if (out != nullptr) {
             *out = it->second;
+        }
+        return true;
+    }
+
+    bool Model::tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash) const {
+        auto it = _ape_state_keys_by_hash.find(stateHash);
+        if (it == _ape_state_keys_by_hash.end()) {
+            return false;
+        }
+        if (outKeyHash != nullptr) {
+            *outKeyHash = it->second.hash();
         }
         return true;
     }

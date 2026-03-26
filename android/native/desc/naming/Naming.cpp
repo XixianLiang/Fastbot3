@@ -22,6 +22,7 @@
 #include "NamerType.h"
 
 #include <algorithm>
+#include <utility>
 #include <string>
 
 namespace fastbotx {
@@ -30,6 +31,40 @@ namespace {
 
     int bitCount(uint32_t x) {
         return __builtin_popcount(x);
+    }
+
+    std::string computeFingerprintString(
+        const std::vector<std::shared_ptr<Namelet>> &namelets) {
+        // Same logic as the former Naming::fingerprintString() implementation,
+        // but computed once in Naming construction.
+        std::vector<std::string> parts;
+        parts.reserve(namelets.size());
+        for (const auto &nl : namelets) {
+            if (!nl) {
+                continue;
+            }
+            std::string s = nl->getExprString();
+            s.push_back('\x1e');
+            // Serialize NamerType set in bit order.
+            // typeDimensionMask() is derived from getNamerTypes() for non-bitmask namers,
+            // so this matches the prior two-branch logic.
+            const uint32_t mask = nl->getNamer().typeDimensionMask();
+            for (unsigned i = 0; i < 32; ++i) {
+                if ((mask & (1u << i)) != 0u) {
+                    s.push_back(static_cast<char>(i));
+                }
+            }
+            parts.push_back(std::move(s));
+        }
+        std::sort(parts.begin(), parts.end());
+        std::string out;
+        for (size_t i = 0; i < parts.size(); ++i) {
+            if (i != 0) {
+                out.push_back('|');
+            }
+            out.append(parts[i]);
+        }
+        return out;
     }
 
 }
@@ -72,6 +107,7 @@ namespace {
         if (fineness_ < 0) {
             fineness_ = 0;
         }
+        fingerprint_cached_ = computeFingerprintString(namelets_);
     }
 
     size_t Naming::NamingResult::getNodeSize() const {
@@ -96,44 +132,7 @@ namespace {
         }
     }
 
-    std::string Naming::fingerprintString() const {
-        std::vector<std::string> parts;
-        parts.reserve(namelets_.size());
-        for (const auto &nl : namelets_) {
-            if (!nl) {
-                continue;
-            }
-            std::string s = nl->getExprString();
-            s.push_back('\x1e');
-            const auto *bn = dynamic_cast<const BitmaskNamer *>(&nl->getNamer());
-            if (bn) {
-                uint32_t mask = bn->getMask();
-                for (unsigned i = 0; i < 32; ++i) {
-                    if ((mask & (1u << i)) != 0) {
-                        s.push_back(static_cast<char>(i));
-                    }
-                }
-            } else {
-                std::vector<NamerType> types = nl->getNamer().getNamerTypes();
-                std::sort(types.begin(), types.end(), [](NamerType a, NamerType b) {
-                    return static_cast<unsigned char>(a) < static_cast<unsigned char>(b);
-                });
-                for (NamerType t : types) {
-                    s.push_back(static_cast<char>(static_cast<unsigned char>(t)));
-                }
-            }
-            parts.push_back(std::move(s));
-        }
-        std::sort(parts.begin(), parts.end());
-        std::string out;
-        for (size_t i = 0; i < parts.size(); ++i) {
-            if (i != 0) {
-                out.push_back('|');
-            }
-            out.append(parts[i]);
-        }
-        return out;
-    }
+    const std::string &Naming::fingerprintString() const { return fingerprint_cached_; }
 
 } // namespace naming
 } // namespace fastbotx

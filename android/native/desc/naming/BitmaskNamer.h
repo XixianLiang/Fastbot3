@@ -30,6 +30,9 @@ namespace naming {
 
         NamePtr naming(gui_tree::GUITreeNode &node) override;
 
+        NamePtr namingWithXPathKey(gui_tree::GUITreeNode &node,
+                                    const std::string &xpathKey) override;
+
         std::string xpathKeyForNode(gui_tree::GUITreeNode &node) const override;
 
         bool refinesTo(const Namer &other) const override;

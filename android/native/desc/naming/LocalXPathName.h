@@ -30,6 +30,8 @@ namespace naming {
     private:
         NamerPtr namer_{};
         std::string predicates_;
+        // Cache full XPath to avoid reconstructing "//*" + predicates on every toXPath().
+        std::string xpath_full_;
     };
 
     /** Same rule as LocalXPathName::toXPath() for a predicate tail (empty => bare any-node step). */

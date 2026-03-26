@@ -40,8 +40,14 @@ namespace {
         if (!coarse) {
             return out;
         }
-        out.reserve(factory_->all().size());
         const uint32_t cm = maskOf(*coarse);
+
+        auto itCached = refinements_cache_.find(cm);
+        if (itCached != refinements_cache_.end()) {
+            return itCached->second;
+        }
+
+        out.reserve(factory_->all().size());
         const int cpc = popcount32(cm);
         for (const auto &n : factory_->all()) {
             if (!n) {
@@ -73,6 +79,7 @@ namespace {
             }
             return a.get() < b.get();
         });
+        refinements_cache_.emplace(cm, out);
         return out;
     }
 
@@ -81,8 +88,14 @@ namespace {
         if (!fine) {
             return out;
         }
-        out.reserve(factory_->all().size());
         const uint32_t fm = maskOf(*fine);
+
+        auto itCached = abstractions_cache_.find(fm);
+        if (itCached != abstractions_cache_.end()) {
+            return itCached->second;
+        }
+
+        out.reserve(factory_->all().size());
         const int fpc = popcount32(fm);
         if (fpc == 0) {
             return out;
@@ -117,6 +130,7 @@ namespace {
             }
             return a.get() < b.get();
         });
+        abstractions_cache_.emplace(fm, out);
         return out;
     }
 

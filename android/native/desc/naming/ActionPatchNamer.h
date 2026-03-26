@@ -32,7 +32,8 @@ namespace naming {
 
     class ActionPatchName : public Name {
     public:
-        ActionPatchName(NamerPtr namer, NamePtr baseName, int patch);
+        ActionPatchName(NamerPtr namer, NamePtr baseName, int patch,
+                         std::string xpath_full_override = {});
 
         std::shared_ptr<Namer> getNamer() const override { return namer_; }
 
@@ -44,6 +45,8 @@ namespace naming {
         NamerPtr namer_{};
         NamePtr base_{};
         int patch_{0};
+        // Cache full XPath to avoid repeated base_->toXPath() + suffix construction.
+        std::string xpath_full_;
     };
 
     class ActionPatchNamer : public Namer, public std::enable_shared_from_this<ActionPatchNamer> {
@@ -55,6 +58,9 @@ namespace naming {
 
         NamePtr naming(gui_tree::GUITreeNode &node) override;
 
+        NamePtr namingWithXPathKey(gui_tree::GUITreeNode &node,
+                                    const std::string &xpathKey) override;
+
         std::string xpathKeyForNode(gui_tree::GUITreeNode &node) const override;
 
         bool refinesTo(const Namer &other) const override;
@@ -65,7 +71,7 @@ namespace naming {
         NamerPtr base_{};
     };
 
-    std::string appendActionPatchXPathSuffix(const std::string &baseXPath, int patch);
+    std::string appendActionPatchXPathSuffix(std::string baseXPath, int patch);
 
     int actionPatchBitsForNode(const gui_tree::GUITreeNode &node);
 

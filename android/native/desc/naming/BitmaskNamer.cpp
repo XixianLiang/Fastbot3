@@ -79,9 +79,8 @@ namespace {
     /**
      * Java CompoundNamer concatenates in namer order: typeTextIndex => TYPE, TEXT, INDEX.
      */
-    std::string buildLocalPredicates(uint32_t locMask, gui_tree::GUITreeNode &node) {
-        std::string sb;
-        sb.reserve(128);
+    void appendLocalPredicates(std::string &sb, uint32_t locMask, gui_tree::GUITreeNode &node) {
+        // Compound order: TYPE, TEXT, INDEX (Java CompoundNamer order).
         if (hasMask(locMask, NamerType::TYPE)) {
             appendLocalType(sb, node);
         }
@@ -91,6 +90,12 @@ namespace {
         if (hasMask(locMask, NamerType::INDEX)) {
             appendLocalIndex(sb, node);
         }
+    }
+
+    std::string buildLocalPredicates(uint32_t locMask, gui_tree::GUITreeNode &node) {
+        std::string sb;
+        sb.reserve(128);
+        appendLocalPredicates(sb, locMask, node);
         return sb;
     }
 
@@ -109,12 +114,19 @@ namespace {
         if (!node) {
             return "//*";
         }
-        std::string local = buildLocalPredicates(locMask, *node);
-        auto pw = node->getParent();
-        if (!pw) {
-            return std::string("//*") + "/*" + local;
+
+        // Build root->leaf chain once, then append "//*" + "/*local" for each node.
+        // This is equivalent to the previous recursive implementation.
+        std::vector<gui_tree::GUITreeNode *> chain;
+        collectChainRootToLeaf(node, &chain);
+        std::string s;
+        s.reserve(chain.size() * 32 + 4);
+        s.append("//*");
+        for (gui_tree::GUITreeNode *n : chain) {
+            s.append("/*");
+            appendLocalPredicates(s, locMask, *n);
         }
-        return buildParentChainXPath(pw.get(), locMask) + "/*" + local;
+        return s;
     }
 
     std::string buildAncestorUniformXPath(gui_tree::GUITreeNode &node, uint32_t locMask) {
@@ -124,7 +136,7 @@ namespace {
         s.reserve(chain.size() * 32);
         for (gui_tree::GUITreeNode *n : chain) {
             s.append("/*");
-            s.append(buildLocalPredicates(locMask, *n));
+            appendLocalPredicates(s, locMask, *n);
         }
         return s;
     }
@@ -152,7 +164,7 @@ namespace {
         for (gui_tree::GUITreeNode *n : chain) {
             const uint32_t lm = localMaskForNodeFromMap(n, map, fallbackLoc);
             s.append("/*");
-            s.append(buildLocalPredicates(lm, *n));
+            appendLocalPredicates(s, lm, *n);
         }
         return s;
     }
@@ -213,6 +225,25 @@ namespace {
         const auto *map = namingEvalNodeToNamer();
         return std::make_shared<FullPathName>(shared_from_this(),
                                               buildAncestorPerNodeXPath(node, locBase, map));
+    }
+
+    NamePtr BitmaskNamer::namingWithXPathKey(gui_tree::GUITreeNode &node,
+                                              const std::string &xpathKey) {
+        (void)node;
+        const bool hasP = hasMask(mask_, NamerType::PARENT);
+        const bool hasA = hasMask(mask_, NamerType::ANCESTOR);
+
+        if (!hasP && !hasA) {
+            // xpathKey is "//*" or "//*<predicates>" produced by localXPathToXPathWithPredicateTail().
+            std::string predicates;
+            if (xpathKey.rfind("//*", 0) == 0) {
+                predicates = xpathKey.substr(3);
+            }
+            return std::make_shared<LocalXPathName>(shared_from_this(), std::move(predicates));
+        }
+
+        // For PARENT/ANCESTOR modes, xpathKey is already the full path XPath.
+        return std::make_shared<FullPathName>(shared_from_this(), xpathKey);
     }
 
     std::string BitmaskNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const {

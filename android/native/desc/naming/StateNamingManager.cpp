@@ -387,10 +387,11 @@ namespace {
             return NamingFactory::defaultRootNaming();
         }
         // APE-style iterative edge walk with loop guard.
-        StateKey state = StateKey::fromGUITree(tree);
-        if (state.hash() == 0) {
+        const uintptr_t h = StateKey::hashFromGUITree(tree);
+        if (h == 0) {
             return source;
         }
+        StateKey state = StateKey::fromGUITree(tree);
         std::set<NamingPtr, std::owner_less<NamingPtr>> visited;
         visited.insert(source);
         while (true) {
@@ -425,10 +426,11 @@ namespace {
             if (!NamingFactory::rebuildTree(source, tree, dom)) {
                 break;
             }
-            StateKey state = StateKey::fromGUITree(tree);
-            if (state.hash() == 0) {
+            const uintptr_t h = StateKey::hashFromGUITree(tree);
+            if (h == 0) {
                 break;
             }
+            StateKey state = StateKey::fromGUITree(tree);
             NamingPtr next = getNamingByStateKey(source, state);
             if (!next || visited.find(next) != visited.end()) {
                 break;

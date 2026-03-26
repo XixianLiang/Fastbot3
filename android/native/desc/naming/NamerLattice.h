@@ -27,6 +27,7 @@
 #include "NamerFactory.h"
 
 #include <memory>
+#include <unordered_map>
 #include <vector>
 
 namespace fastbotx {
@@ -44,6 +45,10 @@ namespace naming {
 
     private:
         const NamerFactory *factory_{nullptr};
+        // Lazily memoize lattice neighborhoods per bitmask.
+        // For APE this is tiny (<= 32 masks) and avoids repeated scanning/sorting.
+        mutable std::unordered_map<uint32_t, std::vector<NamerPtr>> refinements_cache_;
+        mutable std::unordered_map<uint32_t, std::vector<NamerPtr>> abstractions_cache_;
     };
 
 } // namespace naming

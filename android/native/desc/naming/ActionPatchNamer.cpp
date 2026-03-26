@@ -31,19 +31,18 @@ namespace {
 
 } // namespace
 
-    std::string appendActionPatchXPathSuffix(const std::string &baseXPath, int patch) {
-        std::string out = baseXPath;
-        out.reserve(baseXPath.size() + 128);
+    std::string appendActionPatchXPathSuffix(std::string baseXPath, int patch) {
+        baseXPath.reserve(baseXPath.size() + 128);
         int k = patch;
         for (const char *prop : kInteractiveProps) {
-            out.append("[@");
-            out.append(prop);
-            out.append("=");
-            out.append((k % 2 == 1) ? "'true'" : "'false'");
-            out.append("]");
+            baseXPath.append("[@");
+            baseXPath.append(prop);
+            baseXPath.append("=");
+            baseXPath.append((k % 2 == 1) ? "'true'" : "'false'");
+            baseXPath.append("]");
             k >>= 1;
         }
-        return out;
+        return baseXPath;
     }
 
     int actionPatchBitsForNode(const gui_tree::GUITreeNode &node) {
@@ -71,16 +70,26 @@ namespace {
         return flag;
     }
 
-    ActionPatchName::ActionPatchName(NamerPtr namer, NamePtr baseName, int patch)
+    ActionPatchName::ActionPatchName(NamerPtr namer, NamePtr baseName, int patch,
+                                     std::string xpath_full_override)
         : namer_(std::move(namer)),
           base_(std::move(baseName)),
-          patch_(patch) {}
+          patch_(patch) {
+        // Precompute full XPath once; toXPath() can be called frequently during
+        // naming evaluation / sorting / state-key extraction.
+        if (!xpath_full_override.empty()) {
+            xpath_full_ = std::move(xpath_full_override);
+            return;
+        }
+        if (!base_) {
+            xpath_full_ = appendActionPatchXPathSuffix(std::string(), patch_);
+        } else {
+            xpath_full_ = appendActionPatchXPathSuffix(base_->toXPath(), patch_);
+        }
+    }
 
     std::string ActionPatchName::toXPath() const {
-        if (!base_) {
-            return appendActionPatchXPathSuffix("", patch_);
-        }
-        return appendActionPatchXPathSuffix(base_->toXPath(), patch_);
+        return xpath_full_;
     }
 
     void ActionPatchName::appendXPathLocalProperties(std::string &sb) const {
@@ -114,6 +123,12 @@ namespace {
         return std::make_shared<ActionPatchName>(shared_from_this(), std::move(baseName), p);
     }
 
+    NamePtr ActionPatchNamer::namingWithXPathKey(gui_tree::GUITreeNode &node, const std::string &xpathKey) {
+        // Avoid allocating base_->naming(node) by using the already-computed full XPath key.
+        const int p = actionPatchBitsForNode(node);
+        return std::make_shared<ActionPatchName>(shared_from_this(), nullptr, p, xpathKey);
+    }
+
     std::string ActionPatchNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const {
         std::string k = base_ ? base_->xpathKeyForNode(node) : std::string();
         if (k.empty() && base_) {
@@ -122,7 +137,7 @@ namespace {
                 k = n->toXPath();
             }
         }
-        return appendActionPatchXPathSuffix(k, actionPatchBitsForNode(node));
+        return appendActionPatchXPathSuffix(std::move(k), actionPatchBitsForNode(node));
     }
 
     bool ActionPatchNamer::refinesTo(const Namer &other) const {

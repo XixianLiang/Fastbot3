@@ -79,11 +79,14 @@ namespace gui_tree {
                   });
         current_names_.clear();
         current_node_groups_.clear();
+        current_xpaths_.clear();
         current_names_.reserve(entries.size());
         current_node_groups_.reserve(entries.size());
+        current_xpaths_.reserve(entries.size());
         has_focused_node_ = false;
         for (auto &e : entries) {
             current_names_.push_back(std::move(e.name));
+            current_xpaths_.push_back(std::move(e.xpathKey));
             // Update focus cache while we still have the nodes in hand.
             bool anyFocused = false;
             for (const auto &n : e.nodes) {

@@ -35,37 +35,6 @@ namespace naming {
 namespace {
     ApeBaseNamingMode g_default_root_naming_mode = ApeBaseNamingMode::ActionType;
 
-    bool namePtrLess(const NamePtr &a, const NamePtr &b) {
-        if (!a || !b) return a.get() < b.get();
-        return a->toXPath() < b->toXPath();
-    }
-
-    void sortNamingResultLikeGUITree(Naming::NamingResult &r) {
-        if (r.names.size() != r.node_groups.size() || r.names.size() != r.namelet_groups.size()) {
-            return;
-        }
-        const size_t n = r.names.size();
-        std::vector<size_t> perm(n);
-        for (size_t i = 0; i < n; ++i) perm[i] = i;
-        std::sort(perm.begin(), perm.end(), [&](size_t a, size_t b) { return namePtrLess(r.names[a], r.names[b]); });
-
-        std::vector<NamePtr> names;
-        std::vector<std::vector<gui_tree::GUITreeNodePtr>> node_groups;
-        std::vector<std::vector<NameletPtr>> namelet_groups;
-        names.reserve(n);
-        node_groups.reserve(n);
-        namelet_groups.reserve(n);
-        for (size_t k = 0; k < n; ++k) {
-            const size_t i = perm[k];
-            names.push_back(r.names[i]);
-            node_groups.push_back(std::move(r.node_groups[i]));
-            namelet_groups.push_back(std::move(r.namelet_groups[i]));
-        }
-        r.names = std::move(names);
-        r.node_groups = std::move(node_groups);
-        r.namelet_groups = std::move(namelet_groups);
-    }
-
     void syncNodesAfterRebuild(const gui_tree::GUITree &tree,
                                const std::unordered_map<gui_tree::GUITreeNode *, NameletPtr> &node_to_namelet) {
         const auto &names = tree.getCurrentNames();
@@ -91,23 +60,29 @@ namespace {
         return a.get() < b.get();
     }
 
-    NameletPtr selectNameletForNode(std::vector<NameletPtr> candidates) {
+    NameletPtr selectNameletForNode(const std::vector<NameletPtr> &candidates) {
         if (candidates.empty()) {
             return nullptr;
         }
         if (candidates.size() == 1) {
             return (candidates[0] && candidates[0]->isBase()) ? candidates[0] : nullptr;
         }
-        std::sort(candidates.begin(), candidates.end(), nameletSelectLess);
-        std::set<NameletPtr, decltype(&nameletSelectLess)> selectedSet(&nameletSelectLess);
-        for (const auto &nl : candidates) {
-            selectedSet.insert(nl);
+
+        // Only copy when we actually need to sort/iterate multiple candidates.
+        std::vector<NameletPtr> sorted = candidates;
+        std::sort(sorted.begin(), sorted.end(), nameletSelectLess);
+
+        // Parent-chain membership check: compare by pointer identity only.
+        std::unordered_set<const Namelet *> selectedSet;
+        selectedSet.reserve(sorted.size() * 2 + 1);
+        for (const auto &nl : sorted) {
+            selectedSet.insert(nl.get());
         }
-        for (size_t i = candidates.size(); i > 0; --i) {
-            NameletPtr cur = candidates[i - 1];
+        for (size_t i = sorted.size(); i > 0; --i) {
+            NameletPtr cur = sorted[i - 1];
             NameletPtr p = cur ? cur->getParent() : nullptr;
             while (p) {
-                if (selectedSet.find(p) == selectedSet.end()) {
+                if (selectedSet.find(p.get()) == selectedSet.end()) {
                     break;
                 }
                 p = p->getParent();
@@ -116,7 +91,7 @@ namespace {
                 return cur;
             }
         }
-        return candidates.back();
+        return sorted.back();
     }
 
     struct NamingEvalGuard {
@@ -299,7 +274,9 @@ namespace {
             }
 
             Namer &namer = selected->getNamer();
-            const std::string kPrecheck = namer.xpathKeyForNode(*nptr);
+            // Contract: when non-empty, xpathKeyForNode(node) must equal naming(node)->toXPath().
+            // So we can reuse the precomputed key to avoid calling name->toXPath() again.
+            std::string kPrecheck = namer.xpathKeyForNode(*nptr);
             if (!kPrecheck.empty()) {
                 auto itHit = key_to_idx.find(kPrecheck);
                 if (itHit != key_to_idx.end()) {
@@ -309,11 +286,19 @@ namespace {
                     continue;
                 }
             }
-            NamePtr name = namer.naming(*nptr);
+
+            NamePtr name = kPrecheck.empty() ? namer.naming(*nptr) : namer.namingWithXPathKey(*nptr, kPrecheck);
             if (!name) {
                 continue;
             }
-            const std::string k = name->toXPath();
+
+            std::string k;
+            if (!kPrecheck.empty()) {
+                k = std::move(kPrecheck);
+            } else {
+                k = name->toXPath();
+            }
+
             auto itDup = key_to_idx.find(k);
             if (itDup != key_to_idx.end()) {
                 const size_t idx = itDup->second;
@@ -321,6 +306,7 @@ namespace {
                 out.namelet_groups[idx].push_back(selected);
                 continue;
             }
+
             const size_t idx = out.names.size();
             key_to_idx[k] = idx;
             out.names.push_back(std::move(name));
@@ -330,7 +316,6 @@ namespace {
             out.namelet_groups[idx].push_back(selected);
         }
 
-        sortNamingResultLikeGUITree(out);
         return out;
     }
 
@@ -511,7 +496,7 @@ namespace {
         if (max_steps <= 0) {
             return cur;
         }
-        uintptr_t prevHash = StateKey::fromGUITree(tree).hash();
+        uintptr_t prevHash = StateKey::hashFromGUITree(tree);
         for (int s = 0; s < max_steps; ++s) {
             NamingPtr next = refineNaming(cur, lattice);
             if (!next) {
@@ -520,7 +505,7 @@ namespace {
             if (!rebuildTree(next, tree, dom)) {
                 return nullptr;
             }
-            const uintptr_t h = StateKey::fromGUITree(tree).hash();
+            const uintptr_t h = StateKey::hashFromGUITree(tree);
             if (h == prevHash) {
                 if (!rebuildTree(cur, tree, dom)) {
                     return nullptr;

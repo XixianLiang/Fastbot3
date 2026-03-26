@@ -264,6 +264,9 @@ namespace gui_tree {
         /** Lookup a previously recorded APE StateKey by state hash (returns false if none). */
         bool tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out) const;
 
+        /** Hash-only lookup for previously recorded APE StateKey. */
+        bool tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash) const;
+
         virtual ~Model();
 
     protected:

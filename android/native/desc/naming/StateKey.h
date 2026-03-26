@@ -28,6 +28,9 @@ namespace naming {
 
         static StateKey fromGUITree(const gui_tree::GUITree &tree);
 
+        /** Hash-only fast path for GUITree (avoids building sorted_xpaths vector). */
+        static uintptr_t hashFromGUITree(const gui_tree::GUITree &tree);
+
         /** Split at first `/` (same convention as GUITreeFactory / JNI activity). */
         static void splitActivityPackageClass(const std::string &activity, std::string *pkg, std::string *cls);
 

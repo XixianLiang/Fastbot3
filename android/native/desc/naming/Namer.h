@@ -44,6 +44,18 @@ namespace naming {
         virtual NamePtr naming(gui_tree::GUITreeNode &node) = 0;
 
         /**
+         * Like {@link naming(node)} but when {@code xpathKey} is non-empty and matches the
+         * contract of {@link xpathKeyForNode(node)} (i.e. equals naming(node)->toXPath()),
+         * derived namers can avoid recomputing/allocating intermediate objects.
+         *
+         * Default implementation falls back to {@code naming(node)}.
+         */
+        virtual NamePtr namingWithXPathKey(gui_tree::GUITreeNode &node, const std::string &xpathKey) {
+            (void)xpathKey;
+            return naming(node);
+        }
+
+        /**
          * If non-empty, must equal naming(node)->toXPath() for that node (used to dedupe without
          * allocating a Name when the key already exists in evaluateNaming). Default: empty → use naming()+toXPath().
          * evaluateNaming indexes by canonical name->toXPath(); the pre-check lookup only skips naming() when

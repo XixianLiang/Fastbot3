@@ -1,6 +1,8 @@
 #include "XPathNodeMapper.h"
 
 #include <map>
+#include <unordered_map>
+#include <unordered_set>
 #include <string>
 #include <vector>
 
@@ -12,6 +14,10 @@ namespace gui_tree {
     struct XPathNodeMapper::Impl {
         pugi::xml_document doc;
         std::map<pugi::xml_node, GUITreeNodePtr> node_map;
+        // Cache compiled XPath queries to avoid repeated query compilation.
+        // nodesForXPath() is const, so caches are mutable.
+        mutable std::unordered_map<std::string, pugi::xpath_query> xpath_cache;
+        mutable std::unordered_set<std::string> xpath_invalid_cache;
     };
 
     XPathNodeMapper::XPathNodeMapper() = default;
@@ -47,25 +53,46 @@ namespace gui_tree {
         if (!impl_ || expr.empty()) {
             return out;
         }
-        try {
-            pugi::xpath_query q(expr.c_str());
-            pugi::xml_node ctx = impl_->doc.document_element();
-            if (!ctx) {
+
+        // Fast path: previously-known invalid expressions.
+        if (impl_->xpath_invalid_cache.count(expr) != 0) {
+            return out;
+        }
+
+        pugi::xml_node ctx = impl_->doc.document_element();
+        if (!ctx) {
+            return out;
+        }
+
+        // Compile once, reuse many times.
+        auto it = impl_->xpath_cache.find(expr);
+        if (it == impl_->xpath_cache.end()) {
+            try {
+                pugi::xpath_query q(expr.c_str());
+                it = impl_->xpath_cache.emplace(expr, std::move(q)).first;
+            } catch (...) {
+                // Only mark invalid when compilation fails.
+                impl_->xpath_invalid_cache.insert(expr);
                 return out;
             }
-            pugi::xpath_node_set ns = q.evaluate_node_set(ctx);
+        }
+
+        try {
+            pugi::xpath_node_set ns = it->second.evaluate_node_set(ctx);
             for (size_t i = 0; i < ns.size(); ++i) {
                 pugi::xpath_node xn = ns[i];
                 pugi::xml_node n = xn.node();
                 if (!n) {
                     continue;
                 }
-                auto it = impl_->node_map.find(n);
-                if (it != impl_->node_map.end()) {
-                    out.push_back(it->second);
+                auto itNode = impl_->node_map.find(n);
+                if (itNode != impl_->node_map.end()) {
+                    out.push_back(itNode->second);
                 }
             }
         } catch (...) {
+            // Evaluation failure should behave like the original implementation:
+            // return empty without permanently poisoning the expression.
         }
         return out;
     }

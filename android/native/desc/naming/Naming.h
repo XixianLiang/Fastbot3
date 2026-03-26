@@ -85,7 +85,7 @@ namespace naming {
         void addRefinementChild(const NamingEdge &edge, std::shared_ptr<Naming> child);
 
         /** Stable fingerprint for StateKey / lattice (same serialization as StateKey::fromParts). */
-        std::string fingerprintString() const;
+        const std::string &fingerprintString() const;
 
         virtual ~Naming() = default;
 
@@ -100,6 +100,7 @@ namespace naming {
         int fineness_{-1};
 
         std::map<NamingEdge, std::shared_ptr<Naming>> children_{};
+        std::string fingerprint_cached_{};
     };
 
     using NamingPtr = std::shared_ptr<Naming>;
