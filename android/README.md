@@ -56,8 +56,8 @@ We gratefully acknowledge Prof. Ting Su, the SSE Lab at East China Normal Univer
 
 ### Changelog
 
-**update 2026.3**
-* **Static reuse state abstraction**: Added a runtime switch in `max.config` (`max.staticStateAbstraction=true|false`) to control how UI states are abstracted for RL/reuse. The default `false` mode keeps the existing per-activity widget-key refinement/coarsening (mask over `Clazz|ResourceID|OperateMask|ScrollType|Text|ContentDesc|Index`). When set to `true`, runtime refinement/coarsening is disabled and a **legacy-compatible hash** is used: each widget is a `RichWidget` whose hash is built from `(class + resource-id + supported actions + valid text/children text, with clickable-children masking)`, and each state hash is `hash(activityName) XOR combineHash(RichWidgets, withOrder)`. This matches the older `ReuseAgent` abstraction and uses a separate FBM file `/sdcard/fastbot_{pkg}.static.fbm` so that dynamic and static reuse models do not interfere with each other.
+**update 2026.4**
+* **Static reuse state abstraction**: Added a runtime switch in `max.config` (`max.staticStateAbstraction=true|false`) to control how UI states are abstracted for RL/reuse. The default `false` mode keeps the current per-activity **APE naming** dynamic abstraction (runtime refine/coarsen/rollback). When set to `true`, dynamic abstraction is disabled and a **legacy-compatible hash** is used: each widget is a `RichWidget` whose hash is built from `(class + resource-id + supported actions + valid text/children text, with clickable-children masking)`, and each state hash is `hash(activityName) XOR combineHash(RichWidgets, withOrder)`. This matches the older `ReuseAgent` abstraction and uses a separate FBM file `/sdcard/fastbot_{pkg}.static.fbm` so that dynamic and static reuse models do not interfere with each other.
 
 **update 2026.2**
 * **LLM agent (LLMTaskAgent)**: Optional LLM-based custom events via `/sdcard/max.llm.tasks`: when the current screen matches a checkpoint (Activity + XPath), action selection can be handed to an LLM (e.g. for login or guided tasks). Supports optional Planner/Executor layering, first-step screenshot retry, session-scoped todo/scratchpad, and safe_mode/forbidden_texts. Configure LLM in `max.config` (e.g. `max.llm.enabled`, `max.llm.apiUrl`, `max.llm.model`). See [Configuration → LLM custom events](#llm-custom-events-maxllmtasks) and [LLM_TASK_AGENT_LLM_TECHNICAL_ANALYSIS.md](./native/agent/LLM_TASK_AGENT_LLM_TECHNICAL_ANALYSIS.md). For a survey of recent LLM/VLM-based traversal testing SOTA and technical proposals, see [LLM_VLM_TRAVERSAL_TESTING_SOTA_AND_PROPOSAL.md](./native/agent/LLM_VLM_TRAVERSAL_TESTING_SOTA_AND_PROPOSAL.md).
@@ -69,7 +69,7 @@ We gratefully acknowledge Prof. Ting Su, the SSE Lab at East China Normal Univer
 
   <img src="./doc/double_sarsa.jpg" width="560" alt="Double SARSA vs SARSA: Widget Coverage over Steps" />
 
-* **Dynamic state abstraction**: State granularity is tuned at runtime—finer when the same action leads to different screens or too many choices, coarser when states are over-split (see [STATE_ABSTRACTION_TECHNICAL_ARCHIVE.md](./native/desc/STATE_ABSTRACTION_TECHNICAL_ARCHIVE.md)). Experiment results (Widget Coverage vs Steps) show that dynamic state abstraction consistently outperforms the baseline:
+* **Dynamic state abstraction**: Fastbot tunes APE naming granularity at runtime per activity—refining when nondeterministic transitions appear (same source+action reaches different targets), and coarsening/rollback when refinement over-splits states. See [DYNAMIC_STATE_ABSTRACTION_OVERVIEW.md](./native/desc/DYNAMIC_STATE_ABSTRACTION_OVERVIEW.md) for algorithm details and examples. Experiment results (Widget Coverage vs Steps) show that dynamic state abstraction consistently outperforms the baseline:
 
   <img src="./doc/dynamic_state.jpg" width="560" alt="Dynamic state abstraction vs old: Widget Coverage over Steps" />
 
