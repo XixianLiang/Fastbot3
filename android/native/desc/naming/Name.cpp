@@ -16,7 +16,7 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
- 
+
 #include "Name.h"
 
 namespace fastbotx {

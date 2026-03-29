@@ -40,6 +40,13 @@ namespace gui_tree {
         uintptr_t actionHash{0};
         uintptr_t targetKeyHash{0};
         std::string sourceActivity;
+        /// State hashes (Graph/RL identity) for transition replay/remap when Naming changes.
+        uintptr_t sourceStateHash{0};
+        uintptr_t targetStateHash{0};
+        /// Action signature for replay/remap. actionHash itself may change after Naming updates.
+        ActionType actionType{ActionType::NOP};
+        bool hasTargetBounds{false};
+        Rect targetBounds{};
         bool valid{false};
     };
 
@@ -383,6 +390,25 @@ namespace gui_tree {
         void invalidateApeGraphStateKeyDedupMap();
 
         /**
+         * Rebuild a small set of representative states for old StateKey hashes (budget Model.rebuild analogue).
+         * Keeps concrete samples in the new naming space for future refinement/rollback.
+         */
+        void rebuildApeStateRepresentativesForKeyHashes(
+            const std::string &rawActivity,
+            const naming::NamingPtr &oldNaming,
+            const std::vector<uintptr_t> &oldKeyHashes,
+            size_t maxStatesPerKeyHash);
+
+        /**
+         * Remap transition evidence in the ring buffer from @p fromNaming to @p toNaming,
+         * preserving non-determinism statistics instead of clearing aggregation.
+         */
+        void remapApeTransitionAggregationForActivity(
+            const std::string &rawActivity,
+            const naming::NamingPtr &fromNaming,
+            const naming::NamingPtr &toNaming);
+
+        /**
          * APE AssertSourceDivergent: ordered partitions of graph state hashes (keys into _apeStateXmlByStateHash).
          * eval rejects naming if a StateKey::hash() under naming appears in more than one partition sweep
          * (same semantics as NamingFactory.AssertSourceDivergent).
@@ -424,6 +450,22 @@ namespace gui_tree {
         /// Drop APE transition log + pair-agg rows for @p actKeyCanonical (Java rebuild clears stale hash space).
         void apeClearTransitionAggregationForActivity(const std::string &actKeyCanonical);
         void notifyAgentsOfApeNamingChange();
+
+        /// Count of distinct APE StateKeys recorded for an activity under a specific Naming fingerprint.
+        ///
+        /// This helps keep refinement gates (e.g. minStates/minStateDelta) aligned with the *current* naming,
+        /// instead of being biased by historical states created under older naming versions.
+        size_t getApeStateCountByActivityAndNamingFingerprint(
+            const std::string &activityKeyCanonical, const std::string &namingFingerprint) const;
+
+        /// Drop stale states created under a previous naming fingerprint for the given activity.
+        ///
+        /// This is a lightweight alternative to a full Java-style Model.rebuild(): we remove states/actions
+        /// created under an old naming key space so that agents and naming heuristics see a closer-to-consistent
+        /// abstract graph.
+        void pruneStaleApeStatesForActivity(const std::string &activityKeyCanonical,
+                                          const std::string &staleNamingFingerprint);
+
         /// Java NamingFactory.guiTreeNamingBlaclist: reject candidate if fingerprint is banned for any affected
         /// graph state (source-side + one repr per ND target key, see refineActivityApeNaming).
         bool evalApeGuiTreeNamingBlacklist(const std::vector<uintptr_t> &stateHashes,

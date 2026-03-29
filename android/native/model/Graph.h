@@ -12,6 +12,7 @@
 #include "Action.h"
 #include <map>
 #include <unordered_map>
+#include <unordered_set>
 
 namespace fastbotx {
 
@@ -153,6 +154,13 @@ namespace fastbotx {
          * identity is merged by an external key (e.g. APE StateKey) instead of widget hash alone.
          */
         void recordStateVisit(StatePtr canonical, StatePtr freshlyBuilt);
+
+        /**
+         * Remove states (and their actions) by state hash.
+         * Used by dynamic state abstraction to drop stale states after Naming changes.
+         * Returns the number of removed states.
+         */
+        size_t removeStatesByHash(const std::unordered_set<uintptr_t> &stateHashes);
 
         /**
          * @brief Get total distribution count (total number of state accesses)

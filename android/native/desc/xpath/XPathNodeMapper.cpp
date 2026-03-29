@@ -1,6 +1,7 @@
 #include "XPathNodeMapper.h"
 
 #include <map>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -14,6 +15,8 @@ namespace gui_tree {
     struct XPathNodeMapper::Impl {
         pugi::xml_document doc;
         std::map<pugi::xml_node, GUITreeNodePtr> node_map;
+        // Protects doc/node_map and the XPath caches for future parallel callers.
+        mutable std::mutex mu;
         // Cache compiled XPath queries to avoid repeated query compilation.
         // nodesForXPath() is const, so caches are mutable.
         mutable std::unordered_map<std::string, pugi::xpath_query> xpath_cache;
@@ -27,6 +30,7 @@ namespace gui_tree {
 
     bool XPathNodeMapper::loadXmlString(const std::string &utf8) {
         impl_ = std::make_unique<Impl>();
+        std::lock_guard<std::mutex> lk(impl_->mu);
         pugi::xml_parse_result pr =
             impl_->doc.load_string(utf8.c_str(), pugi::parse_default | pugi::parse_declaration);
         return static_cast<bool>(pr);
@@ -36,6 +40,7 @@ namespace gui_tree {
         if (!impl_) {
             return {};
         }
+        std::lock_guard<std::mutex> lk(impl_->mu);
         return impl_->doc.document_element();
     }
 
@@ -43,6 +48,7 @@ namespace gui_tree {
         if (!impl_ || !gn) {
             return;
         }
+        std::lock_guard<std::mutex> lk(impl_->mu);
         if (xmlNode && xmlNode.type() == pugi::node_element) {
             impl_->node_map[xmlNode] = gn;
         }
@@ -53,6 +59,8 @@ namespace gui_tree {
         if (!impl_ || expr.empty()) {
             return out;
         }
+
+        std::lock_guard<std::mutex> lk(impl_->mu);
 
         // Fast path: previously-known invalid expressions.
         if (impl_->xpath_invalid_cache.count(expr) != 0) {

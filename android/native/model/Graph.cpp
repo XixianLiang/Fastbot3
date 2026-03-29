@@ -10,6 +10,7 @@
 
 #include "Graph.h"
 #include "../utils.hpp"
+#include <unordered_set>
 #include <vector>
 
 
@@ -135,6 +136,38 @@ namespace fastbotx {
         distriIt->second.second = 1.0 * distriIt->second.first / this->_totalDistri;
 
         addActionFromState(canonical);
+    }
+
+    size_t Graph::removeStatesByHash(const std::unordered_set<uintptr_t> &stateHashes) {
+        if (stateHashes.empty()) {
+            return 0;
+        }
+        size_t removed = 0;
+        for (auto it = this->_states.begin(); it != this->_states.end();) {
+            const StatePtr &s = *it;
+            if (!s || stateHashes.count(s->hash()) == 0) {
+                ++it;
+                continue;
+            }
+            for (const auto &a : s->getActions()) {
+                this->_visitedActions.erase(a);
+                this->_unvisitedActions.erase(a);
+            }
+            auto activity = s->getActivityString();
+            static const std::string kEmptyActivityStr;
+            const std::string &activityStrForCount =
+                (activity && activity.get()) ? *activity : kEmptyActivityStr;
+            auto itCnt = this->_activityStateCount.find(activityStrForCount);
+            if (itCnt != this->_activityStateCount.end() && itCnt->second > 0) {
+                itCnt->second--;
+                if (itCnt->second == 0) {
+                    this->_activityStateCount.erase(itCnt);
+                }
+            }
+            it = this->_states.erase(it);
+            ++removed;
+        }
+        return removed;
     }
 
     /**
