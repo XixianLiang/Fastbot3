@@ -78,6 +78,9 @@ namespace fastbotx {
         /// Set custom widget priority provider (default: LlmWidgetPriorityProvider). When set and max.llm.knowledge=true, pre-allocates widgetPriorities for each new state.
         void setWidgetPriorityProvider(const std::shared_ptr<IWidgetPriorityProvider> &provider);
 
+        /// Dynamic state abstraction: clear any state/action-hash keyed caches to avoid cross-abstraction leakage.
+        void onStateAbstractionChanged() override;
+
     protected:
         SarsaAgent();
 

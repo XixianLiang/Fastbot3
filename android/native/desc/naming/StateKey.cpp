@@ -15,14 +15,16 @@ namespace naming {
 namespace {
 
     uintptr_t combineStringHashes(const std::vector<std::string> &sorted, bool withOrder) {
-        uintptr_t combinedHashcode = 0x1;
+        // Avoid XOR-only multiset hashing (collision-prone). Use a cheap mix similar to boost::hash_combine.
+        uintptr_t combined = 0x9e3779b97f4a7c15ULL;
         for (size_t i = 0; i < sorted.size(); ++i) {
-            combinedHashcode ^= fastStringHash(sorted[i]);
+            uintptr_t h = fastStringHash(sorted[i]);
             if (withOrder) {
-                combinedHashcode ^= (127U * (static_cast<unsigned>(i) << 6));
+                h ^= (127U * (static_cast<unsigned>(i) << 6));
             }
+            combined ^= h + 0x9e3779b97f4a7c15ULL + (combined << 6) + (combined >> 2);
         }
-        return combinedHashcode;
+        return combined;
     }
 
     uintptr_t computeStateKeyHash(const std::string &activity, const std::string &naming_fp,
@@ -43,19 +45,20 @@ namespace {
         if (!naming_fp.empty()) {
             activityHash ^= (fastStringHash(naming_fp) << 2);
         }
-        uintptr_t combinedHashcode = 0x1;
+        uintptr_t combined = 0x9e3779b97f4a7c15ULL;
         size_t j = 0;
         for (const auto &s : sorted_xpaths) {
             if (s.empty()) {
                 continue;
             }
-            combinedHashcode ^= fastStringHash(s);
+            uintptr_t h = fastStringHash(s);
             if (STATE_WITH_WIDGET_ORDER) {
-                combinedHashcode ^= (127U * (static_cast<unsigned>(j) << 6));
+                h ^= (127U * (static_cast<unsigned>(j) << 6));
             }
+            combined ^= h + 0x9e3779b97f4a7c15ULL + (combined << 6) + (combined >> 2);
             ++j;
         }
-        activityHash ^= (combinedHashcode << 1);
+        activityHash ^= (combined << 1);
         return activityHash;
     }
 

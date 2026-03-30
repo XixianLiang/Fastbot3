@@ -22,7 +22,7 @@
 #ifndef FASTBOTX_DESC_GUI_TREE_GUITREEFACTORY_H_
 #define FASTBOTX_DESC_GUI_TREE_GUITREEFACTORY_H_
 
-#include "XPathNodeMapper.h"
+#include "../xpath/XPathNodeMapper.h"
 #include "GUITree.h"
 #include "../Element.h"
 
@@ -47,9 +47,9 @@ namespace gui_tree {
                                                const std::string &activity_class);
 
         /**
-         * Build GUITree by walking the existing Element tree; load pugixml once from element->toXML()
-         * only to map pugi::xml_node → GUITreeNode for XPath (avoids a second tree build from XML).
-         * Falls back to buildFromXml if pre-order node pairing fails (structure drift).
+         * Build GUITree by walking the existing Element tree and constructing a matching pugixml DOM
+         * (node + long attribute names) for XPath evaluation.
+         * This avoids Element::toXML() string serialization and pugixml parsing on every step.
          */
         static GUITreeBuildResult buildFromElement(const ElementPtr &root, const std::string &activity_package,
                                                    const std::string &activity_class);

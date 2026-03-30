@@ -22,8 +22,12 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <utility>
 #include <vector>
 #include <set>
+#ifndef NDEBUG
+#include <thread>
+#endif
 
 namespace fastbotx {
 
@@ -47,6 +51,12 @@ namespace gui_tree {
         ActionType actionType{ActionType::NOP};
         bool hasTargetBounds{false};
         Rect targetBounds{};
+        /// Stable concrete target widget identity (APE trace field `full`).
+        bool hasTargetFullPath{false};
+        uintptr_t targetFullPathHash{0};
+        /// Optional exact target StateKey for collision defense / debugging.
+        bool hasTargetStateKey{false};
+        naming::StateKey targetStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
         bool valid{false};
     };
 
@@ -85,8 +95,90 @@ namespace gui_tree {
         }
     };
 
+    /** Hybrid counts keyed by target StateKey hash: vector for tiny fan-out, map when large. */
+    struct ApeTargetCounts {
+        static constexpr size_t kSmallMax = 6;
+
+        size_t size() const { return usingBig ? big.size() : small.size(); }
+        bool empty() const { return size() == 0; }
+
+        template <class F>
+        void forEach(F &&f) const {
+            if (usingBig) {
+                for (const auto &kv : big) {
+                    f(kv.first, kv.second);
+                }
+            } else {
+                for (const auto &kv : small) {
+                    f(kv.first, kv.second);
+                }
+            }
+        }
+
+        void increment(uintptr_t key) {
+            if (usingBig) {
+                big[key]++;
+                return;
+            }
+            for (auto &kv : small) {
+                if (kv.first == key) {
+                    kv.second++;
+                    return;
+                }
+            }
+            small.emplace_back(key, 1);
+            if (small.size() > kSmallMax) {
+                promoteToBig();
+            }
+        }
+
+        bool decrement(uintptr_t key) {
+            if (usingBig) {
+                auto it = big.find(key);
+                if (it == big.end()) {
+                    return false;
+                }
+                --(it->second);
+                if (it->second <= 0) {
+                    big.erase(it);
+                }
+                if (big.empty()) {
+                    usingBig = false;
+                }
+                return true;
+            }
+            for (size_t i = 0; i < small.size(); ++i) {
+                if (small[i].first != key) {
+                    continue;
+                }
+                --small[i].second;
+                if (small[i].second <= 0) {
+                    small[i] = small.back();
+                    small.pop_back();
+                }
+                return true;
+            }
+            return false;
+        }
+
+    private:
+        void promoteToBig() {
+            usingBig = true;
+            const size_t cap = (small.size() * 2 > 16) ? (small.size() * 2) : 16;
+            big.reserve(cap);
+            for (const auto &kv : small) {
+                big[kv.first] += kv.second;
+            }
+            small.clear();
+        }
+
+        std::vector<std::pair<uintptr_t, int>> small;
+        std::unordered_map<uintptr_t, int> big;
+        bool usingBig{false};
+    };
+
     struct ApePairAggValue {
-        std::unordered_map<uintptr_t, int> targetCounts;
+        ApeTargetCounts targetCounts;
         std::string sourceActivity;
         bool hasSourceStateKey{false};
         naming::StateKey sourceStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
@@ -273,6 +365,23 @@ namespace gui_tree {
 
         /** Hash-only lookup for previously recorded APE StateKey. */
         bool tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash) const;
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        /**
+         * When APE Naming changes, Model prunes stale states from Graph. This returns the action hashes
+         * (ActivityNameAction::hash in dynamic mode) collected from those pruned states so agents can
+         * invalidate hash-keyed caches in a scoped way. Valid during the call stack of
+         * Model::notifyAgentsOfApeNamingChange().
+         */
+        const std::unordered_set<uintptr_t> &getPendingInvalidatedReuseActionHashes() const {
+            return _apeInvalidatedReuseActionHashes;
+        }
+#else
+        const std::unordered_set<uintptr_t> &getPendingInvalidatedReuseActionHashes() const {
+            static const std::unordered_set<uintptr_t> kEmpty;
+            return kEmpty;
+        }
+#endif
 
         virtual ~Model();
 
@@ -545,9 +654,20 @@ namespace gui_tree {
         // APE NamingFactory.NDActionBlacklist: after failed resolveNonDeterminism, if out-edge count for this
         // action is >= 3 (Java: getOutStateTransitions(action).size() >= 3), blacklist the action.
         std::unordered_map<std::string, std::unordered_set<uintptr_t>> _apeRefineActionBlacklist;
+        /// Action hashes belonging to states pruned after a Naming change; used for agent cache invalidation.
+        std::unordered_set<uintptr_t> _apeInvalidatedReuseActionHashes;
+#ifndef NDEBUG
+        mutable std::thread::id _apeOwnerThread{};
+        mutable bool _apeOwnerThreadSet{false};
+        void assertApeSingleThreaded() const;
+#endif
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
         /// Recent page XML per state hash for transition-level refine candidate replay (APE checkActionRefinement-style).
         std::unordered_map<uintptr_t, std::string> _apeStateXmlByStateHash;
+        /** Resolve widget XPath + parent Namelet under @p cur for cached XML of @p stateHash (Java resolveCurrentNamelet). */
+        bool resolveApeWidgetExprAndParentNamelet(uintptr_t stateHash, const std::string &activityForSplit,
+                                                  const naming::NamingPtr &cur, const WidgetPtr &targetWidget,
+                                                  std::string *outExpr, naming::NameletPtr *outParent) const;
 #endif
         /// APE NamingFactory.predicates queue (AssertSourceDivergent analogue).
         std::vector<ApeSourcePartitionPredicate> _apeSourcePartitionPredicates;

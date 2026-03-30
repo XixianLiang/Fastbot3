@@ -1203,6 +1203,7 @@ namespace fastbotx {
 #define ApeNamingCandidateTransitionReplaySTR "max.apeNamingCandidateTransitionReplay"
 #define ApeNamingActionRefinementFirstSTR "max.apeNamingActionRefinementFirst"
 #define ApeBaseNamingSTR "max.ape.baseNaming"
+#define ApeBaseNamingAliasSTR "ape.baseNaming"
 #define UseAncestorNamerSTR "max.useAncestorNamer"
 #define UsePatchNamerSTR "max.usePatchNamer"
 #define LlmEnabledSTR             "max.llm.enabled"
@@ -1491,19 +1492,31 @@ namespace fastbotx {
                 BLOG("APE: actionRefinementFirst pass order=%s (%s)",
                      this->_apeNamingActionRefinementFirst ? "true" : "false",
                      ApeNamingActionRefinementFirstSTR);
-            } else if (key == ApeBaseNamingSTR) {
+            } else if (key == ApeBaseNamingSTR || key == ApeBaseNamingAliasSTR) {
                 std::string mode = value;
                 std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
                     return static_cast<char>(std::tolower(c));
                 });
                 if (mode == "actiontype" || mode == "ape" || mode == "default") {
                     naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::ActionType);
-                    BLOG("APE: base naming mode=actiontype (%s)", ApeBaseNamingSTR);
+                    BLOG("APE: base naming mode=actiontype (%s)", key.c_str());
                 } else if (mode == "type" || mode == "type_only" || mode == "legacy") {
                     naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::TypeOnly);
-                    BLOG("APE: base naming mode=type_only (%s)", ApeBaseNamingSTR);
+                    BLOG("APE: base naming mode=type_only (%s)", key.c_str());
+                } else if (mode == "resourceid" || mode == "resource_id") {
+                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::ResourceID);
+                    BLOG("APE: base naming mode=resourceid (%s)", key.c_str());
+                } else if (mode == "parentindex" || mode == "parent_index") {
+                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::ParentIndex);
+                    BLOG("APE: base naming mode=parentindex (%s)", key.c_str());
+                } else if (mode == "stoat") {
+                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::Stoat);
+                    BLOG("APE: base naming mode=stoat (%s)", key.c_str());
+                } else if (mode == "boosted" || mode == "boost") {
+                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::Boosted);
+                    BLOG("APE: base naming mode=boosted (%s)", key.c_str());
                 } else {
-                    BLOGE("invalid max.ape.baseNaming value: %s", value.c_str());
+                    BLOGE("invalid %s value: %s", key.c_str(), value.c_str());
                 }
             } else if (key == UseAncestorNamerSTR) {
                 const bool enabled = (value == "true");
@@ -1570,10 +1583,28 @@ namespace fastbotx {
                 }
             }
         }
-        const char *baseNamingMode =
-            (naming::NamingFactory::getDefaultRootNamingMode() == naming::ApeBaseNamingMode::ActionType)
-                ? "actiontype"
-                : "type_only";
+        const char *baseNamingMode = "actiontype";
+        switch (naming::NamingFactory::getDefaultRootNamingMode()) {
+        case naming::ApeBaseNamingMode::TypeOnly:
+            baseNamingMode = "type_only";
+            break;
+        case naming::ApeBaseNamingMode::ResourceID:
+            baseNamingMode = "resourceid";
+            break;
+        case naming::ApeBaseNamingMode::ParentIndex:
+            baseNamingMode = "parentindex";
+            break;
+        case naming::ApeBaseNamingMode::Boosted:
+            baseNamingMode = "boosted";
+            break;
+        case naming::ApeBaseNamingMode::Stoat:
+            baseNamingMode = "stoat";
+            break;
+        case naming::ApeBaseNamingMode::ActionType:
+        default:
+            baseNamingMode = "actiontype";
+            break;
+        }
         BLOG("APE config snapshot: baseNaming=%s useAncestorNamer=%s usePatchNamer=%s periodicRefine=%s "
              "fixedPointSteps=%d "
              "ruleProfile=%s predicateMode=%s selectionMode=%s candidateTransitionReplay=%s "

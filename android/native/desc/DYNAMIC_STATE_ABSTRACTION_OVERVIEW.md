@@ -124,13 +124,13 @@ StateKey = (activityKey, namingFingerprint, sorted(widgetXPath[]))
 它在代码里是这样构造的（实现：`android/native/desc/naming/Naming.cpp` 的 `computeFingerprintString(...)`）：
 
 ```text
-for each Namelet nl in naming.namelets:
-  part = nl.expr_str + 0x1e + serialize(nl.namer.typeDimensionMask bits)
-parts.sort()
-fingerprint = join(parts, "|")
+out = "v3"
+for (i, Namelet nl) in enumerate(naming.namelets) in order:
+  out += "|" + to_string(i) + ":" + (isBase(nl) ? "B" : "R") + ":" + nl.expr_str + "#" + hex32(nl.namer.typeDimensionMask)
+fingerprint = out
 ```
 
-注意这里会对 `parts` 排序，所以 fingerprint 对 namelets 的“容器顺序”不敏感（更稳定）。
+注意：**v3** 格式为可打印字符串（无 `\x1e` 等控制字符）；**不会**对 namelet 排序；顺序由 `i:` 与向量下标一致；`B`/`R` 区分 base/refine namelet。
 
 ##### 一个示例（形状示意）
 
@@ -139,12 +139,12 @@ fingerprint = join(parts, "|")
 - `Namelet1`：`expr_str="//*[@clickable='true']"`，`namerMask={TYPE, RES_ID}`
 - `Namelet2`：`expr_str="//*[@clickable='false']"`，`namerMask={TYPE}`
 
-那么 fingerprint 大致长这样（省略 bit 的具体数字，只展示结构）：
+那么 fingerprint 大致长这样（省略 bit 的具体数字，只展示结构；顺序与 `namelets` 向量一致）：
 
 ```text
-"//*[@clickable='false']" + 0x1e + "{TYPE}"  |
-"//*[@clickable='true']"  + 0x1e + "{TYPE,RES_ID}"
+v3|0:B://*[@clickable='true']#<hex mask>|1:B://*[@clickable='false']#<hex mask>
 ```
+（`#` 后为 8 位十六进制 `typeDimensionMask`；示例省略具体 hex。）
 
 这样一来：
 

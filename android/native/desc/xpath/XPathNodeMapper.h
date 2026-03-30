@@ -39,6 +39,8 @@ namespace gui_tree {
          * They keep pugixml details inside this module after splitting GUITreeFactory.cpp.
          */
         bool loadXmlString(const std::string &utf8);
+        /** Initialize a fresh empty DOM document and return its root element. */
+        pugi::xml_node initEmptyDocumentWithRoot(const char *tagName);
         pugi::xml_node documentElement() const;
         void registerNode(pugi::xml_node xmlNode, const GUITreeNodePtr &gn);
 #endif

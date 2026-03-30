@@ -128,7 +128,7 @@ inline void logLongStringInfo(const std::string& longStr) {
 #define STATE_WITH_INDEX       0
 
 // If should order widgets before generating hash
-#define STATE_WITH_WIDGET_ORDER 0
+#define STATE_WITH_WIDGET_ORDER 1
 
 #define STATE_MERGE_DETAIL_TEXT 1
 

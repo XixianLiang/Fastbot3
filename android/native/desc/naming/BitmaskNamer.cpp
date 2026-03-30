@@ -14,9 +14,11 @@
 #include "BitmaskNamer.h"
 #include "LocalXPathName.h"
 #include "NamingRuntime.h"
+#include "../ApeTextNormalize.h"
 #include "../gui_tree/GUITreeNode.h"
 
 #include <algorithm>
+#include <cstring>
 #include <unordered_map>
 
 namespace fastbotx {
@@ -24,6 +26,15 @@ namespace naming {
 namespace {
 
     static constexpr int kMaxNamerTypeBits = 8;
+
+    bool isEditTextClassName(const std::string &cls) {
+        const char *p = cls.c_str();
+        const size_t len = cls.size();
+        return (len == 23 && std::strcmp(p, "android.widget.EditText") == 0) ||
+               (len == 42 && std::strcmp(p, "android.inputmethodservice.ExtractEditText") == 0) ||
+               (len == 35 && std::strcmp(p, "android.widget.AutoCompleteTextView") == 0) ||
+               (len == 42 && std::strcmp(p, "android.widget.MultiAutoCompleteTextView") == 0);
+    }
 
     bool hasMask(uint32_t mask, NamerType t) {
         int b = static_cast<int>(t);
@@ -63,10 +74,15 @@ namespace {
     }
 
     void appendLocalText(std::string &sb, const gui_tree::GUITreeNode &node) {
+        const std::string textPred =
+            isEditTextClassName(node.getClassName())
+                ? std::string()
+                : ape_text::normalizeTextForApe(node.getText().c_str());
+        const std::string cdPred = ape_text::normalizeContentDescForApe(node.getContentDesc().c_str());
         sb.append("[@text=\"");
-        sb.append(escapeJavaXPathString(node.getText()));
+        sb.append(escapeJavaXPathString(textPred));
         sb.append("\"][@content-desc=\"");
-        sb.append(escapeJavaXPathString(node.getContentDesc()));
+        sb.append(escapeJavaXPathString(cdPred));
         sb.append("\"]");
     }
 

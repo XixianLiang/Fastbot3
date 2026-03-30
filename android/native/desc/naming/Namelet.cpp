@@ -25,6 +25,13 @@
 namespace fastbotx {
 namespace naming {
 
+    bool PtrLess::operator()(const std::shared_ptr<Namelet> &a, const std::shared_ptr<Namelet> &b) const {
+        if (!a || !b) {
+            return a.get() < b.get();
+        }
+        return *a < *b;
+    }
+
     Namelet::Namelet(Type type, std::string expr_str, NamerPtr namer)
         : type_(type),
           expr_str_(std::move(expr_str)),

@@ -16,6 +16,18 @@
 
 
 namespace fastbotx {
+namespace {
+
+    bool isEditTextClassName(const std::string &cls) {
+        const char *p = cls.c_str();
+        const size_t len = cls.size();
+        return (len == 23 && std::strcmp(p, "android.widget.EditText") == 0) ||
+               (len == 42 && std::strcmp(p, "android.inputmethodservice.ExtractEditText") == 0) ||
+               (len == 35 && std::strcmp(p, "android.widget.AutoCompleteTextView") == 0) ||
+               (len == 42 && std::strcmp(p, "android.widget.MultiAutoCompleteTextView") == 0);
+    }
+
+} // namespace
 
     /// Parse one integer (optional '-', then digits) and advance p past it. Used for bounds "[xl,yl][xr,yr]".
     static int parseIntAndAdvance(const char *&p) {
@@ -399,7 +411,7 @@ namespace fastbotx {
             _children.push_back(child);
         }
         _childCount = static_cast<int>(_children.size());
-        _isEditable = (_classname == "android.widget.EditText");
+        _isEditable = isEditTextClassName(_classname);
         if (_isEditable) _longClickable = _clickable = _enabled = true;
         _cachedScrollType = _computeScrollType();
         _scrollTypeCached = true;
@@ -469,6 +481,7 @@ namespace fastbotx {
         xml->SetAttribute("resource-id", elm->getResourceID().c_str());
         xml->SetAttribute("package", elm->getPackageName().c_str());
         xml->SetAttribute("content-desc", elm->getContentDesc().c_str());
+        xml->SetAttribute("text", elm->isEditText() ? "" : elm->getText().c_str());
         xml->SetAttribute("checkable", elm->getCheckable() ? "true" : "false");
         xml->SetAttribute("checked", elm->_checked ? "true" : "false");
         xml->SetAttribute("clickable", elm->getClickable() ? "true" : "false");
@@ -478,7 +491,13 @@ namespace fastbotx {
         xml->SetAttribute("scrollable", elm->_scrollable ? "true" : "false");
         xml->SetAttribute("long-clickable", elm->_longClickable ? "true" : "false");
         xml->SetAttribute("password", elm->_password ? "true" : "false");
-        xml->SetAttribute("scroll-type", "none");
+        {
+            const ScrollType st = elm->getScrollType();
+            const int stIdx = static_cast<int>(st);
+            const char *stName =
+                (stIdx >= 0 && stIdx < ScrollTypeSize) ? ScrollTypeName[stIdx].c_str() : "none";
+            xml->SetAttribute("scroll-type", stName);
+        }
 
         const auto &children = elm->getChildren();
         for (const auto &child : children) {
@@ -542,12 +561,12 @@ namespace fastbotx {
                 }
             }
         }
+        const char *tclassname = nullptr;
+        if (queryStringAttr(xmlNode, "class", "class", tclassname)) this->_classname = std::string(tclassname);
         const char *text = nullptr;
         if (queryStringAttr(xmlNode, "t", "text", text)) this->_text = std::string(text);
         const char *resource_id = nullptr;
         if (queryStringAttr(xmlNode, "rid", "resource-id", resource_id)) this->_resourceID = std::string(resource_id);
-        const char *tclassname = nullptr;
-        if (queryStringAttr(xmlNode, "class", "class", tclassname)) this->_classname = std::string(tclassname);
         const char *pkgname = nullptr;
         if (queryStringAttr(xmlNode, "pkg", "package", pkgname)) this->_packageName = std::string(pkgname);
         const char *content_desc = nullptr;
@@ -564,7 +583,7 @@ namespace fastbotx {
         if (queryBoolAttr(xmlNode, "pwd", "password", b)) this->_password = b;
         if (queryBoolAttr(xmlNode, "sel", "selected", b)) this->_selected = b;
 
-        this->_isEditable = "android.widget.EditText" == this->_classname;
+        this->_isEditable = isEditTextClassName(this->_classname);
         if (FORCE_EDITTEXT_CLICK_TRUE && this->_isEditable) {
             this->_longClickable = this->_clickable = this->_enabled = true;
         }
@@ -608,12 +627,11 @@ namespace fastbotx {
         if (!this->_scrollable) {
             return ScrollType::NONE;
         }
+        // Align with Java APE GUITreeNode.getScrollType() class whitelist.
         if ("android.widget.ScrollView" == this->_classname
             || "android.widget.ListView" == _classname
             || "android.widget.ExpandableListView" == _classname
-            || "android.support.v17.leanback.widget.VerticalGridView" == _classname
-            || "android.support.v7.widget.RecyclerView" == _classname
-            || "androidx.recyclerview.widget.RecyclerView" == _classname) {
+            || "android.support.v17.leanback.widget.VerticalGridView" == _classname) {
             return ScrollType::Vertical;
         } else if ("android.widget.HorizontalScrollView" == _classname
                    || "android.support.v17.leanback.widget.HorizontalGridView" == _classname

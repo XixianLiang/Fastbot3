@@ -77,6 +77,28 @@ namespace fastbotx {
         _stepCount++;
     }
 
+    void SarsaAgent::onStateAbstractionChanged() {
+        // State abstraction (APE Naming / StateKey) updates change state/action hashes.
+        // Instead of clearing all learned experience, drop only entries belonging to states pruned
+        // from the graph by Model::pruneStaleApeStatesForActivity().
+        if (auto modelPtr = this->_model.lock()) {
+            const auto &invalidActionHashes = modelPtr->getPendingInvalidatedReuseActionHashes();
+            if (!invalidActionHashes.empty()) {
+                std::lock_guard<std::mutex> lock(this->_reuseModelLock);
+                for (uintptr_t h : invalidActionHashes) {
+                    this->_reuseModel.erase(static_cast<uint64_t>(h));
+                }
+            }
+        } else {
+            std::lock_guard<std::mutex> lock(this->_reuseModelLock);
+            this->_reuseModel.clear();
+        }
+        this->_actionPriority.clear();
+        this->_stateWidgetPrioritiesRequested.clear();
+        this->_previousActions.clear();
+        this->_rewardHistory.clear();
+    }
+
     bool SarsaAgent::isReuseDecisionTuningEnabled() {
         auto pref = Preference::inst();
         return pref && pref->isReuseDecisionTuningEnabled();

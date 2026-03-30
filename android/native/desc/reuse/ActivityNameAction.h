@@ -9,6 +9,7 @@
 
 #include "Action.h"
 #include "RichWidget.h"
+#include <cstdint>
 #include <vector>
 
 
@@ -40,6 +41,14 @@ namespace fastbotx {
         void applyApeDynamicRlIdentity(uintptr_t activityCanonicalHash, uintptr_t abstractTargetHash);
 
         /**
+         * Stable identifier for the concrete target widget (APE trace field `full`).
+         * Used to remap action target across Naming changes without relying on bounds matching.
+         */
+        void setApeDynamicTargetFullPathHash(uintptr_t fullPathHash) { _apeTargetFullPathHash = fullPathHash; }
+
+        uintptr_t getApeDynamicTargetFullPathHash() const { return _apeTargetFullPathHash; }
+
+        /**
          * @brief Get the activity name
          * 
          * @return Shared pointer to activity name string
@@ -55,6 +64,7 @@ namespace fastbotx {
         ActivityNameAction();
 
         stringPtr _activity;
+        uintptr_t _apeTargetFullPathHash{0};
 
     };
 

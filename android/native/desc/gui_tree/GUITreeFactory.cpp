@@ -18,13 +18,17 @@
  */
 
 #include "GUITreeFactory.h"
-#include "XPathNodeMapper.h"
+#include "../ApeTextNormalize.h"
+#include "../xpath/XPathNodeMapper.h"
 #include "../Element.h"
 
 #include "../../Base.h"
 
 #include <algorithm>
+#include <cstdio>
+#include <cstdlib>
 #include <cstring>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -79,6 +83,78 @@ namespace {
         return false;
     }
 
+    bool isEditTextClassName(const char *cls) {
+        if (!cls || !*cls) {
+            return false;
+        }
+        const size_t len = std::strlen(cls);
+        return (len == 23 && std::strcmp(cls, "android.widget.EditText") == 0) ||
+               (len == 42 && std::strcmp(cls, "android.inputmethodservice.ExtractEditText") == 0) ||
+               (len == 35 && std::strcmp(cls, "android.widget.AutoCompleteTextView") == 0) ||
+               (len == 42 && std::strcmp(cls, "android.widget.MultiAutoCompleteTextView") == 0);
+    }
+
+    int parseScrollableBitsFromAttr(const char *scrollableStr) {
+        if (!scrollableStr || !*scrollableStr) {
+            return 0;
+        }
+        if (std::strcmp(scrollableStr, "true") == 0) {
+            // Java APE: Accessibility boolean scrollable => scrollable=3.
+            return 3;
+        }
+        if (std::strcmp(scrollableStr, "false") == 0) {
+            return 0;
+        }
+        const char *p = scrollableStr;
+        if (*p == '-' || *p == '+') {
+            ++p;
+        }
+        if (*p == '\0') {
+            return 0;
+        }
+        for (const char *q = p; *q; ++q) {
+            if (*q < '0' || *q > '9') {
+                return 0;
+            }
+        }
+        int v = std::atoi(scrollableStr);
+        if (v < 0) {
+            v = 0;
+        }
+        if (v > 3) {
+            v = 3;
+        }
+        return v;
+    }
+
+    const char *computeScrollTypeString(int scrollableBits, const char *className) {
+        if (scrollableBits == 0) {
+            return "none";
+        }
+        if (!className || !*className) {
+            return "all";
+        }
+        // Align with Java APE GUITreeNode.getScrollType() class whitelist (no RecyclerView here).
+        if (std::strcmp(className, "android.widget.ScrollView") == 0 ||
+            std::strcmp(className, "android.widget.ListView") == 0 ||
+            std::strcmp(className, "android.widget.ExpandableListView") == 0 ||
+            std::strcmp(className, "android.support.v17.leanback.widget.VerticalGridView") == 0) {
+            return "vertical";
+        }
+        if (std::strcmp(className, "android.widget.HorizontalScrollView") == 0 ||
+            std::strcmp(className, "android.support.v17.leanback.widget.HorizontalGridView") == 0 ||
+            std::strcmp(className, "android.support.v4.view.ViewPager") == 0) {
+            return "horizontal";
+        }
+        if (scrollableBits == 1) {
+            return "vertical";
+        }
+        if (scrollableBits == 2) {
+            return "horizontal";
+        }
+        return "all";
+    }
+
     void fillFromAttributes(pugi::xml_node xmlNode, GUITreeNodePtr gn) {
         int indexOfNode = 0;
         if (readInt(xmlNode, "idx", "index", indexOfNode)) {
@@ -106,22 +182,87 @@ namespace {
                 }
             }
         }
-        const char *text = nullptr;
-        if (readString(xmlNode, "t", "text", text)) gn->setText(std::string(text));
-        const char *resource_id = nullptr;
-        if (readString(xmlNode, "rid", "resource-id", resource_id)) gn->setResourceId(std::string(resource_id));
         const char *tclassname = nullptr;
         if (readString(xmlNode, "class", "class", tclassname)) gn->setClassName(std::string(tclassname));
+        const bool isEditText = tclassname != nullptr && isEditTextClassName(tclassname);
+        // Java APE GUITreeBuilder.fillNode: text = truncateText(removeQuotes(text)).
+        std::string normText;
+        const char *rawText = nullptr;
+        if (readString(xmlNode, "t", "text", rawText)) {
+            normText = ape_text::normalizeTextForApe(rawText);
+            gn->setText(normText);
+        }
+        // Ensure DOM has canonical @text for XPath naming.
+        {
+            pugi::xml_attribute t = xmlNode.attribute("text");
+            if (!t) {
+                t = xmlNode.append_attribute("text");
+            }
+            t.set_value(isEditText ? "" : normText.c_str());
+        }
+        const char *resource_id = nullptr;
+        if (readString(xmlNode, "rid", "resource-id", resource_id)) gn->setResourceId(std::string(resource_id));
         const char *pkgname = nullptr;
         if (readString(xmlNode, "pkg", "package", pkgname)) gn->setPackageName(std::string(pkgname));
-        const char *content_desc = nullptr;
-        if (readString(xmlNode, "cd", "content-desc", content_desc)) gn->setContentDesc(std::string(content_desc));
+        std::string normContentDesc;
+        const char *rawContentDesc = nullptr;
+        if (readString(xmlNode, "cd", "content-desc", rawContentDesc)) {
+            normContentDesc = ape_text::normalizeContentDescForApe(rawContentDesc);
+            gn->setContentDesc(normContentDesc);
+        }
+        // Ensure DOM has canonical @content-desc for XPath naming.
+        {
+            pugi::xml_attribute cd = xmlNode.attribute("content-desc");
+            if (!cd) {
+                cd = xmlNode.append_attribute("content-desc");
+            }
+            cd.set_value(normContentDesc.c_str());
+        }
         bool b = false;
         if (readBool(xmlNode, "en", "enabled", b)) gn->setEnabled(b);
         if (readBool(xmlNode, "ck", "checkable", b)) gn->setCheckable(b);
+        if (readBool(xmlNode, "cked", "checked", b)) gn->setChecked(b);
         if (readBool(xmlNode, "clk", "clickable", b)) gn->setClickable(b);
+        if (readBool(xmlNode, "foc", "focusable", b)) gn->setFocusable(b);
         if (readBool(xmlNode, "fcd", "focused", b)) gn->setFocused(b);
-        if (readBool(xmlNode, "scl", "scrollable", b)) gn->setScrollable(b ? 1 : 0);
+        // Ensure DOM has canonical boolean attrs for XPath naming.
+        {
+            pugi::xml_attribute ckd = xmlNode.attribute("checked");
+            if (!ckd) {
+                ckd = xmlNode.append_attribute("checked");
+            }
+            ckd.set_value(gn->isChecked() ? "true" : "false");
+        }
+        {
+            pugi::xml_attribute foc = xmlNode.attribute("focusable");
+            if (!foc) {
+                foc = xmlNode.append_attribute("focusable");
+            }
+            foc.set_value(gn->isFocusable() ? "true" : "false");
+        }
+        int scrollableBits = 0;
+        const char *scrollableStr = nullptr;
+        if (readString(xmlNode, "scl", "scrollable", scrollableStr)) {
+            scrollableBits = parseScrollableBitsFromAttr(scrollableStr);
+            gn->setScrollable(scrollableBits);
+        }
+        {
+            pugi::xml_attribute scl = xmlNode.attribute("scrollable");
+            if (!scl) {
+                scl = xmlNode.append_attribute("scrollable");
+            }
+            scl.set_value(scrollableBits != 0 ? "true" : "false");
+        }
+        // Patch DOM scroll-type like Java APE GUITreeBuilder does.
+        {
+            const int bitsForScrollType = gn->getScrollable();
+            const char *scrollTypeStr = computeScrollTypeString(bitsForScrollType, tclassname);
+            pugi::xml_attribute st = xmlNode.attribute("scroll-type");
+            if (!st) {
+                st = xmlNode.append_attribute("scroll-type");
+            }
+            st.set_value(scrollTypeStr);
+        }
         if (readBool(xmlNode, "lclk", "long-clickable", b)) gn->setLongClickable(b);
         if (readBool(xmlNode, "pwd", "password", b)) gn->setPassword(b);
     }
@@ -162,49 +303,88 @@ namespace {
         if (b && !b->isEmpty()) {
             gn->setBounds(*b);
         }
-        gn->setText(el->getText());
+        gn->setText(ape_text::normalizeTextForApe(el->getText().c_str()));
         gn->setResourceId(el->getResourceID());
         gn->setClassName(el->getClassname());
         gn->setPackageName(el->getPackageName());
-        gn->setContentDesc(el->getContentDesc());
+        gn->setContentDesc(ape_text::normalizeContentDescForApe(el->getContentDesc().c_str()));
         gn->setEnabled(el->getEnable());
         gn->setCheckable(el->getCheckable());
+        gn->setChecked(el->getChecked());
         gn->setClickable(el->getClickable());
+        gn->setFocusable(el->getFocusable());
         gn->setFocused(el->getFocused());
-        gn->setScrollable(el->getScrollable() ? 1 : 0);
+        gn->setScrollable(el->getScrollable() ? 3 : 0);
         gn->setLongClickable(el->getLongClickable());
         gn->setPassword(el->getPassword());
     }
 
-    GUITreeNodePtr parseElementFromElement(const ElementPtr &xe, const GUITreeNodeWeakPtr &parentWeak,
-                                           std::vector<GUITreeNodePtr> *order_out) {
+    void fillPugiFromElement(pugi::xml_node xml, const ElementPtr &el) {
+        if (!xml || !el) {
+            return;
+        }
+        RectPtr bounds = el->getBounds();
+        if (bounds) {
+            char boundsBuf[48];
+            std::snprintf(boundsBuf, sizeof(boundsBuf), "[%d,%d][%d,%d]",
+                          bounds->left, bounds->top, bounds->right, bounds->bottom);
+            xml.append_attribute("bounds").set_value(boundsBuf);
+        } else {
+            xml.append_attribute("bounds").set_value("");
+        }
+        char idxBuf[32];
+        std::snprintf(idxBuf, sizeof(idxBuf), "%d", el->getIndex());
+        xml.append_attribute("index").set_value(idxBuf);
+        {
+            const std::string normText = ape_text::normalizeTextForApe(el->getText().c_str());
+            const char *normalizedText = el->isEditText() ? "" : normText.c_str();
+            xml.append_attribute("text").set_value(normalizedText);
+        }
+        xml.append_attribute("class").set_value(el->getClassname().c_str());
+        xml.append_attribute("resource-id").set_value(el->getResourceID().c_str());
+        xml.append_attribute("package").set_value(el->getPackageName().c_str());
+        {
+            const std::string normCd = ape_text::normalizeContentDescForApe(el->getContentDesc().c_str());
+            xml.append_attribute("content-desc").set_value(normCd.c_str());
+        }
+        xml.append_attribute("checkable").set_value(el->getCheckable() ? "true" : "false");
+        xml.append_attribute("checked").set_value(el->getChecked() ? "true" : "false");
+        xml.append_attribute("clickable").set_value(el->getClickable() ? "true" : "false");
+        xml.append_attribute("enabled").set_value(el->getEnable() ? "true" : "false");
+        xml.append_attribute("focusable").set_value(el->getFocusable() ? "true" : "false");
+        xml.append_attribute("focused").set_value(el->getFocused() ? "true" : "false");
+        {
+            const int scrollableBits = el->getScrollable() ? 3 : 0;
+            xml.append_attribute("scrollable").set_value(scrollableBits != 0 ? "true" : "false");
+        }
+        xml.append_attribute("long-clickable").set_value(el->getLongClickable() ? "true" : "false");
+        xml.append_attribute("password").set_value(el->getPassword() ? "true" : "false");
+        {
+            const int scrollableBits = el->getScrollable() ? 3 : 0;
+            const char *stName = computeScrollTypeString(scrollableBits, el->getClassname().c_str());
+            xml.append_attribute("scroll-type").set_value(stName);
+        }
+    }
+
+    GUITreeNodePtr parseElementFromElementWithDom(const ElementPtr &xe, const GUITreeNodeWeakPtr &parentWeak,
+                                                  pugi::xml_node xmlNode, XPathNodeMapper &dom) {
         GUITreeNodePtr gn = GUITreeNode::create(parentWeak);
         fillFromElement(xe, gn);
-        if (order_out != nullptr) {
-            order_out->push_back(gn);
+        if (xmlNode && xmlNode.type() == pugi::node_element) {
+            fillPugiFromElement(xmlNode, xe);
+            dom.registerNode(xmlNode, gn);
         }
         for (const auto &ch : xe->getChildren()) {
             if (!ch) {
                 continue;
             }
-            gn->appendChild(parseElementFromElement(ch, gn, order_out));
+            pugi::xml_node xmlChild{};
+            if (xmlNode && xmlNode.type() == pugi::node_element) {
+                xmlChild = xmlNode.append_child("node");
+            }
+            gn->appendChild(parseElementFromElementWithDom(ch, gn, xmlChild, dom));
         }
         return gn;
-    }
-
-    void collectPugiElementNodesPreOrder(pugi::xml_node xe, std::vector<pugi::xml_node> *out) {
-        if (!out || !xe) {
-            return;
-        }
-        if (xe.type() == pugi::node_element) {
-            out->push_back(xe);
-        }
-        for (pugi::xml_node ch = xe.first_child(); ch; ch = ch.next_sibling()) {
-            if (ch.type() != pugi::node_element) {
-                continue;
-            }
-            collectPugiElementNodesPreOrder(ch, out);
-        }
     }
 
 #endif
@@ -239,28 +419,15 @@ namespace {
         if (!root) {
             return r;
         }
-        const std::string xml = root->toXML();
+        // Build pugixml DOM directly from the existing Element tree.
+        // This avoids Element::toXML() string serialization + pugixml parse on every step.
         auto bridge = std::make_shared<XPathNodeMapper>();
-        if (!bridge->loadXmlString(xml)) {
-            bridge.reset();
-            return r;
-        }
-        pugi::xml_node xmlRoot = bridge->documentElement();
+        pugi::xml_node xmlRoot = bridge->initEmptyDocumentWithRoot("node");
         if (!xmlRoot) {
             bridge.reset();
             return r;
         }
-        std::vector<pugi::xml_node> pugi_order;
-        collectPugiElementNodesPreOrder(xmlRoot, &pugi_order);
-        std::vector<GUITreeNodePtr> gui_order;
-        GUITreeNodePtr rootGn = parseElementFromElement(root, GUITreeNodeWeakPtr(), &gui_order);
-        if (pugi_order.size() != gui_order.size() || pugi_order.empty()) {
-            bridge.reset();
-            return r;
-        }
-        for (size_t i = 0; i < pugi_order.size(); ++i) {
-            bridge->registerNode(pugi_order[i], gui_order[i]);
-        }
+        GUITreeNodePtr rootGn = parseElementFromElementWithDom(root, GUITreeNodeWeakPtr(), xmlRoot, *bridge);
         postOrderStats(rootGn);
         r.tree = std::make_shared<GUITree>(std::move(rootGn), activity_package, activity_class);
         r.dom = std::move(bridge);

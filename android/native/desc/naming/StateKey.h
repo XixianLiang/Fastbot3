@@ -52,7 +52,7 @@ namespace naming {
 
         const std::string &activity() const { return activity_; }
 
-        /** Stable serialization of namelets (expr + namer types), order-independent. */
+        /** Stable v3 serialization of namelets (order, base/refine, expr, hex mask); used with StateKey hash. */
         const std::string &namingFingerprint() const { return naming_fingerprint_; }
 
         /** Sorted Name::toXPath() tokens (multiset of abstract widgets). */

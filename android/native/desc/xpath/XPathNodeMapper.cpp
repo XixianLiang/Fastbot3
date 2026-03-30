@@ -1,6 +1,7 @@
 #include "XPathNodeMapper.h"
 
 #include <map>
+#include <memory>
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,6 +35,16 @@ namespace gui_tree {
         pugi::xml_parse_result pr =
             impl_->doc.load_string(utf8.c_str(), pugi::parse_default | pugi::parse_declaration);
         return static_cast<bool>(pr);
+    }
+
+    pugi::xml_node XPathNodeMapper::initEmptyDocumentWithRoot(const char *tagName) {
+        if (!tagName || !*tagName) {
+            impl_.reset();
+            return {};
+        }
+        impl_ = std::make_unique<Impl>();
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        return impl_->doc.append_child(tagName);
     }
 
     pugi::xml_node XPathNodeMapper::documentElement() const {

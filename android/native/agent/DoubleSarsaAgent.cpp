@@ -72,6 +72,27 @@ namespace fastbotx {
         BLOG("Double SARSA: Agent destructed, all resources cleaned up");
     }
 
+    void DoubleSarsaAgent::onStateAbstractionChanged() {
+        std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+        // State abstraction updates change action hashes. Prefer scoped invalidation (only actions belonging
+        // to states pruned by Model) so we don't throw away reuse experience for unaffected activities.
+        if (auto modelPtr = this->_model.lock()) {
+            const auto &invalidActionHashes = modelPtr->getPendingInvalidatedReuseActionHashes();
+            for (uintptr_t h : invalidActionHashes) {
+                const uint64_t key = static_cast<uint64_t>(h);
+                this->_reuseModel.erase(key);
+                this->_reuseQValue1.erase(key);
+                this->_reuseQValue2.erase(key);
+            }
+        } else {
+            this->_reuseModel.clear();
+            this->_reuseQValue1.clear();
+            this->_reuseQValue2.clear();
+        }
+        this->_previousActions.clear();
+        this->_rewardCache.clear();
+    }
+
     void DoubleSarsaAgent::clearReuseModelOnLoadFailure() {
         std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
         this->_reuseModel.clear();

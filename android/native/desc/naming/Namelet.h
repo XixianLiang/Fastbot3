@@ -33,6 +33,14 @@ namespace fastbotx {
 namespace naming {
 
     class Naming;
+    class Namelet;
+
+    /** Value-based order on Namelet (not owner address); stable map iteration for fingerprints. */
+    struct PtrLess {
+        bool operator()(const std::shared_ptr<Namelet> &a, const std::shared_ptr<Namelet> &b) const;
+    };
+
+    using ChildNamingMap = std::map<std::shared_ptr<Namelet>, std::shared_ptr<Naming>, PtrLess>;
 
     class Namelet : public std::enable_shared_from_this<Namelet> {
     public:
@@ -66,8 +74,7 @@ namespace naming {
 
         std::shared_ptr<Namelet> getParent() const { return parent_.lock(); }
 
-        const std::map<std::shared_ptr<Namelet>, std::shared_ptr<Naming>, std::owner_less<std::shared_ptr<Namelet>>> &
-        getChildNamings() const { return child_namings_; }
+        const ChildNamingMap &getChildNamings() const { return child_namings_; }
 
         void addChildNaming(const std::shared_ptr<Namelet> &child, const std::shared_ptr<Naming> &childNaming);
 
@@ -83,8 +90,7 @@ namespace naming {
         int depth_{0};
         std::weak_ptr<Namelet> parent_{};
 
-        std::map<std::shared_ptr<Namelet>, std::shared_ptr<Naming>, std::owner_less<std::shared_ptr<Namelet>>>
-            child_namings_{};
+        ChildNamingMap child_namings_{};
     };
 
     using NameletPtr = std::shared_ptr<Namelet>;

@@ -174,6 +174,9 @@ namespace fastbotx {
          */
         ~DoubleSarsaAgent() override;
 
+        /// Dynamic state abstraction: clear any state/action-hash keyed caches to avoid cross-abstraction leakage.
+        void onStateAbstractionChanged() override;
+
     protected:
         /**
          * @brief Compute reward value of latest action

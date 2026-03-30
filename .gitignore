@@ -24,3 +24,5 @@ android/monkeyq copy.jar
 /android/native/build-ndk/CMakeFiles
 /android/native/CMakeFiles
 /android/native/CMakeFiles/4.2.2
+/android/native/build-host
+/android/native/CMakeFiles

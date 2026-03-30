@@ -22,6 +22,7 @@
 #ifndef FASTBOTX_DESC_GUI_TREE_GUITREENODE_H_
 #define FASTBOTX_DESC_GUI_TREE_GUITREENODE_H_
 
+#include "../ApeStringCache.h"
 #include "../naming/Name.h"
 #include "../../Base.h"
 
@@ -74,11 +75,19 @@ namespace gui_tree {
         const std::string &getPackageName() const { return package_name_; }
         void setPackageName(std::string v) { package_name_ = std::move(v); }
 
-        const std::string &getText() const { return text_; }
-        void setText(std::string v) { text_ = std::move(v); }
+        const std::string &getText() const {
+            return text_ ? *text_ : ApeStringCache::empty();
+        }
+        void setText(std::string v) {
+            text_ = &ApeStringCache::cacheStringEmptyOnNull(std::move(v), true);
+        }
 
-        const std::string &getContentDesc() const { return content_desc_; }
-        void setContentDesc(std::string v) { content_desc_ = std::move(v); }
+        const std::string &getContentDesc() const {
+            return content_desc_ ? *content_desc_ : ApeStringCache::empty();
+        }
+        void setContentDesc(std::string v) {
+            content_desc_ = &ApeStringCache::cacheStringEmptyOnNull(std::move(v), true);
+        }
 
         bool isEnabled() const { return enabled_; }
         void setEnabled(bool v) { enabled_ = v; }
@@ -89,6 +98,10 @@ namespace gui_tree {
         void setLongClickable(bool v) { long_clickable_ = v; }
         bool isCheckable() const { return checkable_; }
         void setCheckable(bool v) { checkable_ = v; }
+        bool isChecked() const { return checked_; }
+        void setChecked(bool v) { checked_ = v; }
+        bool isFocusable() const { return focusable_; }
+        void setFocusable(bool v) { focusable_ = v; }
         int getScrollable() const { return scrollable_; }
         void setScrollable(int v) { scrollable_ = v; }
         bool isPassword() const { return password_; }
@@ -116,8 +129,8 @@ namespace gui_tree {
         std::string resource_id_;
         std::string class_name_;
         std::string package_name_;
-        std::string text_;
-        std::string content_desc_;
+        const std::string *text_{nullptr};
+        const std::string *content_desc_{nullptr};
 
         Rect bounds_{};
 

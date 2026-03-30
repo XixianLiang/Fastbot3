@@ -19,6 +19,9 @@
 
 #include "Namer.h"
 
+#include <algorithm>
+#include <vector>
+
 namespace fastbotx {
 namespace naming {
 
@@ -31,21 +34,24 @@ namespace naming {
     }
 
     int compareNamer(const Namer &a, const Namer &b) {
-        const uint32_t ma = a.typeDimensionMask();
-        const uint32_t mb = b.typeDimensionMask();
-        const int pa = __builtin_popcount(ma);
-        const int pb = __builtin_popcount(mb);
-        if (pa != pb) {
-            return pa < pb ? -1 : 1;
+        // Align with Java APE Namelet.namerComparator semantics:
+        // 1) compare |types|; 2) compare sorted NamerType ordinals lexicographically; 3) equal sets => 0.
+        std::vector<NamerType> ta = a.getNamerTypes();
+        std::vector<NamerType> tb = b.getNamerTypes();
+        auto ord = [](NamerType t) -> unsigned { return static_cast<unsigned>(t); };
+        std::sort(ta.begin(), ta.end(), [&](NamerType x, NamerType y) { return ord(x) < ord(y); });
+        std::sort(tb.begin(), tb.end(), [&](NamerType x, NamerType y) { return ord(x) < ord(y); });
+        if (ta.size() != tb.size()) {
+            return ta.size() < tb.size() ? -1 : 1;
         }
-        if (ma != mb) {
-            return ma < mb ? -1 : 1;
+        for (size_t i = 0; i < ta.size(); ++i) {
+            const unsigned oa = ord(ta[i]);
+            const unsigned ob = ord(tb[i]);
+            if (oa != ob) {
+                return oa < ob ? -1 : 1;
+            }
         }
-        if (&a == &b) {
-            return 0;
-        }
-        /* Same lattice mask (e.g. wrap vs base): tie-break by object address for strict weak ordering. */
-        return &a < &b ? -1 : 1;
+        return 0;
     }
 
 } // namespace naming

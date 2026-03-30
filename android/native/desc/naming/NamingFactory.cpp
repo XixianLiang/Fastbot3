@@ -94,6 +94,71 @@ namespace {
         return sorted.back();
     }
 
+    NamingPtr findExistingChildNaming(const NameletPtr &parentNamelet, const std::string &expr,
+                                      const NamerPtr &finer) {
+        if (!parentNamelet || !finer) {
+            return nullptr;
+        }
+        for (const auto &kv : parentNamelet->getChildNamings()) {
+            const NameletPtr &ch = kv.first;
+            if (!ch) {
+                continue;
+            }
+            if (ch->getExprString() == expr && ch->getNamerPtr() == finer) {
+                return kv.second;
+            }
+        }
+        return nullptr;
+    }
+
+    /** Append a refinement child namelet (lattice edge) and register parent/child Naming links. */
+    NamingPtr makeLatticeRefinementChild(const NamingPtr &base, size_t i,
+                                         const std::vector<NameletPtr> &namelets,
+                                         const NamerPtr &finer) {
+        if (!base || !finer) {
+            return nullptr;
+        }
+        NameletPtr parentNamelet = namelets[i];
+        if (!parentNamelet) {
+            return nullptr;
+        }
+        const std::string &expr = parentNamelet->getExprString();
+        if (NamingPtr cached = findExistingChildNaming(parentNamelet, expr, finer)) {
+            return cached;
+        }
+        NameletPtr probe = std::make_shared<Namelet>(expr, finer);
+        probe->setParent(parentNamelet);
+        std::vector<NameletPtr> newlets = namelets;
+        newlets.push_back(probe);
+        NamingPtr childNaming = Naming::createChild(base, std::move(newlets));
+        parentNamelet->addChildNaming(probe, childNaming);
+        base->addRefinementChild(NamingEdge{parentNamelet, probe}, childNaming);
+        return childNaming;
+    }
+
+    NamingPtr makeWidgetLatticeRefinementChild(const NamingPtr &base, size_t parentIndex,
+                                               const std::vector<NameletPtr> &namelets,
+                                               const NamerPtr &finer, const std::string &widgetExpr) {
+        if (!base || !finer || widgetExpr.empty()) {
+            return nullptr;
+        }
+        NameletPtr parentNamelet = namelets[parentIndex];
+        if (!parentNamelet) {
+            return nullptr;
+        }
+        if (NamingPtr cached = findExistingChildNaming(parentNamelet, widgetExpr, finer)) {
+            return cached;
+        }
+        NameletPtr probe = std::make_shared<Namelet>(widgetExpr, finer);
+        probe->setParent(parentNamelet);
+        std::vector<NameletPtr> newlets = namelets;
+        newlets.push_back(probe);
+        NamingPtr childNaming = Naming::createChild(base, std::move(newlets));
+        parentNamelet->addChildNaming(probe, childNaming);
+        base->addRefinementChild(NamingEdge{parentNamelet, probe}, childNaming);
+        return childNaming;
+    }
+
     struct NamingEvalGuard {
         explicit NamingEvalGuard(const std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> *m) {
             namingEvalSetNodeToNamer(m);
@@ -127,19 +192,9 @@ namespace {
                     if (!finer) {
                         continue;
                     }
-                    std::vector<NameletPtr> newlets;
-                    newlets.reserve(namelets.size());
-                    for (size_t j = 0; j < namelets.size(); ++j) {
-                        if (!namelets[j]) {
-                            newlets.push_back(nullptr);
-                        } else if (j == i) {
-                            newlets.push_back(std::make_shared<Namelet>(namelets[j]->getExprString(), finer));
-                        } else {
-                            newlets.push_back(
-                                std::make_shared<Namelet>(namelets[j]->getExprString(), namelets[j]->getNamerPtr()));
-                        }
+                    if (NamingPtr c = makeLatticeRefinementChild(base, i, namelets, finer)) {
+                        out.push_back(std::move(c));
                     }
-                    out.push_back(std::make_shared<Naming>(std::move(newlets)));
                 }
             }
             return out;
@@ -347,37 +402,144 @@ namespace {
     }
 
     NamingPtr NamingFactory::defaultRootNaming() {
-        std::vector<NameletPtr> v;
+        const NamerFactory &factory = NamerFactory::current();
+        auto getNamer = [&](uint32_t mask) -> NamerPtr { return factory.getByMask(mask); };
         const uint32_t typeMask = 1u << static_cast<unsigned>(NamerType::TYPE);
-        NamerPtr typeNamer = NamerFactory::current().getByMask(typeMask);
-        if (!typeNamer) {
-            return nullptr;
-        }
-        if (g_default_root_naming_mode == ApeBaseNamingMode::TypeOnly) {
-            v.reserve(1);
-            v.push_back(std::make_shared<Namelet>(Namelet::Type::BASE, "//*", std::move(typeNamer)));
-            return std::make_shared<Naming>(std::move(v));
-        }
 
-        v.reserve(2);
-        NamerPtr bottomNamer = NamerFactory::current().empty();
-        if (!bottomNamer) {
-            return nullptr;
+        auto createTypeOnlyBaseNaming = [&]() -> NamingPtr {
+            const NamerPtr typeNamer = getNamer(typeMask);
+            if (!typeNamer) {
+                return nullptr;
+            }
+            std::vector<NameletPtr> v;
+            v.reserve(1);
+            v.push_back(std::make_shared<Namelet>(Namelet::Type::BASE, "//*", typeNamer));
+            return std::make_shared<Naming>(std::move(v));
+        };
+
+        auto createActionTypeBaseNaming = [&]() -> NamingPtr {
+            const NamerPtr typeNamer = getNamer(typeMask);
+            const NamerPtr bottomNamer = factory.empty();
+            if (!typeNamer || !bottomNamer) {
+                return nullptr;
+            }
+            std::vector<NameletPtr> v;
+            v.reserve(2);
+            v.push_back(std::make_shared<Namelet>(
+                Namelet::Type::BASE,
+                "//*[@clickable='true' or @long-clickable='true' or @checkable='true' or @scrollable='true']",
+                typeNamer));
+            v.push_back(std::make_shared<Namelet>(
+                Namelet::Type::BASE,
+                "//*[@clickable='false' and @long-clickable='false' and @checkable='false' and @scrollable='false']",
+                bottomNamer));
+            return std::make_shared<Naming>(std::move(v));
+        };
+
+        auto createResourceIDBaseNaming = [&]() -> NamingPtr {
+            const NamerPtr typeNamer = getNamer(typeMask);
+            if (!typeNamer) {
+                return nullptr;
+            }
+            std::vector<NameletPtr> v;
+            v.reserve(2);
+            v.push_back(std::make_shared<Namelet>(Namelet::Type::BASE, "//*[@resource-id!='']", typeNamer));
+            v.push_back(std::make_shared<Namelet>(Namelet::Type::BASE, "//*[@resource-id='']", typeNamer));
+            return std::make_shared<Naming>(std::move(v));
+        };
+
+        auto createParentIndexBaseNaming = [&]() -> NamingPtr {
+            const uint32_t parentMask = 1u << static_cast<unsigned>(NamerType::PARENT);
+            const uint32_t indexMask = 1u << static_cast<unsigned>(NamerType::INDEX);
+            const NamerPtr parentIndexNamer = getNamer(parentMask | indexMask);
+            if (!parentIndexNamer) {
+                return nullptr;
+            }
+            std::vector<NameletPtr> v;
+            v.reserve(1);
+            v.push_back(std::make_shared<Namelet>(Namelet::Type::BASE, "//*", parentIndexNamer));
+            return std::make_shared<Naming>(std::move(v));
+        };
+
+        auto createBoostedBaseNaming = [&]() -> NamingPtr {
+            NamingPtr base = createActionTypeBaseNaming();
+            if (!base) {
+                return nullptr;
+            }
+            const auto &namelets = base->getNamelets();
+            if (namelets.size() < 2 || !namelets[1]) {
+                return nullptr;
+            }
+            const uint32_t parentMask = 1u << static_cast<unsigned>(NamerType::PARENT);
+            const uint32_t indexMask = 1u << static_cast<unsigned>(NamerType::INDEX);
+            const NamerPtr refined = getNamer(parentMask | typeMask | indexMask);
+            if (!refined) {
+                return nullptr;
+            }
+            static const char kBoostedExpr[] =
+                "//*[@class!='android.widget.ListView' and @class!='android.widget.GridView' and "
+                "@class!='android.support.v7.widget.RecyclerView' and "
+                "@class!='android.support.v17.leanback.widget.VerticalGridView' and "
+                "@class!='android.support.v17.leanback.widget.HorizontalGridView' and "
+                "@class!='android.widget.ExpandableListView']/*";
+            std::vector<NameletPtr> v = namelets;
+            NameletPtr parentNamelet = namelets[1];
+            NameletPtr childNamelet =
+                std::make_shared<Namelet>(Namelet::Type::BASE, kBoostedExpr, refined);
+            childNamelet->setParent(parentNamelet);
+            v.push_back(std::move(childNamelet));
+            return std::make_shared<Naming>(std::move(v));
+        };
+
+        auto createStoatBaseNaming = [&]() -> NamingPtr {
+            const uint32_t parentMask = 1u << static_cast<unsigned>(NamerType::PARENT);
+            const uint32_t indexMask = 1u << static_cast<unsigned>(NamerType::INDEX);
+            const NamerPtr rootNamer = getNamer(parentMask | typeMask | indexMask);
+            const NamerPtr parentTypeNamer = getNamer(parentMask | typeMask);
+            if (!rootNamer || !parentTypeNamer) {
+                return nullptr;
+            }
+            static const char kStoatListExpr[] =
+                "//*[@class='android.widget.ListView' or @class='android.widget.GridView' or "
+                "@class='android.support.v7.widget.RecyclerView' or "
+                "@class='android.support.v17.leanback.widget.VerticalGridView' or "
+                "@class='android.support.v17.leanback.widget.HorizontalGridView' or "
+                "@class='android.widget.ExpandableListView']/*";
+            std::vector<NameletPtr> v;
+            v.reserve(2);
+            NameletPtr root = std::make_shared<Namelet>(Namelet::Type::BASE, "//*", rootNamer);
+            v.push_back(root);
+            NameletPtr listChild =
+                std::make_shared<Namelet>(Namelet::Type::BASE, kStoatListExpr, parentTypeNamer);
+            listChild->setParent(root);
+            v.push_back(std::move(listChild));
+            return std::make_shared<Naming>(std::move(v));
+        };
+
+        switch (g_default_root_naming_mode) {
+        case ApeBaseNamingMode::TypeOnly:
+            return createTypeOnlyBaseNaming();
+        case ApeBaseNamingMode::ResourceID:
+            return createResourceIDBaseNaming();
+        case ApeBaseNamingMode::ParentIndex:
+            return createParentIndexBaseNaming();
+        case ApeBaseNamingMode::Boosted:
+            return createBoostedBaseNaming();
+        case ApeBaseNamingMode::Stoat:
+            return createStoatBaseNaming();
+        case ApeBaseNamingMode::ActionType:
+        default:
+            return createActionTypeBaseNaming();
         }
-        v.push_back(std::make_shared<Namelet>(
-            Namelet::Type::BASE,
-            "//*[@clickable='true' or @long-clickable='true' or @checkable='true' or @scrollable='true']",
-            std::move(typeNamer)));
-        v.push_back(std::make_shared<Namelet>(
-            Namelet::Type::BASE,
-            "//*[@clickable='false' and @long-clickable='false' and @checkable='false' and @scrollable='false']",
-            std::move(bottomNamer)));
-        return std::make_shared<Naming>(std::move(v));
     }
 
     NamingPtr NamingFactory::refineNaming(const NamingPtr &naming, const NamerLattice &lattice) {
         if (!naming || naming->getNamelets().empty()) {
             return nullptr;
+        }
+        // Prefer structural rollback in the refinement lattice (APE batchAbstract semantics).
+        if (auto parent = naming->getParent()) {
+            return parent;
         }
         const auto &namelets = naming->getNamelets();
         for (size_t i = 0; i < namelets.size(); ++i) {
@@ -394,17 +556,9 @@ namespace {
                 continue;
             }
             NamerPtr finer = refs[0];
-            std::vector<NameletPtr> newlets;
-            newlets.reserve(namelets.size());
-            for (size_t j = 0; j < namelets.size(); ++j) {
-                if (j == i) {
-                    newlets.push_back(std::make_shared<Namelet>(namelets[j]->getExprString(), finer));
-                } else {
-                    newlets.push_back(
-                        std::make_shared<Namelet>(namelets[j]->getExprString(), namelets[j]->getNamerPtr()));
-                }
+            if (NamingPtr childNaming = makeLatticeRefinementChild(naming, i, namelets, finer)) {
+                return childNaming;
             }
-            return std::make_shared<Naming>(std::move(newlets));
         }
         return nullptr;
     }
@@ -613,19 +767,9 @@ namespace {
                     if (!finer) {
                         continue;
                     }
-                    std::vector<NameletPtr> newlets;
-                    newlets.reserve(namelets.size());
-                    for (size_t j = 0; j < namelets.size(); ++j) {
-                        if (!namelets[j]) {
-                            newlets.push_back(nullptr);
-                        } else if (j == i) {
-                            newlets.push_back(std::make_shared<Namelet>(namelets[j]->getExprString(), finer));
-                        } else {
-                            newlets.push_back(
-                                std::make_shared<Namelet>(namelets[j]->getExprString(), namelets[j]->getNamerPtr()));
-                        }
+                    if (NamingPtr c = makeLatticeRefinementChild(base, i, namelets, finer)) {
+                        cands.push_back(std::move(c));
                     }
-                    cands.push_back(std::make_shared<Naming>(std::move(newlets)));
                 }
             }
             return cands;
@@ -652,8 +796,119 @@ namespace {
                 if (!cand) {
                     continue;
                 }
+                if (!accept(cand)) {
+                    continue;
+                }
                 const std::string fp = cand->fingerprintString();
-                if (seen.insert(fp).second && accept(cand)) {
+                if (seen.insert(fp).second) {
+                    out.push_back(cand);
+                    if (!firstAccepted) {
+                        firstAccepted = cand;
+                    }
+                    lastAccepted = cand;
+                }
+            }
+            if (firstAccepted) {
+                cur = options.choose_deepest_acceptable ? lastAccepted : firstAccepted;
+            } else {
+                cur = candidates[0];
+            }
+        }
+        return out;
+    }
+
+    std::vector<NamingPtr> NamingFactory::widgetXPathRefinementCandidatesWithOptions(
+        const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options,
+        const NameletPtr &widget_parent, const std::string &widget_xpath_expr) {
+        std::vector<NamingPtr> out;
+        if (!naming || options.max_steps <= 0 || !widget_parent || widget_xpath_expr.empty()) {
+            return out;
+        }
+
+        auto accept = [&](const NamingPtr &candidate) -> bool {
+            if (!candidate) {
+                return false;
+            }
+            if (options.blacklist &&
+                options.blacklist->count(candidate->fingerprintString()) != 0) {
+                return false;
+            }
+            if (options.accept_predicate) {
+                return options.accept_predicate(candidate);
+            }
+            return true;
+        };
+
+        auto immediateWidgetCandidates = [&](const NamingPtr &base) -> std::vector<NamingPtr> {
+            std::vector<NamingPtr> cands;
+            if (!base) {
+                return cands;
+            }
+            const auto &namelets = base->getNamelets();
+            bool foundAnchor = false;
+            size_t anchorIdx = 0;
+            for (size_t i = namelets.size(); i > 0; --i) {
+                const NameletPtr &nl = namelets[i - 1];
+                if (!nl) {
+                    continue;
+                }
+                for (NameletPtr w = widget_parent; w; w = w->getParent()) {
+                    if (w.get() == nl.get()) {
+                        anchorIdx = i - 1;
+                        foundAnchor = true;
+                        break;
+                    }
+                }
+                if (foundAnchor) {
+                    break;
+                }
+            }
+            if (!foundAnchor) {
+                return cands;
+            }
+            const NameletPtr anchor = namelets[anchorIdx];
+            if (!anchor || !anchor->getNamerPtr()) {
+                return cands;
+            }
+            std::vector<NamerPtr> aboves = lattice.sortedAbove(anchor->getNamerPtr());
+            for (const NamerPtr &finer : aboves) {
+                if (!finer) {
+                    continue;
+                }
+                if (NamingPtr c =
+                        makeWidgetLatticeRefinementChild(base, anchorIdx, namelets, finer, widget_xpath_expr)) {
+                    cands.push_back(std::move(c));
+                }
+            }
+            return cands;
+        };
+
+        std::unordered_set<std::string> seen;
+        NamingPtr cur = naming;
+        for (int step = 0; step < options.max_steps; ++step) {
+            std::vector<NamingPtr> candidates;
+            if (options.evaluate_all_immediate_candidates) {
+                candidates = immediateWidgetCandidates(cur);
+            } else {
+                std::vector<NamingPtr> all = immediateWidgetCandidates(cur);
+                if (!all.empty()) {
+                    candidates.push_back(std::move(all[0]));
+                }
+            }
+            if (candidates.empty()) {
+                break;
+            }
+            NamingPtr firstAccepted = nullptr;
+            NamingPtr lastAccepted = nullptr;
+            for (const auto &cand : candidates) {
+                if (!cand) {
+                    continue;
+                }
+                if (!accept(cand)) {
+                    continue;
+                }
+                const std::string fp = cand->fingerprintString();
+                if (seen.insert(fp).second) {
                     out.push_back(cand);
                     if (!firstAccepted) {
                         firstAccepted = cand;

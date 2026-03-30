@@ -366,19 +366,10 @@ namespace {
                 }
             }
         }
-        // Compatibility fallback when only hash was available at update time.
-        auto itFallback = naming_to_edge_hash_only_.find(source);
-        if (itFallback == naming_to_edge_hash_only_.end()) {
-            const_cast<StateNamingManager *>(this)->lookup_stats_.miss++;
-            return nullptr;
-        }
-        auto jtFallback = itFallback->second.find(state_key.hash());
-        if (jtFallback == itFallback->second.end()) {
-            const_cast<StateNamingManager *>(this)->lookup_stats_.miss++;
-            return nullptr;
-        }
-        const_cast<StateNamingManager *>(this)->lookup_stats_.hash_only_hit++;
-        return jtFallback->second;
+        // Correctness constraint: when a full StateKey is available, do NOT fall back to hash-only edges.
+        // Hash-only mapping may collide and must not decide the refinement path.
+        const_cast<StateNamingManager *>(this)->lookup_stats_.miss++;
+        return nullptr;
     }
 
     NamingPtr StateNamingManager::treeToNaming(const gui_tree::GUITree &tree) {

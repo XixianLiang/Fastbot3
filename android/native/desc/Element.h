@@ -136,6 +136,10 @@ namespace fastbotx {
 
         bool getCheckable() const { return this->_checkable; }
 
+        bool getChecked() const { return this->_checked; }
+
+        bool getFocusable() const { return this->_focusable; }
+
         bool getScrollable() const { return this->_scrollable; }
 
         bool getEnable() const { return this->_enabled; }

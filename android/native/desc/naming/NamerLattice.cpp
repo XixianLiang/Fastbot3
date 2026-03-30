@@ -134,5 +134,66 @@ namespace {
         return out;
     }
 
+    std::vector<NamerPtr> NamerLattice::sortedAbove(const NamerPtr &coarse) const {
+        std::vector<NamerPtr> out;
+        if (!coarse) {
+            return out;
+        }
+        const uint32_t cm = maskOf(*coarse);
+        auto itCached = sorted_above_cache_.find(cm);
+        if (itCached != sorted_above_cache_.end()) {
+            return itCached->second;
+        }
+
+        auto ordinalSum = [](uint32_t mask) -> unsigned {
+            unsigned s = 0;
+            while (mask != 0) {
+                const unsigned tz = static_cast<unsigned>(__builtin_ctz(mask));
+                s += tz;
+                mask ^= (mask & (~mask + 1u));
+            }
+            return s;
+        };
+
+        const int cpc = popcount32(cm);
+        out.reserve(factory_->all().size());
+        for (const auto &n : factory_->all()) {
+            if (!n) {
+                continue;
+            }
+            const uint32_t fm = maskOf(*n);
+            if (fm == cm) {
+                continue;
+            }
+            if (!n->refinesTo(*coarse)) {
+                continue;
+            }
+            if (popcount32(fm) <= cpc) {
+                continue;
+            }
+            out.push_back(n);
+        }
+        std::sort(out.begin(), out.end(), [&](const NamerPtr &a, const NamerPtr &b) {
+            if (!a || !b) {
+                return a.get() < b.get();
+            }
+            const uint32_t ma = maskOf(*a);
+            const uint32_t mb = maskOf(*b);
+            const int pa = popcount32(ma);
+            const int pb = popcount32(mb);
+            if (pa != pb) {
+                return pa < pb;
+            }
+            const unsigned sa = ordinalSum(ma);
+            const unsigned sb = ordinalSum(mb);
+            if (sa != sb) {
+                return sa < sb;
+            }
+            return ma < mb;
+        });
+        sorted_above_cache_.emplace(cm, out);
+        return out;
+    }
+
 } // namespace naming
 } // namespace fastbotx

@@ -21,7 +21,6 @@
 #include "BitmaskNamer.h"
 #include "NamerType.h"
 
-#include <algorithm>
 #include <utility>
 #include <string>
 
@@ -35,34 +34,32 @@ namespace {
 
     std::string computeFingerprintString(
         const std::vector<std::shared_ptr<Namelet>> &namelets) {
-        // Same logic as the former Naming::fingerprintString() implementation,
-        // but computed once in Naming construction.
-        std::vector<std::string> parts;
-        parts.reserve(namelets.size());
-        for (const auto &nl : namelets) {
+        auto appendHex32 = [](std::string &dst, uint32_t v) {
+            static const char kHex[] = "0123456789abcdef";
+            for (int shift = 28; shift >= 0; shift -= 4) {
+                dst.push_back(kHex[(v >> shift) & 0xF]);
+            }
+        };
+        // Collision-resistant fingerprint for Naming identity / blacklist keys. Ordering of namelets
+        // matters for StateKey identity; do not canonicalize by sorting.
+        // Keep it printable (no control chars) so it stays stable across logs/JSON/persistence.
+        std::string out;
+        out.reserve(namelets.size() * 48);
+        out.append("v3");
+        for (size_t idx = 0; idx < namelets.size(); ++idx) {
+            const auto &nl = namelets[idx];
             if (!nl) {
                 continue;
             }
-            std::string s = nl->getExprString();
-            s.push_back('\x1e');
-            // Serialize NamerType set in bit order.
-            // typeDimensionMask() is derived from getNamerTypes() for non-bitmask namers,
-            // so this matches the prior two-branch logic.
-            const uint32_t mask = nl->getNamer().typeDimensionMask();
-            for (unsigned i = 0; i < 32; ++i) {
-                if ((mask & (1u << i)) != 0u) {
-                    s.push_back(static_cast<char>(i));
-                }
-            }
-            parts.push_back(std::move(s));
-        }
-        std::sort(parts.begin(), parts.end());
-        std::string out;
-        for (size_t i = 0; i < parts.size(); ++i) {
-            if (i != 0) {
-                out.push_back('|');
-            }
-            out.append(parts[i]);
+            out.push_back('|');
+            // Prefix with positional index to make the fingerprint order-sensitive and easy to diff.
+            out.append(std::to_string(idx));
+            out.push_back(':');
+            out.push_back(nl->isBase() ? 'B' : 'R');
+            out.push_back(':');
+            out.append(nl->getExprString());
+            out.push_back('#');
+            appendHex32(out, nl->getNamer().typeDimensionMask());
         }
         return out;
     }

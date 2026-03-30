@@ -43,12 +43,16 @@ namespace naming {
         /** Namers obtained by removing exactly one NamerType w.r.t. {@code fine}; sorted by bitmask for stable picks. */
         std::vector<NamerPtr> immediateAbstractions(const NamerPtr &fine) const;
 
+        /** Java NamerLattice.getSortedAbove: all strict finer namers sorted by (|types|, sum(type ordinal)). */
+        std::vector<NamerPtr> sortedAbove(const NamerPtr &coarse) const;
+
     private:
         const NamerFactory *factory_{nullptr};
         // Lazily memoize lattice neighborhoods per bitmask.
         // For APE this is tiny (<= 32 masks) and avoids repeated scanning/sorting.
         mutable std::unordered_map<uint32_t, std::vector<NamerPtr>> refinements_cache_;
         mutable std::unordered_map<uint32_t, std::vector<NamerPtr>> abstractions_cache_;
+        mutable std::unordered_map<uint32_t, std::vector<NamerPtr>> sorted_above_cache_;
     };
 
 } // namespace naming

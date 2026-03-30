@@ -37,7 +37,14 @@ namespace gui_tree {
 }
 namespace naming {
 
-    enum class ApeBaseNamingMode : unsigned char { ActionType = 0, TypeOnly = 1 };
+    enum class ApeBaseNamingMode : unsigned char {
+        ActionType = 0,
+        TypeOnly = 1,
+        ResourceID = 2,
+        ParentIndex = 3,
+        Boosted = 4,
+        Stoat = 5,
+    };
 
     class NamingFactory {
     public:
@@ -110,6 +117,14 @@ namespace naming {
          */
         static std::vector<NamingPtr> actionRefinementCandidatesWithOptions(
             const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options);
+
+        /**
+         * Refinement candidates anchored at {@code widget_parent} using {@code widget_xpath_expr} and
+         * lattice.sortedAbove (Java widget XPath refinement analogue).
+         */
+        static std::vector<NamingPtr> widgetXPathRefinementCandidatesWithOptions(
+            const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options,
+            const NameletPtr &widget_parent, const std::string &widget_xpath_expr);
 
         /**
          * True when NamingResult is structurally inconsistent (parallel arrays, per-group
