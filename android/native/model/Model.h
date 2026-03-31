@@ -22,6 +22,7 @@
 #include <mutex>
 #include <unordered_map>
 #include <unordered_set>
+#include <array>
 #include <utility>
 #include <vector>
 #include <set>
@@ -182,6 +183,63 @@ namespace gui_tree {
         std::string sourceActivity;
         bool hasSourceStateKey{false};
         naming::StateKey sourceStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+    };
+
+    /// APE EvidencePool sample for one (sourceKeyHash, actionSignature) pair.
+    /// In native we use ApeTransitionEntry's concrete fields to approximate Java's evidence.
+    struct ApeEvidenceSample {
+        uintptr_t sourceStateHash{0};
+        uintptr_t targetStateHash{0};
+        uintptr_t targetKeyHash{0};
+        ActionType actionType{ActionType::NOP};
+        bool hasTargetBounds{false};
+        Rect targetBounds{};
+        bool hasTargetFullPath{false};
+        uintptr_t targetFullPathHash{0};
+        bool valid{false};
+    };
+
+    /// Fixed-capacity circular evidence pool per (sourceKeyHash, actionSignature).
+    struct ApeEvidencePool {
+        static constexpr size_t kCapacity = 8;
+
+        template <class T>
+        void push(T &&s, uint64_t epoch) {
+            lastTouchEpoch = epoch;
+            s.valid = true;
+            samples[writeIndex] = std::move(s);
+            writeIndex = (writeIndex + 1) % kCapacity;
+            if (poolSize < kCapacity) {
+                ++poolSize;
+            }
+        }
+
+        template <class F>
+        void forEach(F &&f) const {
+            for (size_t i = 0; i < kCapacity; ++i) {
+                const ApeEvidenceSample &s = samples[i];
+                if (!s.valid) {
+                    continue;
+                }
+                f(s);
+            }
+        }
+
+        size_t size() const { return poolSize; }
+
+        static_assert(kCapacity > 0, "kCapacity must be positive");
+
+        uint64_t lastTouchEpoch{0};
+
+    private:
+        std::array<ApeEvidenceSample, kCapacity> samples{};
+        size_t poolSize{0};
+        size_t writeIndex{0};
+    };
+
+    struct ApeEvidencePoolClockEntry {
+        ApePairKey key{};
+        uint64_t epoch{0};
     };
 #endif
 
@@ -389,6 +447,42 @@ namespace gui_tree {
         Model();
 
     private:
+        enum class ApeStateKeyBuildFailReason : uint8_t {
+            None = 0,
+            NullInput,
+            BuildTreeOrDomFailed,
+            NoNaming,
+            RebuildTreeFailed,
+        };
+
+        struct ApeGraphStateKeyDedupEntry {
+            naming::StateKey key;
+            StatePtr state;
+        };
+
+        struct ApeCorrectnessCounters {
+            uint64_t statekey_build_ok{0};
+            uint64_t statekey_build_fail{0};
+            uint64_t statekey_fallback_used{0};
+
+            uint64_t statekey_fail_null_input{0};
+            uint64_t statekey_fail_build_tree_dom{0};
+            uint64_t statekey_fail_no_naming{0};
+            uint64_t statekey_fail_rebuild_tree{0};
+
+            uint64_t statekey_record_hash_collision{0};
+
+            uint64_t graph_dedup_hash_hit{0};
+            uint64_t graph_dedup_exact_hit{0};
+            uint64_t graph_dedup_hash_collision{0};
+
+            uint64_t naming_update_by_hash{0};
+
+            uint64_t evidence_pool_sample_add{0};
+            uint64_t evidence_pool_new_pair{0};
+            uint64_t evidence_pool_evict{0};
+        };
+
         /**
          * @brief Get custom action from preference if one exists for this page
          * 
@@ -465,7 +559,9 @@ namespace gui_tree {
          *  while the GUITree is still alive — must not defer to after return (node pointers invalid). */
         bool buildApeStateKeyFromElementTree(const ElementPtr &element, const std::string &activity,
                                              naming::StateKey *outKey,
-                                             const StatePtr &stateForDynamicApply = StatePtr());
+                                             ApeStateKeyBuildFailReason *outFailReason = nullptr,
+                                             const StatePtr &stateForDynamicApply = StatePtr(),
+                                             std::string *ioXmlCache = nullptr);
 #endif
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
@@ -515,7 +611,8 @@ namespace gui_tree {
         void remapApeTransitionAggregationForActivity(
             const std::string &rawActivity,
             const naming::NamingPtr &fromNaming,
-            const naming::NamingPtr &toNaming);
+            const naming::NamingPtr &toNaming,
+            const std::unordered_set<uintptr_t> *focusOldKeyHashes = nullptr);
 
         /**
          * APE AssertSourceDivergent: ordered partitions of graph state hashes (keys into _apeStateXmlByStateHash).
@@ -573,7 +670,8 @@ namespace gui_tree {
         /// created under an old naming key space so that agents and naming heuristics see a closer-to-consistent
         /// abstract graph.
         void pruneStaleApeStatesForActivity(const std::string &activityKeyCanonical,
-                                          const std::string &staleNamingFingerprint);
+                                            const std::string &staleNamingFingerprint,
+                                            const std::unordered_set<uintptr_t> *affectedStateHashes = nullptr);
 
         /// Java NamingFactory.guiTreeNamingBlaclist: reject candidate if fingerprint is banned for any affected
         /// graph state (source-side + one repr per ND target key, see refineActivityApeNaming).
@@ -628,10 +726,14 @@ namespace gui_tree {
         mutable std::unordered_map<std::string, WidgetKeyMask> _activityKeyMask;
 
         /// Optional: APE-native StateKey sidecar (parallel to widget-hash State); not used by Graph dedup.
-        std::unordered_map<uintptr_t, naming::StateKey> _ape_state_keys_by_hash;
+        /// Note: state hash equals StateKey::hash() in dynamic mode; keep a bucket to defend rare hash collisions.
+        std::unordered_map<uintptr_t, std::vector<naming::StateKey>> _ape_state_keys_by_hash;
 
         /// When max.apeGraphDedupByStateKey: canonical StatePtr per StateKey::hash().
-        std::unordered_map<uintptr_t, StatePtr> _ape_graph_state_by_key;
+        /// When max.apeGraphDedupByStateKey: hash bucket + full StateKey equality check.
+        std::unordered_map<uintptr_t, std::vector<ApeGraphStateKeyDedupEntry>> _ape_graph_state_by_key;
+        /// APE correctness counters (debug/telemetry).
+        ApeCorrectnessCounters _ape_correctness_counters{};
 
         /// APE naming: wraps ActivityNamingManager + optional getNamingFixedPoint(actionRefinement on same dom).
         std::shared_ptr<naming::StateNamingManager> _apeStateNamingManager;
@@ -642,6 +744,16 @@ namespace gui_tree {
         std::unordered_map<ApePairKey, ApePairAggValue, ApePairKeyHash> _apePairAgg;
         void apePairAggRemove(const ApeTransitionEntry &e);
         void apePairAggAdd(const ApeTransitionEntry &e);
+
+        void apeEvidencePoolAdd(const ApePairKey &pairKey, const ApeTransitionEntry &e);
+        void apeEvidencePoolClockEvict();
+
+        std::unordered_map<ApePairKey, ApeEvidencePool, ApePairKeyHash> _apeEvidencePools;
+        std::vector<ApeEvidencePoolClockEntry> _apeEvidencePoolClock;
+        size_t _apeEvidencePoolClockWriteIndex{0};
+        size_t _apeEvidencePoolClockEvictIndex{0};
+        uint64_t _apeEvidenceEpoch{0};
+
         size_t _stepCountSinceLastCheck{0};
         size_t _apeEventRefineSuccessCount{0};
         size_t _apeEventCoarsenRollbackCount{0};
@@ -656,6 +768,63 @@ namespace gui_tree {
         std::unordered_map<std::string, std::unordered_set<uintptr_t>> _apeRefineActionBlacklist;
         /// Action hashes belonging to states pruned after a Naming change; used for agent cache invalidation.
         std::unordered_set<uintptr_t> _apeInvalidatedReuseActionHashes;
+
+        struct ApeMiniHistoryTransition {
+            uintptr_t sourceStateHash{0};
+            uintptr_t targetStateHash{0};
+            ActionType actionType{ActionType::NOP};
+            bool hasTargetBounds{false};
+            Rect targetBounds{};
+            bool hasTargetFullPath{false};
+            uintptr_t targetFullPathHash{0};
+            bool valid{false};
+        };
+
+        struct ApeMiniHistory {
+            static constexpr size_t kStateCap = 32;
+            static constexpr size_t kTransitionCap = 64;
+
+            void touchState(uintptr_t sh) {
+                if (sh == 0) {
+                    return;
+                }
+                for (size_t i = 0; i < kStateCap; ++i) {
+                    if (stateHashes[i] == sh) {
+                        return;
+                    }
+                }
+                stateHashes[stateWrite] = sh;
+                stateWrite = (stateWrite + 1) % kStateCap;
+            }
+
+            void pushTransition(const ApeMiniHistoryTransition &t) {
+                transitions[transitionWrite] = t;
+                transitions[transitionWrite].valid = true;
+                transitionWrite = (transitionWrite + 1) % kTransitionCap;
+            }
+
+            std::array<uintptr_t, kStateCap> stateHashes{};
+            size_t stateWrite{0};
+            std::array<ApeMiniHistoryTransition, kTransitionCap> transitions{};
+            size_t transitionWrite{0};
+        };
+
+        struct ApeActivityRebuildStats {
+            int consecutiveRollbacks{0};
+            int actionBlacklistChecks{0};
+            int actionBlacklistHits{0};
+            uint64_t lastRebuildTimestamp{0};
+        };
+
+        void apeMiniHistoryTouchState(const std::string &activityKeyCanonical, uintptr_t stateHash);
+        void apeMiniHistoryRecordTransition(const std::string &activityKeyCanonical,
+                                            const ApeTransitionEntry &e);
+        void apeInsertTransitionEntryNoRefine(const ApeTransitionEntry &e);
+        bool apeLocalRebuildFromHistoryIfNeeded(const std::string &activityKeyCanonical,
+                                                const char *reason);
+        bool apeLocalRebuildFromHistory(const std::string &activityKeyCanonical);
+        std::unordered_map<std::string, ApeMiniHistory> _apeMiniHistoryByActivity;
+        std::unordered_map<std::string, ApeActivityRebuildStats> _apeRebuildStatsByActivity;
 #ifndef NDEBUG
         mutable std::thread::id _apeOwnerThread{};
         mutable bool _apeOwnerThreadSet{false};

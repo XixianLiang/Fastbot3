@@ -100,6 +100,12 @@ namespace fastbotx {
 
         void deleteElement();
 
+        /**
+         * Clear all children nodes (detach subtree).
+         * Used by APE-style input normalization (e.g. trimming oversized WebView subtrees).
+         */
+        void clearChildren();
+
 
         bool isWebView() const;
 
@@ -184,6 +190,16 @@ namespace fastbotx {
         void reSetClickable(bool clickable) { 
             this->_clickable = clickable; 
             this->_hashCached = false; // Invalidate hash cache
+        }
+
+        void reSetLongClickable(bool longClickable) {
+            this->_longClickable = longClickable;
+            this->_hashCached = false;
+        }
+
+        void reSetCheckable(bool checkable) {
+            this->_checkable = checkable;
+            this->_hashCached = false;
         }
 
         void reSetScrollable(bool scrollable) { 

@@ -129,6 +129,17 @@ namespace {
         this->_parent.reset();
     }
 
+    void Element::clearChildren() {
+        for (auto &child : this->_children) {
+            if (child) {
+                child->_parent.reset();
+            }
+        }
+        this->_children.clear();
+        this->_childCount = 0;
+        this->_hashCached = false;
+    }
+
 /// According to given xpath selector, containing text, content, classname, resource id, test if
 /// this current element has the same property value as the given xpath selector.
 /// Text and content-desc use fuzzy (contains) match: element text/desc containing selector value matches.

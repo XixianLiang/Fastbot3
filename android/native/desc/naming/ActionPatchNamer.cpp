@@ -18,133 +18,387 @@
  */
 #include "ActionPatchNamer.h"
 #include "../gui_tree/GUITreeNode.h"
+#include "../../Base.h"
 
+#include <algorithm>
+#include <cctype>
 #include <cstring>
+#include <cstdlib>
 
 namespace fastbotx {
 namespace naming {
 namespace {
 
-    // Java ActionPatchNamer.interactiveProperties order; toXPath iterates same order (LSB = enabled).
-    const char *const kInteractiveProps[5] = {"enabled", "clickable", "checkable", "long-clickable",
-                                                "scrollable"};
+    // Java ActionPatchNamer.interactiveProperties order; XPath iterates same order (LSB = enabled).
+    constexpr const char *kInteractiveProps[5] = {"enabled", "clickable", "checkable", "long-clickable",
+                                                  "scrollable"};
 
-} // namespace
+    ActionPatchTokenConfig g_cfg;
 
-    std::string appendActionPatchXPathSuffix(std::string baseXPath, int patch) {
-        baseXPath.reserve(baseXPath.size() + 128);
-        int k = patch;
-        for (const char *prop : kInteractiveProps) {
+    inline std::string toLowerCopy(std::string s) {
+        std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return s;
+    }
+
+    inline std::string trimCopy(std::string s) {
+        size_t l = 0;
+        while (l < s.size() && (s[l] == ' ' || s[l] == '\t' || s[l] == '\r' || s[l] == '\n')) {
+            ++l;
+        }
+        size_t r = s.size();
+        while (r > l && (s[r - 1] == ' ' || s[r - 1] == '\t' || s[r - 1] == '\r' || s[r - 1] == '\n')) {
+            --r;
+        }
+        return s.substr(l, r - l);
+    }
+
+    inline uint32_t actionTypeBit(ActionType t) {
+        return 1u << static_cast<unsigned>(t);
+    }
+
+    const char *scrollTypeAttrValue(ScrollType st) {
+        switch (st) {
+        case ScrollType::NONE:
+            return "none";
+        case ScrollType::Horizontal:
+            return "horizontal";
+        case ScrollType::Vertical:
+            return "vertical";
+        case ScrollType::ALL:
+            return "all";
+        case ScrollType::VerticalSeries:
+            return "vertical";
+        default:
+            return "none";
+        }
+    }
+
+    /// Keep in sync with `gui_tree::GUITreeFactory::computeScrollTypeString` whitelist and bit mapping.
+    ScrollType scrollTypeFromNodeImpl(int scrollableBits, const char *className) {
+        if (scrollableBits == 0) {
+            return ScrollType::NONE;
+        }
+        if (!className || !*className) {
+            return ScrollType::ALL;
+        }
+        if (std::strcmp(className, "android.widget.ScrollView") == 0 ||
+            std::strcmp(className, "android.widget.ListView") == 0 ||
+            std::strcmp(className, "android.widget.ExpandableListView") == 0 ||
+            std::strcmp(className, "android.support.v17.leanback.widget.VerticalGridView") == 0) {
+            return ScrollType::Vertical;
+        }
+        if (std::strcmp(className, "android.widget.HorizontalScrollView") == 0 ||
+            std::strcmp(className, "android.support.v17.leanback.widget.HorizontalGridView") == 0 ||
+            std::strcmp(className, "android.support.v4.view.ViewPager") == 0) {
+            return ScrollType::Horizontal;
+        }
+        if (scrollableBits == 1) {
+            return ScrollType::Vertical;
+        }
+        if (scrollableBits == 2) {
+            return ScrollType::Horizontal;
+        }
+        return ScrollType::ALL;
+    }
+
+    ScrollType normalizeScrollTypeForToken(ScrollType st, bool includeScrollType, uint8_t /*includeBoolPropsMask*/) {
+        if (!includeScrollType) {
+            return ScrollType::NONE;
+        }
+        return st;
+    }
+
+    uint32_t buildDerivedActionKnownKinds(uint8_t includeBoolPropsMask, bool includeScrollType) {
+        uint32_t known = 0;
+        // CLICK is derivable as long as either clickable or checkable participates in the token,
+        // consistent with buildDerivedActionMask(clickable || checkable).
+        if ((includeBoolPropsMask & (1u << 1)) != 0 || (includeBoolPropsMask & (1u << 2)) != 0) {
+            known |= kDerivedKindClick;
+        }
+        if ((includeBoolPropsMask & (1u << 3)) != 0) {
+            known |= kDerivedKindLongClick;
+        }
+        if (includeScrollType || (includeBoolPropsMask & (1u << 4)) != 0) {
+            known |= kDerivedKindScroll;
+        }
+        return known;
+    }
+
+    uint32_t buildDerivedActionMask(int patch, ScrollType scrollType, uint8_t includeBoolPropsMask,
+                                    bool includeScrollType) {
+        uint32_t mask = 0;
+        const bool clickable = ((patch >> 1) & 0x1) != 0;
+        const bool checkable = ((patch >> 2) & 0x1) != 0;
+        const bool longClickable = ((patch >> 3) & 0x1) != 0;
+
+        if (clickable || checkable) {
+            mask |= actionTypeBit(ActionType::CLICK);
+        }
+        if (longClickable) {
+            mask |= actionTypeBit(ActionType::LONG_CLICK);
+        }
+
+        const bool tokenHasScrollable = (includeBoolPropsMask & (1u << 4)) != 0;
+        if (!includeScrollType && !tokenHasScrollable) {
+            return mask;
+        }
+        if (!includeScrollType && tokenHasScrollable) {
+            const bool scrollable = ((patch >> 4) & 0x1) != 0;
+            if (!scrollable) {
+                return mask;
+            }
+            mask |= actionTypeBit(ActionType::SCROLL_TOP_DOWN);
+            mask |= actionTypeBit(ActionType::SCROLL_BOTTOM_UP);
+            mask |= actionTypeBit(ActionType::SCROLL_LEFT_RIGHT);
+            mask |= actionTypeBit(ActionType::SCROLL_RIGHT_LEFT);
+            return mask;
+        }
+
+        const bool scrollable = ((patch >> 4) & 0x1) != 0;
+        if (!scrollable) {
+            return mask;
+        }
+
+        switch (scrollType) {
+        case ScrollType::Vertical:
+        case ScrollType::VerticalSeries:
+            mask |= actionTypeBit(ActionType::SCROLL_BOTTOM_UP);
+            mask |= actionTypeBit(ActionType::SCROLL_TOP_DOWN);
+            break;
+        case ScrollType::Horizontal:
+            mask |= actionTypeBit(ActionType::SCROLL_LEFT_RIGHT);
+            mask |= actionTypeBit(ActionType::SCROLL_RIGHT_LEFT);
+            break;
+        case ScrollType::ALL:
+            mask |= actionTypeBit(ActionType::SCROLL_TOP_DOWN);
+            mask |= actionTypeBit(ActionType::SCROLL_BOTTOM_UP);
+            mask |= actionTypeBit(ActionType::SCROLL_LEFT_RIGHT);
+            mask |= actionTypeBit(ActionType::SCROLL_RIGHT_LEFT);
+            break;
+        case ScrollType::NONE:
+        default:
+            break;
+        }
+        return mask;
+    }
+
+    void appendInteractiveTokens(std::string &baseXPath, int patch, ScrollType scrollType,
+                                 uint8_t includeBoolPropsMask, bool includeScrollType) {
+        baseXPath.reserve(baseXPath.size() + 160);
+        for (size_t iph = 0; iph < 5; ++iph) {
+            if ((includeBoolPropsMask & (1u << static_cast<unsigned>(iph))) == 0) {
+                continue;
+            }
+            const char *prop = kInteractiveProps[iph];
+            const int bit = (patch >> static_cast<int>(iph)) & 1;
             baseXPath.append("[@");
             baseXPath.append(prop);
             baseXPath.append("=");
-            baseXPath.append((k % 2 == 1) ? "'true'" : "'false'");
+            baseXPath.append(bit ? "'true'" : "'false'");
             baseXPath.append("]");
-            k >>= 1;
         }
-        return baseXPath;
-    }
-
-    int actionPatchBitsForNode(const gui_tree::GUITreeNode &node) {
-        // Java patch(): for i from len-1 down to 0, flag = flag<<1 | bit
-        int flag = 0;
-        for (int i = 4; i >= 0; --i) {
-            flag <<= 1;
-            const char *prop = kInteractiveProps[i];
-            bool v = false;
-            if (std::strcmp(prop, "enabled") == 0) {
-                v = node.isEnabled();
-            } else if (std::strcmp(prop, "clickable") == 0) {
-                v = node.isClickable();
-            } else if (std::strcmp(prop, "checkable") == 0) {
-                v = node.isCheckable();
-            } else if (std::strcmp(prop, "long-clickable") == 0) {
-                v = node.isLongClickable();
-            } else if (std::strcmp(prop, "scrollable") == 0) {
-                v = (node.getScrollable() != 0);
-            }
-            if (v) {
-                flag |= 1;
-            }
-        }
-        return flag;
-    }
-
-    ActionPatchName::ActionPatchName(NamerPtr namer, NamePtr baseName, int patch,
-                                     std::string xpath_full_override)
-        : namer_(std::move(namer)),
-          base_(std::move(baseName)),
-          patch_(patch) {
-        // Precompute full XPath once; toXPath() can be called frequently during
-        // naming evaluation / sorting / state-key extraction.
-        if (!xpath_full_override.empty()) {
-            xpath_full_ = std::move(xpath_full_override);
-            return;
-        }
-        if (!base_) {
-            xpath_full_ = appendActionPatchXPathSuffix(std::string(), patch_);
-        } else {
-            xpath_full_ = appendActionPatchXPathSuffix(base_->toXPath(), patch_);
+        if (includeScrollType) {
+            baseXPath.append("[@scroll-type='");
+            baseXPath.append(scrollTypeAttrValue(scrollType));
+            baseXPath.append("']");
         }
     }
 
-    std::string ActionPatchName::toXPath() const {
-        return xpath_full_;
-    }
+} // namespace
 
-    void ActionPatchName::appendXPathLocalProperties(std::string &sb) const {
-        if (base_) {
-            base_->appendXPathLocalProperties(sb);
+std::string appendActionPatchXPathSuffix(std::string baseXPath, int patch, ScrollType scrollType,
+                                         uint8_t includeBoolPropsMask, bool includeScrollType) {
+    appendInteractiveTokens(baseXPath, patch, scrollType, includeBoolPropsMask, includeScrollType);
+    return baseXPath;
+}
+
+int actionPatchBitsForNode(const gui_tree::GUITreeNode &node) {
+    int flag = 0;
+    for (int i = 4; i >= 0; --i) {
+        flag <<= 1;
+        const char *prop = kInteractiveProps[static_cast<size_t>(i)];
+        bool v = false;
+        if (std::strcmp(prop, "enabled") == 0) {
+            v = node.isEnabled();
+        } else if (std::strcmp(prop, "clickable") == 0) {
+            v = node.isClickable();
+        } else if (std::strcmp(prop, "checkable") == 0) {
+            v = node.isCheckable();
+        } else if (std::strcmp(prop, "long-clickable") == 0) {
+            v = node.isLongClickable();
+        } else if (std::strcmp(prop, "scrollable") == 0) {
+            v = (node.getScrollable() != 0);
         }
-        int k = patch_;
-        for (const char *prop : kInteractiveProps) {
-            sb.append("[@");
-            sb.append(prop);
-            sb.append("=");
-            sb.append((k % 2 == 1) ? "'true'" : "'false'");
-            sb.append("]");
-            k >>= 1;
+        if (v) {
+            flag |= 1;
         }
     }
+    return flag;
+}
 
-    ActionPatchNamer::ActionPatchNamer(NamerPtr base) : base_(std::move(base)) {}
+ScrollType actionPatchScrollTypeForNode(const gui_tree::GUITreeNode &node) {
+    return scrollTypeFromNodeImpl(node.getScrollable(), node.getClassName().c_str());
+}
 
-    std::vector<NamerType> ActionPatchNamer::getNamerTypes() const {
-        return base_ ? base_->getNamerTypes() : std::vector<NamerType>{};
+ActionPatchTokenConfig getActionPatchTokenConfig() {
+    return g_cfg;
+}
+
+void setActionPatchProfile(const std::string &value) {
+    const std::string trimmed = trimCopy(value);
+    g_cfg.profile = trimmed;
+    const std::string lower = toLowerCopy(trimmed);
+    if (lower.empty() || lower == "default" || lower == "full" || lower == "ape" || lower == "all") {
+        g_cfg.include_bool_props_mask = 0x1Fu;
+        g_cfg.include_scroll_type = true;
+        return;
     }
-
-    uint32_t ActionPatchNamer::typeDimensionMask() const {
-        return base_ ? base_->typeDimensionMask() : 0u;
+    if (lower == "no_scroll_type" || lower == "noscrolltype" || lower == "no_scroll") {
+        g_cfg.include_bool_props_mask = 0x1Fu;
+        g_cfg.include_scroll_type = false;
+        return;
     }
-
-    NamePtr ActionPatchNamer::naming(gui_tree::GUITreeNode &node) {
-        NamePtr baseName = base_ ? base_->naming(node) : nullptr;
-        const int p = actionPatchBitsForNode(node);
-        return std::make_shared<ActionPatchName>(shared_from_this(), std::move(baseName), p);
+    if (lower == "no_enabled" || lower == "interaction") {
+        // All flags except `enabled` (bit 0).
+        g_cfg.include_bool_props_mask = 0x1Eu;
+        g_cfg.include_scroll_type = true;
+        return;
     }
-
-    NamePtr ActionPatchNamer::namingWithXPathKey(gui_tree::GUITreeNode &node, const std::string &xpathKey) {
-        // Avoid allocating base_->naming(node) by using the already-computed full XPath key.
-        const int p = actionPatchBitsForNode(node);
-        return std::make_shared<ActionPatchName>(shared_from_this(), nullptr, p, xpathKey);
-    }
-
-    std::string ActionPatchNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const {
-        std::string k = base_ ? base_->xpathKeyForNode(node) : std::string();
-        if (k.empty() && base_) {
-            NamePtr n = base_->naming(node);
-            if (n) {
-                k = n->toXPath();
-            }
+    if (lower.rfind("0x", 0) == 0 || lower.rfind("0X", 0) == 0) {
+        char *end = nullptr;
+        unsigned long m = std::strtoul(lower.c_str(), &end, 0);
+        g_cfg.include_bool_props_mask = static_cast<uint8_t>(m & 0xFFu);
+        g_cfg.include_scroll_type = true;
+        if (end && std::strstr(end, "noscroll") != nullptr) {
+            g_cfg.include_scroll_type = false;
         }
-        return appendActionPatchXPathSuffix(std::move(k), actionPatchBitsForNode(node));
+        return;
     }
+    g_cfg.include_bool_props_mask = 0x1Fu;
+    g_cfg.include_scroll_type = true;
+}
 
-    bool ActionPatchNamer::refinesTo(const Namer &other) const {
-        uint32_t om = other.typeDimensionMask();
-        const uint32_t mm = typeDimensionMask();
-        return (mm & om) == om;
+const std::string &getActionPatchProfile() {
+    return g_cfg.profile;
+}
+
+bool useActionPatchDeriveActionsFromName() {
+    return g_cfg.derive_actions_from_name;
+}
+
+void setActionPatchDeriveActionsFromName(bool enabled) {
+    g_cfg.derive_actions_from_name = enabled;
+}
+
+bool decodeApeDerivedActionsFromName(const NamePtr &name, uint32_t *outAllowedActionMask,
+                                     uint32_t *outKnownActionKinds) {
+    if (!outAllowedActionMask || !outKnownActionKinds) {
+        return false;
     }
+    *outAllowedActionMask = 0;
+    *outKnownActionKinds = 0;
+    const auto ap = std::dynamic_pointer_cast<ActionPatchName>(name);
+    if (!ap) {
+        return false;
+    }
+    *outAllowedActionMask = ap->derivedActionMask();
+    *outKnownActionKinds = ap->derivedActionKnownKinds();
+    return true;
+}
+
+ActionPatchName::ActionPatchName(NamerPtr namer, NamePtr baseName, int patch, ScrollType scrollType,
+                                 uint8_t includeBoolPropsMask, bool includeScrollType,
+                                 std::string xpath_full_override)
+    : namer_(std::move(namer)),
+      base_(std::move(baseName)),
+      patch_(patch),
+      scroll_type_(scrollType),
+      include_bool_props_mask_(includeBoolPropsMask),
+      include_scroll_type_(includeScrollType) {
+    derived_action_mask_ =
+        buildDerivedActionMask(patch_, scroll_type_, include_bool_props_mask_, include_scroll_type_);
+    derived_action_known_kinds_ = buildDerivedActionKnownKinds(include_bool_props_mask_, include_scroll_type_);
+    if (!xpath_full_override.empty()) {
+        xpath_full_ = std::move(xpath_full_override);
+        return;
+    }
+    if (!base_) {
+        xpath_full_ =
+            appendActionPatchXPathSuffix(std::string(), patch_, scroll_type_, include_bool_props_mask_,
+                                         include_scroll_type_);
+    } else {
+        xpath_full_ = appendActionPatchXPathSuffix(base_->toXPath(), patch_, scroll_type_, include_bool_props_mask_,
+                                                   include_scroll_type_);
+    }
+}
+
+std::string ActionPatchName::toXPath() const {
+    return xpath_full_;
+}
+
+void ActionPatchName::appendXPathLocalProperties(std::string &sb) const {
+    if (base_) {
+        base_->appendXPathLocalProperties(sb);
+    }
+    appendInteractiveTokens(sb, patch_, scroll_type_, include_bool_props_mask_, include_scroll_type_);
+}
+
+ActionPatchNamer::ActionPatchNamer(NamerPtr base) : base_(std::move(base)) {}
+
+std::vector<NamerType> ActionPatchNamer::getNamerTypes() const {
+    return base_ ? base_->getNamerTypes() : std::vector<NamerType>{};
+}
+
+uint32_t ActionPatchNamer::typeDimensionMask() const {
+    return base_ ? base_->typeDimensionMask() : 0u;
+}
+
+NamePtr ActionPatchNamer::naming(gui_tree::GUITreeNode &node) {
+    NamePtr baseName = base_ ? base_->naming(node) : nullptr;
+    const int p = actionPatchBitsForNode(node);
+    const ActionPatchTokenConfig cfg = getActionPatchTokenConfig();
+    const ScrollType st =
+        normalizeScrollTypeForToken(actionPatchScrollTypeForNode(node), cfg.include_scroll_type,
+                                    cfg.include_bool_props_mask);
+    return std::make_shared<ActionPatchName>(shared_from_this(), std::move(baseName), p, st,
+                                             cfg.include_bool_props_mask, cfg.include_scroll_type);
+}
+
+NamePtr ActionPatchNamer::namingWithXPathKey(gui_tree::GUITreeNode &node, const std::string &xpathKey) {
+    const int p = actionPatchBitsForNode(node);
+    const ActionPatchTokenConfig cfg = getActionPatchTokenConfig();
+    const ScrollType st =
+        normalizeScrollTypeForToken(actionPatchScrollTypeForNode(node), cfg.include_scroll_type,
+                                    cfg.include_bool_props_mask);
+    std::string full = appendActionPatchXPathSuffix(std::string(xpathKey), p, st, cfg.include_bool_props_mask,
+                                                    cfg.include_scroll_type);
+    return std::make_shared<ActionPatchName>(shared_from_this(), nullptr, p, st, cfg.include_bool_props_mask,
+                                             cfg.include_scroll_type, std::move(full));
+}
+
+std::string ActionPatchNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const {
+    std::string k = base_ ? base_->xpathKeyForNode(node) : std::string();
+    if (k.empty() && base_) {
+        NamePtr n = base_->naming(node);
+        if (n) {
+            k = n->toXPath();
+        }
+    }
+    const ActionPatchTokenConfig cfg = getActionPatchTokenConfig();
+    const ScrollType st =
+        normalizeScrollTypeForToken(actionPatchScrollTypeForNode(node), cfg.include_scroll_type,
+                                    cfg.include_bool_props_mask);
+    return appendActionPatchXPathSuffix(std::move(k), actionPatchBitsForNode(node), st, cfg.include_bool_props_mask,
+                                        cfg.include_scroll_type);
+}
+
+bool ActionPatchNamer::refinesTo(const Namer &other) const {
+    uint32_t om = other.typeDimensionMask();
+    const uint32_t mm = typeDimensionMask();
+    return (mm & om) == om;
+}
 
 } // namespace naming
 } // namespace fastbotx

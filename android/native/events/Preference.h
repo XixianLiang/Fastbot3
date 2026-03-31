@@ -138,6 +138,49 @@ namespace fastbotx {
          */
         bool useApeNamingPeriodicRefinement() const { return _apeNamingPeriodicRefinement; }
         /**
+         * APE-aligned L-input normalization: WebView pruning.
+         * max.config: max.apeAlwaysIgnoreWebView=true|false
+         */
+        bool useApeAlwaysIgnoreWebView() const { return _apeAlwaysIgnoreWebView; }
+        /**
+         * APE-aligned L-input normalization: ignore actions inside WebView subtree.
+         * max.config: max.apeAlwaysIgnoreWebViewAction=true|false
+         */
+        bool useApeAlwaysIgnoreWebViewAction() const { return _apeAlwaysIgnoreWebViewAction; }
+        /**
+         * APE-aligned L-input normalization: if a WebView subtree descendant count exceeds this threshold,
+         * its children are cleared (keep WebView shell node).
+         * max.config: max.apeIgnoreWebViewThreshold=N (0 disables)
+         */
+        int getApeIgnoreWebViewThreshold() const { return _apeIgnoreWebViewThreshold; }
+        /**
+         * APE-aligned L-input normalization: extra WebView class patterns.
+         *
+         * Comma/semicolon-separated patterns. Supported forms:
+         * - Exact match:   android.webkit.WebView
+         * - Prefix match:  com.tencent.smtt.sdk.WebView*   (suffix '*')
+         *
+         * Empty list means strict match only (android.webkit.WebView).
+         * max.config: max.apeWebViewClassPatterns=<patterns>
+         */
+        const std::vector<std::string> &getApeWebViewClassPatterns() const {
+            return _apeWebViewClassPatterns;
+        }
+        /**
+         * APE-aligned L-input normalization: compute stable pseudo text for icon-only widgets.
+         *
+         * Since native has no screenshot bitmap, we compute a deterministic hash from widget attributes
+         * (class/resource-id/bounds/index) and write it into @text when both text and content-desc are empty.
+         * This approximates Java APE computeImageText() behavior.
+         * max.config: max.apeComputeImageText=true|false
+         */
+        bool useApeComputeImageText() const { return _apeComputeImageText; }
+        /**
+         * APE-aligned L-input normalization: clickable patching (container->child) based on bounds.
+         * max.config: max.apePatchGUITree=true|false
+         */
+        bool useApePatchGUITree() const { return _apePatchGUITree; }
+        /**
          * Only used when native is built without pugixml (no GUITree). If true, skip legacy widget/mask batch
          * and run only runApeNamingAbstractionBatch (often empty). With FASTBOT_HAS_PUGIXML, Model always
          * uses the APE naming batch for periodic refinement; this flag is ignored.
@@ -304,8 +347,15 @@ namespace fastbotx {
 
         void deMixResMapping(const ElementPtr &rootXML);
 
+        enum class ResolveRulePhase : uint8_t {
+            ModifyOnly = 0,
+            AvoidOnly = 1,
+        };
+
         /// Single-pass resolve: avoid (delete + rect cache) + modify (property overrides), deMixResMapping, cachePageTexts, pruningValidTexts, then recurse.
-        void resolveElementWithAvoid(const ElementPtr &element, const std::string &activity);
+        void resolveElementWithAvoid(const ElementPtr &element,
+                                     const std::string &activity,
+                                     ResolveRulePhase phase);
 
         void pruningValidTexts(const ElementPtr &element);
 
@@ -375,6 +425,13 @@ namespace fastbotx {
         bool _apeNamingCandidateTransitionReplay{true};
         /// Default true, same as Java Config.actionRefinementFirst.
         bool _apeNamingActionRefinementFirst{true};
+        // APE-aligned L-input normalization switches (WebView + clickable patch).
+        bool _apeAlwaysIgnoreWebView{false};
+        bool _apeAlwaysIgnoreWebViewAction{false};
+        int _apeIgnoreWebViewThreshold{64};
+        std::vector<std::string> _apeWebViewClassPatterns;
+        bool _apeComputeImageText{false};
+        bool _apePatchGUITree{true};
         bool _forceUseTextModel{};
         int _forceMaxBlockStateTimes{};
         RectPtr _rootScreenSize;

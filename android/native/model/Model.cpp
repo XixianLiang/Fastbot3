@@ -14,6 +14,7 @@
 #include "../desc/reuse/ActivityNameAction.h"
 #include "../desc/naming/NamerFactory.h"
 #include "../desc/naming/NamerType.h"
+#include "../desc/naming/ActionPatchNamer.h"
 #endif
 #ifndef NDEBUG
 #include <cassert>
@@ -37,6 +38,13 @@ struct ApeNonDetPairStat {
     std::unordered_set<uintptr_t> targetKeyHashes;
     size_t targetCount{0};
 };
+
+bool shouldLogApeDiagSample(const std::string &key, size_t everyN = 20) {
+    static std::unordered_map<std::string, size_t> counters;
+    size_t &c = counters[key];
+    ++c;
+    return c <= 3 || (everyN > 0 && (c % everyN) == 0);
+}
 
 void collectGUITreeNodesPreOrder(gui_tree::GUITreeNode *node, std::vector<gui_tree::GUITreeNode *> *out) {
     if (!node || !out) {
@@ -73,11 +81,44 @@ void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
             widgetIndex.emplace(ptr, i);
         }
     }
-    for (const auto &a : state->getActions()) {
+    const ActivityStateActionPtrVec &acts = state->getActions();
+    const bool deriveActions = naming::useActionPatchDeriveActionsFromName();
+    std::vector<uint8_t> keepMask;
+    if (deriveActions) {
+        keepMask.assign(acts.size(), 1);
+    }
+
+    auto canonicalForCheck = [](ActionType t) -> ActionType {
+        if (t == ActionType::SCROLL_BOTTOM_UP_N) {
+            return ActionType::SCROLL_BOTTOM_UP;
+        }
+        return t;
+    };
+
+    auto kindBitForAction = [](ActionType t) -> uint32_t {
+        switch (t) {
+        case ActionType::CLICK:
+            return naming::kDerivedKindClick;
+        case ActionType::LONG_CLICK:
+            return naming::kDerivedKindLongClick;
+        case ActionType::SCROLL_TOP_DOWN:
+        case ActionType::SCROLL_BOTTOM_UP:
+        case ActionType::SCROLL_LEFT_RIGHT:
+        case ActionType::SCROLL_RIGHT_LEFT:
+        case ActionType::SCROLL_BOTTOM_UP_N:
+            return naming::kDerivedKindScroll;
+        default:
+            return 0;
+        }
+    };
+
+    for (size_t ai = 0; ai < acts.size(); ++ai) {
+        const auto &a = acts[ai];
         auto ana = std::dynamic_pointer_cast<ActivityNameAction>(a);
         if (!ana) {
             continue;
         }
+        naming::NamePtr nxp = nullptr;
         WidgetPtr w = ana->getTarget();
         if (!w) {
             ana->applyApeDynamicRlIdentity(activityH, 0x1);
@@ -91,13 +132,15 @@ void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
             if (it != widgetIndex.end()) {
                 gui_tree::GUITreeNode *n = nodesPreOrder[it->second];
                 if (n) {
-                    if (naming::NamePtr nxp = n->getXPathName(); nxp) {
+                    nxp = n->getXPathName();
+                    if (nxp) {
                         abstractTargetHash = fastStringHash(nxp->toXPath());
                     }
                     if (fullNamer) {
                         std::string fullKey = fullNamer->xpathKeyForNode(*n);
                         if (fullKey.empty()) {
-                            if (naming::NamePtr fullName = fullNamer->naming(*n); fullName) {
+                            naming::NamePtr fullName = fullNamer->naming(*n);
+                            if (fullName) {
                                 fullKey = fullName->toXPath();
                             }
                         }
@@ -110,6 +153,25 @@ void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
         }
         ana->applyApeDynamicRlIdentity(activityH, abstractTargetHash);
         ana->setApeDynamicTargetFullPathHash(fullTargetHash);
+
+        if (deriveActions && nxp && ai < keepMask.size()) {
+            uint32_t allowedMask = 0;
+            uint32_t knownKinds = 0;
+            if (naming::decodeApeDerivedActionsFromName(nxp, &allowedMask, &knownKinds)) {
+                const ActionType canonical = canonicalForCheck(ana->getActionType());
+                const uint32_t kindBit = kindBitForAction(canonical);
+                if (kindBit != 0 && (knownKinds & kindBit) != 0) {
+                    const uint32_t actBit = 1u << static_cast<unsigned>(canonical);
+                    if ((allowedMask & actBit) == 0) {
+                        keepMask[ai] = 0;
+                    }
+                }
+            }
+        }
+    }
+
+    if (deriveActions && !keepMask.empty()) {
+        state->filterActionsByKeepMask(keepMask);
     }
 }
 } // namespace
@@ -234,7 +296,10 @@ bool evalApeSourcePartitionPredicateImpl(
         return true;
     }
     std::unordered_set<uintptr_t> seen;
+    std::vector<uintptr_t> computed;
     for (const auto &part : partitions) {
+        computed.clear();
+        computed.reserve(part.size());
         for (uintptr_t sh : part) {
             auto it = xmlByHash.find(sh);
             if (it == xmlByHash.end() || it->second.empty()) {
@@ -244,19 +309,14 @@ bool evalApeSourcePartitionPredicateImpl(
             if (!apeStateHashFromXmlWithNaming(activity, it->second, naming, &h)) {
                 return false;
             }
+            computed.push_back(h);
+        }
+        for (uintptr_t h : computed) {
             if (seen.count(h) != 0) {
                 return false;
             }
         }
-        for (uintptr_t sh : part) {
-            auto it = xmlByHash.find(sh);
-            if (it == xmlByHash.end() || it->second.empty()) {
-                continue;
-            }
-            uintptr_t h = 0;
-            if (!apeStateHashFromXmlWithNaming(activity, it->second, naming, &h)) {
-                return false;
-            }
+        for (uintptr_t h : computed) {
             seen.insert(h);
         }
     }
@@ -275,7 +335,10 @@ bool evalApeSourcePartitionPredicateImplTwoNamings(
         return true;
     }
     std::unordered_set<uintptr_t> seen;
+    std::vector<uintptr_t> computed;
     for (const auto &part : partitions) {
+        computed.clear();
+        computed.reserve(part.size());
         for (uintptr_t sh : part) {
             const auto it = xmlByHash.find(sh);
             if (it == xmlByHash.end() || it->second.empty()) {
@@ -287,21 +350,14 @@ bool evalApeSourcePartitionPredicateImplTwoNamings(
             if (!apeStateHashFromXmlWithNaming(activity, it->second, namingToUse, &h)) {
                 return false;
             }
+            computed.push_back(h);
+        }
+        for (uintptr_t h : computed) {
             if (seen.count(h) != 0) {
                 return false;
             }
         }
-        for (uintptr_t sh : part) {
-            auto it = xmlByHash.find(sh);
-            if (it == xmlByHash.end() || it->second.empty()) {
-                continue;
-            }
-            const naming::NamingPtr &namingToUse =
-                affectedStateHashes.count(sh) != 0 ? namingPrev : namingCur;
-            uintptr_t h = 0;
-            if (!apeStateHashFromXmlWithNaming(activity, it->second, namingToUse, &h)) {
-                return false;
-            }
+        for (uintptr_t h : computed) {
             seen.insert(h);
         }
     }
@@ -612,6 +668,13 @@ namespace fastbotx {
         // TransitionLog upper bound implies a natural upper bound for distinct (srcKey,action) pairs.
         // Reserve once to reduce rehash/malloc on the hot path.
         this->_apePairAgg.reserve(MaxTransitionLogSize);
+        this->_apeEvidencePools.reserve(MaxTransitionLogSize);
+        // Fixed-size clock for bounded LRU-like eviction.
+        constexpr size_t kEvidencePoolClockSize = MaxTransitionLogSize*4;
+        this->_apeEvidencePoolClock.resize(kEvidencePoolClockSize);
+        this->_apeEvidencePoolClockWriteIndex = 0;
+        this->_apeEvidencePoolClockEvictIndex = 0;
+        this->_apeEvidenceEpoch = 0;
         BLOG("state abstraction: enabled (check interval=%d, batch every %d steps)",
              (int)RefinementCheckInterval, (int)RefinementCheckInterval);
 #endif
@@ -997,6 +1060,14 @@ namespace fastbotx {
         StatePtr built = buildStateOnly(element, agent, activityPtr);
         StatePtr state = built;
         if (state) {
+            // Cache XML string within this frame to avoid repeated Element::toXML() allocations.
+            std::string xmlCache;
+            auto getXml = [&]() -> const std::string & {
+                if (xmlCache.empty()) {
+                    xmlCache = element ? element->toXML() : std::string();
+                }
+                return xmlCache;
+            };
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
             naming::StateKey apeKey = naming::StateKey::fromParts(
                 naming::StateKey::canonicalActivityString(activity), nullptr, {});
@@ -1006,9 +1077,10 @@ namespace fastbotx {
             const bool wantApeGraphDedup =
                 _preference && _preference->useApeGraphDedupByStateKey();
             const bool wantApeStateKey = wantApeRlIdentity || wantApeGraphDedup;
+            ApeStateKeyBuildFailReason buildFailReason = ApeStateKeyBuildFailReason::None;
             if (wantApeStateKey) {
                 haveApeKey = buildApeStateKeyFromElementTree(
-                    element, activity, &apeKey, wantApeRlIdentity ? built : StatePtr());
+                    element, activity, &apeKey, &buildFailReason, wantApeRlIdentity ? built : StatePtr(), &xmlCache);
             } else {
                 haveApeKey = false;
             }
@@ -1016,27 +1088,52 @@ namespace fastbotx {
                 if (haveApeKey) {
                     built->applyDynamicAbstractionIdentityHash(apeKey.hash());
                 } else {
-                    const uintptr_t xmlH = fastStringHash(element->toXML());
+                    _ape_correctness_counters.statekey_fallback_used++;
+                    const uintptr_t xmlH = fastStringHash(getXml());
                     apeKey = naming::StateKey::fromFallbackXmlStringHash(activity, xmlH);
                     built->applyDynamicAbstractionIdentityHash(apeKey.hash());
                     applyApeDynamicActionHashesToReuseState(built, {}, apeKey);
                     haveApeKey = true;
+
+                    const uint64_t n = _ape_correctness_counters.statekey_fallback_used;
+                    if (n <= 3 || (n % 100) == 0) {
+                        BLOG("ape statekey: fallback activity=%s reason=%d xmlHash=%zu",
+                             activity.c_str(), static_cast<int>(buildFailReason), static_cast<size_t>(xmlH));
+                    }
                 }
             }
 #else
-            haveApeKey = buildApeStateKeyFromElementTree(element, activity, &apeKey);
+            ApeStateKeyBuildFailReason buildFailReason = ApeStateKeyBuildFailReason::None;
+            haveApeKey = buildApeStateKeyFromElementTree(element, activity, &apeKey, &buildFailReason);
 #endif
             if (haveApeKey && _preference && _preference->useApeGraphDedupByStateKey()) {
                 const uintptr_t kh = apeKey.hash();
-                auto itDedup = _ape_graph_state_by_key.find(kh);
-                if (itDedup != _ape_graph_state_by_key.end()) {
-                    agent->moveForward(itDedup->second);
-                    _graph->recordStateVisit(itDedup->second, built);
-                    state = itDedup->second;
-                } else {
+                bool deduped = false;
+                auto &bucket = _ape_graph_state_by_key[kh];
+                for (const auto &entry : bucket) {
+                    if (entry.key == apeKey) {
+                        _ape_correctness_counters.graph_dedup_exact_hit++;
+                        agent->moveForward(entry.state);
+                        _graph->recordStateVisit(entry.state, built);
+                        state = entry.state;
+                        deduped = true;
+                        break;
+                    }
+                }
+                if (!deduped) {
+                    if (!bucket.empty()) {
+                        _ape_correctness_counters.graph_dedup_hash_collision++;
+                        const uint64_t n = _ape_correctness_counters.graph_dedup_hash_collision;
+                        if (n <= 3 || (n % 100) == 0) {
+                            BLOG("ape graph dedup: hash collision activity=%s keyHash=%zu bucket=%zu",
+                                 activity.c_str(), static_cast<size_t>(kh), bucket.size());
+                        }
+                    }
                     agent->moveForward(built);
                     state = _graph->addState(built);
-                    _ape_graph_state_by_key.emplace(kh, state);
+                    bucket.push_back(ApeGraphStateKeyDedupEntry{apeKey, state});
+                } else {
+                    _ape_correctness_counters.graph_dedup_hash_hit++;
                 }
             } else {
                 agent->moveForward(built);
@@ -1051,10 +1148,48 @@ namespace fastbotx {
             if (element && _preference && !_preference->useStaticReuseAbstraction() &&
                 _preference->useApeNamingCandidateTransitionReplay()) {
                 const uintptr_t sh = state->hash();
-                _apeStateXmlByStateHash[sh] = element->toXML();
+                const std::string actKeyCanonical = naming::StateKey::canonicalActivityString(activity);
+                _apeStateXmlByStateHash[sh] = getXml();
+                apeMiniHistoryTouchState(actKeyCanonical, sh);
                 constexpr size_t kMaxApeXmlCache = 384;
-                while (_apeStateXmlByStateHash.size() > kMaxApeXmlCache) {
-                    _apeStateXmlByStateHash.erase(_apeStateXmlByStateHash.begin());
+                if (_apeStateXmlByStateHash.size() > kMaxApeXmlCache) {
+                    // Q8 (local rebuild): protect mini-history referenced XML from cache eviction.
+                    std::unordered_set<uintptr_t> protectedHashes;
+                    protectedHashes.reserve(128);
+                    for (const auto &kv : _apeMiniHistoryByActivity) {
+                        const ApeMiniHistory &h = kv.second;
+                        for (uintptr_t hsh : h.stateHashes) {
+                            if (hsh != 0) {
+                                protectedHashes.insert(hsh);
+                            }
+                        }
+                        for (const auto &t : h.transitions) {
+                            if (!t.valid) {
+                                continue;
+                            }
+                            if (t.sourceStateHash != 0) {
+                                protectedHashes.insert(t.sourceStateHash);
+                            }
+                            if (t.targetStateHash != 0) {
+                                protectedHashes.insert(t.targetStateHash);
+                            }
+                        }
+                    }
+                    while (_apeStateXmlByStateHash.size() > kMaxApeXmlCache) {
+                        auto itEvict = _apeStateXmlByStateHash.begin();
+                        constexpr size_t kMaxProbe = 32;
+                        size_t probe = 0;
+                        while (itEvict != _apeStateXmlByStateHash.end() &&
+                               protectedHashes.count(itEvict->first) != 0 &&
+                               probe < kMaxProbe) {
+                            ++itEvict;
+                            ++probe;
+                        }
+                        if (itEvict == _apeStateXmlByStateHash.end()) {
+                            itEvict = _apeStateXmlByStateHash.begin();
+                        }
+                        _apeStateXmlByStateHash.erase(itEvict);
+                    }
                 }
             }
 #endif
@@ -1066,23 +1201,47 @@ namespace fastbotx {
             const bool wantApeRlIdentity = !_preference || !_preference->useStaticReuseAbstraction();
             std::vector<gui_tree::GUITreeNode *> guiPreOrder;
             if (wantApeRlIdentity) {
-                const uintptr_t xmlH = fastStringHash(element->toXML());
+                _ape_correctness_counters.statekey_fallback_used++;
+                const uintptr_t xmlH = fastStringHash(getXml());
                 apeKey = naming::StateKey::fromFallbackXmlStringHash(activity, xmlH);
                 built->applyDynamicAbstractionIdentityHash(apeKey.hash());
                 applyApeDynamicActionHashesToReuseState(built, guiPreOrder, apeKey);
                 haveApeKey = true;
+
+                const uint64_t n = _ape_correctness_counters.statekey_fallback_used;
+                if (n <= 3 || (n % 100) == 0) {
+                    BLOG("ape statekey fallback: activity=%s xmlHash=%zu",
+                         activity.c_str(), static_cast<size_t>(xmlH));
+                }
             }
             if (haveApeKey && _preference && _preference->useApeGraphDedupByStateKey()) {
                 const uintptr_t kh = apeKey.hash();
-                auto itDedup = _ape_graph_state_by_key.find(kh);
-                if (itDedup != _ape_graph_state_by_key.end()) {
-                    agent->moveForward(itDedup->second);
-                    _graph->recordStateVisit(itDedup->second, built);
-                    state = itDedup->second;
-                } else {
+                bool deduped = false;
+                auto &bucket = _ape_graph_state_by_key[kh];
+                for (const auto &entry : bucket) {
+                    if (entry.key == apeKey) {
+                        _ape_correctness_counters.graph_dedup_exact_hit++;
+                        agent->moveForward(entry.state);
+                        _graph->recordStateVisit(entry.state, built);
+                        state = entry.state;
+                        deduped = true;
+                        break;
+                    }
+                }
+                if (!deduped) {
+                    if (!bucket.empty()) {
+                        _ape_correctness_counters.graph_dedup_hash_collision++;
+                        const uint64_t n = _ape_correctness_counters.graph_dedup_hash_collision;
+                        if (n <= 3 || (n % 100) == 0) {
+                            BLOG("ape graph dedup: hash collision activity=%s keyHash=%zu bucket=%zu",
+                                 activity.c_str(), static_cast<size_t>(kh), bucket.size());
+                        }
+                    }
                     agent->moveForward(built);
                     state = _graph->addState(built);
-                    _ape_graph_state_by_key.emplace(kh, state);
+                    bucket.push_back(ApeGraphStateKeyDedupEntry{apeKey, state});
+                } else {
+                    _ape_correctness_counters.graph_dedup_hash_hit++;
                 }
             } else {
                 agent->moveForward(built);
@@ -1219,19 +1378,19 @@ namespace fastbotx {
 #endif
         const int minTargets = (_preference ? _preference->getApeNamingMinNonDetTargets()
                                             : MinNonDeterminismCount);
-        auto itS = _ape_state_keys_by_hash.find(src->hash());
-        auto itT = _ape_state_keys_by_hash.find(tgt->hash());
-        if (itS == _ape_state_keys_by_hash.end() || itT == _ape_state_keys_by_hash.end()) {
+        naming::StateKey srcKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        naming::StateKey tgtKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        if (!tryGetApeStateKey(src->hash(), &srcKey) || !tryGetApeStateKey(tgt->hash(), &tgtKey)) {
             return;
         }
         ApeTransitionEntry e;
-        e.sourceKeyHash = itS->second.hash();
+        e.sourceKeyHash = srcKey.hash();
         e.hasSourceStateKey = true;
-        e.sourceStateKey = itS->second;
+        e.sourceStateKey = srcKey;
         e.actionHash = act->hash();
-        e.targetKeyHash = itT->second.hash();
+        e.targetKeyHash = tgtKey.hash();
         e.hasTargetStateKey = true;
-        e.targetStateKey = itT->second;
+        e.targetStateKey = tgtKey;
         e.sourceStateHash = src->hash();
         e.targetStateHash = tgt->hash();
         e.actionType = act->getActionType();
@@ -1272,6 +1431,8 @@ namespace fastbotx {
         }
         aSlot = std::move(e);
         apePairAggAdd(aSlot);
+        apeEvidencePoolAdd(pairKey, aSlot);
+        apeMiniHistoryRecordTransition(aSlot.sourceActivity, aSlot);
         size_t nowPairTargetCount = 0;
         std::unordered_set<uintptr_t> pairTargetHashes;
         auto itPairAfter = _apePairAgg.find(pairKey);
@@ -1308,8 +1469,8 @@ namespace fastbotx {
         }
         ApeRefinePair rp;
         rp.sourceKeyHash = pairKey.sourceKeyHash;
-        rp.hasSourceStateKey = true;
-        rp.sourceStateKey = itS->second;
+        rp.hasSourceStateKey = aSlot.hasSourceStateKey;
+        rp.sourceStateKey = aSlot.sourceStateKey;
         rp.actionHash = pairKey.actionHash;
         rp.targetKeyHashes = std::move(pairTargetHashes);
         rp.targetCount = nowPairTargetCount;
@@ -1324,11 +1485,17 @@ namespace fastbotx {
             }
             notifyAgentsOfApeNamingChange();
         } else if (rp.actionHash != 0 && nowPairTargetCount >= static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) {
-            _apeRefineActionBlacklist[actKey].insert(rp.actionHash);
+            auto &blk = _apeRefineActionBlacklist[actKey];
+            const bool inserted = blk.insert(rp.actionHash).second;
             apeCapApeNamingCoarsenAndRefineBlacklists();
             BLOG("ape naming: NDActionBlacklist add (APE: out>=%d after failed resolve) activity=%s act=%lu targets=%zu",
                  kApeNDActionBlacklistMinOutEdges, aSlot.sourceActivity.c_str(),
                  (unsigned long)rp.actionHash, nowPairTargetCount);
+            if (shouldLogApeDiagSample(std::string("nd_blacklist_event_add#") + actKey, 25)) {
+                BLOG("ape naming: diag NDActionBlacklist[event] activity=%s act=%lu inserted=%d size=%zu targets=%zu nonDetPairs=%d",
+                     aSlot.sourceActivity.c_str(), (unsigned long)rp.actionHash, inserted ? 1 : 0,
+                     blk.size(), nowPairTargetCount, nonDetPairs);
+            }
         }
     }
 
@@ -1363,9 +1530,86 @@ namespace fastbotx {
         }
     }
 
+    void Model::apeEvidencePoolAdd(const ApePairKey &pairKey, const ApeTransitionEntry &e) {
+        if (!e.valid || pairKey.sourceKeyHash == 0 || pairKey.actionHash == 0) {
+            return;
+        }
+        _ape_correctness_counters.evidence_pool_sample_add++;
+
+        ApeEvidenceSample s;
+        s.sourceStateHash = e.sourceStateHash;
+        s.targetStateHash = e.targetStateHash;
+        s.targetKeyHash = e.targetKeyHash;
+        s.actionType = e.actionType;
+        s.hasTargetBounds = e.hasTargetBounds;
+        s.targetBounds = e.targetBounds;
+        s.hasTargetFullPath = e.hasTargetFullPath;
+        s.targetFullPathHash = e.targetFullPathHash;
+
+        uint64_t epoch = ++_apeEvidenceEpoch;
+        if (epoch == 0) {
+            epoch = ++_apeEvidenceEpoch;
+        }
+
+        auto it = _apeEvidencePools.find(pairKey);
+        if (it == _apeEvidencePools.end()) {
+            _ape_correctness_counters.evidence_pool_new_pair++;
+            it = _apeEvidencePools.emplace(pairKey, ApeEvidencePool{}).first;
+        }
+        it->second.push(std::move(s), epoch);
+
+        if (!_apeEvidencePoolClock.empty()) {
+            ApeEvidencePoolClockEntry &ce = _apeEvidencePoolClock[_apeEvidencePoolClockWriteIndex];
+            ce.key = pairKey;
+            ce.epoch = epoch;
+            _apeEvidencePoolClockWriteIndex =
+                (_apeEvidencePoolClockWriteIndex + 1) % _apeEvidencePoolClock.size();
+        }
+
+        apeEvidencePoolClockEvict();
+    }
+
+    void Model::apeEvidencePoolClockEvict() {
+        constexpr size_t kMaxPools = MaxTransitionLogSize;
+        if (_apeEvidencePoolClock.empty()) {
+            return;
+        }
+        if (_apeEvidencePools.size() <= kMaxPools) {
+            return;
+        }
+
+        size_t scanned = 0;
+        const size_t clockSize = _apeEvidencePoolClock.size();
+        while (_apeEvidencePools.size() > kMaxPools && scanned < clockSize) {
+            ApeEvidencePoolClockEntry &victim = _apeEvidencePoolClock[_apeEvidencePoolClockEvictIndex];
+            _apeEvidencePoolClockEvictIndex =
+                (_apeEvidencePoolClockEvictIndex + 1) % _apeEvidencePoolClock.size();
+            ++scanned;
+
+            if (victim.epoch == 0) {
+                continue;
+            }
+
+            auto itV = _apeEvidencePools.find(victim.key);
+            if (itV == _apeEvidencePools.end()) {
+                victim.epoch = 0;
+                continue;
+            }
+
+            if (itV->second.lastTouchEpoch != victim.epoch) {
+                continue;
+            }
+
+            _ape_correctness_counters.evidence_pool_evict++;
+            _apeEvidencePools.erase(itV);
+            victim.epoch = 0;
+        }
+    }
+
     void Model::apeClearTransitionAggregationForActivity(const std::string &actKeyCanonical) {
         for (auto &slot : _apeTransitionLog) {
             if (slot.valid && slot.sourceActivity == actKeyCanonical) {
+                _apeEvidencePools.erase(ApePairKey{slot.sourceKeyHash, slot.actionHash});
                 apePairAggRemove(slot);
                 slot.valid = false;
             }
@@ -1377,6 +1621,309 @@ namespace fastbotx {
                 ++it;
             }
         }
+    }
+
+    void Model::apeMiniHistoryTouchState(const std::string &activityKeyCanonical, uintptr_t stateHash) {
+        if (activityKeyCanonical.empty() || stateHash == 0) {
+            return;
+        }
+        _apeMiniHistoryByActivity[activityKeyCanonical].touchState(stateHash);
+    }
+
+    void Model::apeMiniHistoryRecordTransition(const std::string &activityKeyCanonical,
+                                               const ApeTransitionEntry &e) {
+        if (activityKeyCanonical.empty() || !e.valid) {
+            return;
+        }
+        ApeMiniHistory &h = _apeMiniHistoryByActivity[activityKeyCanonical];
+        h.touchState(e.sourceStateHash);
+        h.touchState(e.targetStateHash);
+        ApeMiniHistoryTransition t;
+        t.sourceStateHash = e.sourceStateHash;
+        t.targetStateHash = e.targetStateHash;
+        t.actionType = e.actionType;
+        t.hasTargetBounds = e.hasTargetBounds;
+        t.targetBounds = e.targetBounds;
+        t.hasTargetFullPath = e.hasTargetFullPath;
+        t.targetFullPathHash = e.targetFullPathHash;
+        t.valid = true;
+        h.pushTransition(t);
+    }
+
+    void Model::apeInsertTransitionEntryNoRefine(const ApeTransitionEntry &e) {
+        if (!e.valid || _apeTransitionLog.empty()) {
+            return;
+        }
+        ApeTransitionEntry &slot = _apeTransitionLog[_apeTransitionLogWriteIndex];
+        if (slot.valid) {
+            apePairAggRemove(slot);
+        }
+        slot = e;
+        apePairAggAdd(slot);
+        apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot);
+        _apeTransitionLogWriteIndex = (_apeTransitionLogWriteIndex + 1) % _apeTransitionLog.size();
+    }
+
+    bool Model::apeLocalRebuildFromHistoryIfNeeded(const std::string &activityKeyCanonical,
+                                                   const char *reason) {
+        if (!_graph || activityKeyCanonical.empty()) {
+            return false;
+        }
+        ApeActivityRebuildStats &st = _apeRebuildStatsByActivity[activityKeyCanonical];
+        const uint64_t now = static_cast<uint64_t>(_graph->getTimestamp());
+        constexpr uint64_t kMinInterval = 500;
+        if (st.lastRebuildTimestamp != 0 && now > st.lastRebuildTimestamp &&
+            (now - st.lastRebuildTimestamp) < kMinInterval) {
+            return false;
+        }
+        const double ratio =
+            st.actionBlacklistChecks > 0
+                ? (static_cast<double>(st.actionBlacklistHits) /
+                   static_cast<double>(st.actionBlacklistChecks))
+                : 0.0;
+        constexpr int kMinConsecutiveRollbacks = 2;
+        constexpr int kMinActionChecks = 20;
+        constexpr double kMinActionRatio = 0.7;
+        const bool triggerByRollback = st.consecutiveRollbacks >= kMinConsecutiveRollbacks;
+        const bool triggerByActionBlk =
+            (st.actionBlacklistChecks >= kMinActionChecks && ratio >= kMinActionRatio);
+        if (!triggerByRollback && !triggerByActionBlk) {
+            return false;
+        }
+        if (!apeLocalRebuildFromHistory(activityKeyCanonical)) {
+            return false;
+        }
+        st.lastRebuildTimestamp = now;
+        st.consecutiveRollbacks = 0;
+        st.actionBlacklistChecks = 0;
+        st.actionBlacklistHits = 0;
+        BLOG("ape naming: local rebuild activity=%s reason=%s", activityKeyCanonical.c_str(),
+             reason ? reason : "(unknown)");
+        return true;
+    }
+
+    bool Model::apeLocalRebuildFromHistory(const std::string &activityKeyCanonical) {
+#if !defined(FASTBOT_HAS_PUGIXML) || !FASTBOT_HAS_PUGIXML
+        (void)activityKeyCanonical;
+        return false;
+#else
+        if (!_graph || activityKeyCanonical.empty()) {
+            return false;
+        }
+        if (!_preference || !_preference->useApeNamingCandidateTransitionReplay()) {
+            return false;
+        }
+        const bool wantApeRlIdentity = !_preference->useStaticReuseAbstraction();
+        if (!wantApeRlIdentity) {
+            return false;
+        }
+        auto itH = _apeMiniHistoryByActivity.find(activityKeyCanonical);
+        if (itH == _apeMiniHistoryByActivity.end()) {
+            return false;
+        }
+        const ApeMiniHistory &hist = itH->second;
+
+        // Snapshot minimal XML history before clearing states.
+        std::unordered_map<uintptr_t, std::string> xmlByOldStateHash;
+        xmlByOldStateHash.reserve(64);
+        auto snapXml = [&](uintptr_t sh) {
+            if (sh == 0) {
+                return;
+            }
+            if (xmlByOldStateHash.find(sh) != xmlByOldStateHash.end()) {
+                return;
+            }
+            auto itX = _apeStateXmlByStateHash.find(sh);
+            if (itX == _apeStateXmlByStateHash.end() || itX->second.empty()) {
+                return;
+            }
+            xmlByOldStateHash.emplace(sh, itX->second);
+        };
+        for (uintptr_t sh : hist.stateHashes) {
+            snapXml(sh);
+        }
+        for (const auto &t : hist.transitions) {
+            if (!t.valid) {
+                continue;
+            }
+            snapXml(t.sourceStateHash);
+            snapXml(t.targetStateHash);
+        }
+        if (xmlByOldStateHash.empty()) {
+            return false;
+        }
+
+        std::vector<std::string> xmlList;
+        xmlList.reserve(32);
+        std::unordered_set<uintptr_t> seenXmlHash;
+        seenXmlHash.reserve(64);
+        for (const auto &kv : xmlByOldStateHash) {
+            const std::string &xml = kv.second;
+            const uintptr_t xh = fastStringHash(xml);
+            if (seenXmlHash.insert(xh).second) {
+                xmlList.push_back(xml);
+                if (xmlList.size() >= 24) {
+                    break;
+                }
+            }
+        }
+        if (xmlList.empty()) {
+            return false;
+        }
+
+        // Remove all states for this activity.
+        std::unordered_set<uintptr_t> toRemove;
+        toRemove.reserve(128);
+        for (const auto &kv : _ape_state_keys_by_hash) {
+            const uintptr_t sh = kv.first;
+            for (const auto &k : kv.second) {
+                if (k.activity() == activityKeyCanonical) {
+                    toRemove.insert(sh);
+                    break;
+                }
+            }
+        }
+        for (const auto &s : _graph->getStates()) {
+            if (!s || toRemove.count(s->hash()) == 0) {
+                continue;
+            }
+            for (const auto &a : s->getActions()) {
+                if (a) {
+                    _apeInvalidatedReuseActionHashes.insert(a->hash());
+                }
+            }
+        }
+        _graph->removeStatesByHash(toRemove);
+        for (uintptr_t sh : toRemove) {
+            _ape_state_keys_by_hash.erase(sh);
+            _apeGuiTreeNamingBlacklist.erase(sh);
+            _apeStateXmlByStateHash.erase(sh);
+        }
+        apeClearTransitionAggregationForActivity(activityKeyCanonical);
+
+        // Reset history to track rebuilt state hashes.
+        _apeMiniHistoryByActivity[activityKeyCanonical] = ApeMiniHistory{};
+        ApeMiniHistory &newHist = _apeMiniHistoryByActivity[activityKeyCanonical];
+
+        AbstractAgentPtr agent = getOrCreateAgent(ModelConstants::DefaultDeviceID);
+        if (!agent) {
+            return false;
+        }
+        stringPtr activityPtr = getOrCreateActivityPtr(activityKeyCanonical);
+
+        std::unordered_map<uintptr_t, StatePtr> stateByXmlHash;
+        stateByXmlHash.reserve(xmlList.size() * 2);
+        for (const std::string &xml : xmlList) {
+            ElementPtr elem = Element::createFromXml(xml);
+            if (!elem) {
+                continue;
+            }
+            StatePtr built = buildStateOnly(elem, agent, activityPtr);
+            if (!built) {
+                continue;
+            }
+            naming::StateKey apeKey = naming::StateKey::fromParts(activityKeyCanonical, nullptr, {});
+            const bool haveKey =
+                buildApeStateKeyFromElementTree(elem, activityKeyCanonical, &apeKey, nullptr, built);
+            if (haveKey) {
+                built->applyDynamicAbstractionIdentityHash(apeKey.hash());
+            }
+            StatePtr canonical = _graph->addState(built);
+            if (haveKey) {
+                recordApeStateKey(canonical, apeKey);
+            }
+            _apeStateXmlByStateHash[canonical->hash()] = xml;
+            newHist.touchState(canonical->hash());
+            stateByXmlHash[fastStringHash(xml)] = canonical;
+        }
+
+        for (const auto &t : hist.transitions) {
+            if (!t.valid) {
+                continue;
+            }
+            auto itSx = xmlByOldStateHash.find(t.sourceStateHash);
+            auto itTx = xmlByOldStateHash.find(t.targetStateHash);
+            if (itSx == xmlByOldStateHash.end() || itTx == xmlByOldStateHash.end()) {
+                continue;
+            }
+            StatePtr srcState = nullptr;
+            StatePtr tgtState = nullptr;
+            {
+                const uintptr_t hs = fastStringHash(itSx->second);
+                auto it = stateByXmlHash.find(hs);
+                if (it != stateByXmlHash.end()) {
+                    srcState = it->second;
+                }
+            }
+            {
+                const uintptr_t ht = fastStringHash(itTx->second);
+                auto it = stateByXmlHash.find(ht);
+                if (it != stateByXmlHash.end()) {
+                    tgtState = it->second;
+                }
+            }
+            if (!srcState || !tgtState) {
+                continue;
+            }
+
+            ActivityStateActionPtr matchedAction;
+            for (const auto &a : srcState->getActions()) {
+                auto asa = std::dynamic_pointer_cast<ActivityStateAction>(a);
+                if (!asa) {
+                    continue;
+                }
+                if (asa->getActionType() != t.actionType) {
+                    continue;
+                }
+                if (t.hasTargetBounds) {
+                    auto w = asa->getTarget();
+                    if (!w || !w->getBounds() || !(*w->getBounds() == t.targetBounds)) {
+                        continue;
+                    }
+                }
+                if (t.hasTargetFullPath) {
+                    auto ana = std::dynamic_pointer_cast<ActivityNameAction>(asa);
+                    if (ana && ana->getApeDynamicTargetFullPathHash() != t.targetFullPathHash) {
+                        continue;
+                    }
+                }
+                matchedAction = asa;
+                break;
+            }
+            if (!matchedAction) {
+                continue;
+            }
+
+            naming::StateKey srcKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+            naming::StateKey tgtKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+            if (!tryGetApeStateKey(srcState->hash(), &srcKey) ||
+                !tryGetApeStateKey(tgtState->hash(), &tgtKey)) {
+                continue;
+            }
+
+            ApeTransitionEntry e;
+            e.sourceKeyHash = srcKey.hash();
+            e.hasSourceStateKey = true;
+            e.sourceStateKey = srcKey;
+            e.actionHash = matchedAction->hash();
+            e.targetKeyHash = tgtKey.hash();
+            e.hasTargetStateKey = true;
+            e.targetStateKey = tgtKey;
+            e.sourceStateHash = srcState->hash();
+            e.targetStateHash = tgtState->hash();
+            e.actionType = matchedAction->getActionType();
+            e.hasTargetBounds = t.hasTargetBounds;
+            e.targetBounds = t.targetBounds;
+            e.hasTargetFullPath = t.hasTargetFullPath;
+            e.targetFullPathHash = t.targetFullPathHash;
+            e.sourceActivity = activityKeyCanonical;
+            e.valid = true;
+            apeInsertTransitionEntryNoRefine(e);
+        }
+
+        notifyAgentsOfApeNamingChange();
+        return true;
+#endif
     }
 
     void Model::notifyAgentsOfApeNamingChange() {
@@ -1395,8 +1942,15 @@ namespace fastbotx {
         }
         size_t count = 0;
         for (const auto &kv : _ape_state_keys_by_hash) {
-            const naming::StateKey &k = kv.second;
-            if (k.activity() == activityKeyCanonical && k.namingFingerprint() == namingFingerprint) {
+            const auto &bucket = kv.second;
+            bool match = false;
+            for (const auto &k : bucket) {
+                if (k.activity() == activityKeyCanonical && k.namingFingerprint() == namingFingerprint) {
+                    match = true;
+                    break;
+                }
+            }
+            if (match) {
                 ++count;
             }
         }
@@ -1404,16 +1958,28 @@ namespace fastbotx {
     }
 
     void Model::pruneStaleApeStatesForActivity(const std::string &activityKeyCanonical,
-                                               const std::string &staleNamingFingerprint) {
+                                               const std::string &staleNamingFingerprint,
+                                               const std::unordered_set<uintptr_t> *affectedStateHashes) {
         if (!_graph || activityKeyCanonical.empty() || staleNamingFingerprint.empty()) {
             return;
         }
         std::unordered_set<uintptr_t> staleStateHashes;
         staleStateHashes.reserve(64);
+        const bool filterActive = (affectedStateHashes && !affectedStateHashes->empty());
         for (const auto &kv : _ape_state_keys_by_hash) {
             const uintptr_t stateHash = kv.first;
-            const naming::StateKey &k = kv.second;
-            if (k.activity() == activityKeyCanonical && k.namingFingerprint() == staleNamingFingerprint) {
+            if (filterActive && affectedStateHashes->count(stateHash) == 0) {
+                continue;
+            }
+            const auto &bucket = kv.second;
+            bool match = false;
+            for (const auto &k : bucket) {
+                if (k.activity() == activityKeyCanonical && k.namingFingerprint() == staleNamingFingerprint) {
+                    match = true;
+                    break;
+                }
+            }
+            if (match) {
                 staleStateHashes.insert(stateHash);
             }
         }
@@ -1434,10 +2000,41 @@ namespace fastbotx {
         }
         const size_t removedFromGraph = _graph->removeStatesByHash(staleStateHashes);
         (void)removedFromGraph;
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        // Q8 (local rebuild): keep cached XML for states referenced by the per-activity mini-history,
+        // even if the corresponding Graph states are pruned, so that later local rebuild can
+        // still snapshot and replay these recent trees/transitions.
+        const ApeMiniHistory *histKeep = nullptr;
+        auto itHistKeep = _apeMiniHistoryByActivity.find(activityKeyCanonical);
+        if (itHistKeep != _apeMiniHistoryByActivity.end()) {
+            histKeep = &itHistKeep->second;
+        }
+        auto shouldKeepXml = [&](uintptr_t sh) -> bool {
+            if (!histKeep) {
+                return false;
+            }
+            for (uintptr_t h : histKeep->stateHashes) {
+                if (h == sh) {
+                    return true;
+                }
+            }
+            for (const auto &t : histKeep->transitions) {
+                if (!t.valid) {
+                    continue;
+                }
+                if (t.sourceStateHash == sh || t.targetStateHash == sh) {
+                    return true;
+                }
+            }
+            return false;
+        };
+#endif
         for (uintptr_t sh : staleStateHashes) {
             _ape_state_keys_by_hash.erase(sh);
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-            _apeStateXmlByStateHash.erase(sh);
+            if (!shouldKeepXml(sh)) {
+                _apeStateXmlByStateHash.erase(sh);
+            }
 #endif
             _apeGuiTreeNamingBlacklist.erase(sh);
         }
@@ -1696,13 +2293,33 @@ namespace fastbotx {
             if (itBlk != _apeRefinePairBlacklist.end() && itBlk->second.count(pairKey) != 0) {
                 BDLOG("ape naming: skip refine activity=%s reason=trigger pair blacklisted srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
+                if (shouldLogApeDiagSample(std::string("skip_pair_blacklist#") + actKey, 20)) {
+                    BLOG("ape naming: diag skip-summary activity=%s reason=pair_blacklisted srcKey=%lu act=%lu nonDetPairs=%d domTargets=%zu",
+                         activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                         (unsigned long)dominantActionHash, nonDetPairs, dominantPairTargets);
+                }
                 return false;
             }
             auto itActionBlk = _apeRefineActionBlacklist.find(actKey);
+            ApeActivityRebuildStats &st = _apeRebuildStatsByActivity[actKey];
+            if (dominantActionHash != 0) {
+                ++st.actionBlacklistChecks;
+            }
             if (itActionBlk != _apeRefineActionBlacklist.end() &&
                 itActionBlk->second.count(dominantActionHash) != 0) {
+                if (dominantActionHash != 0) {
+                    ++st.actionBlacklistHits;
+                }
+                (void)apeLocalRebuildFromHistoryIfNeeded(actKey, "action_blacklist");
                 BDLOG("ape naming: skip refine activity=%s reason=trigger action blacklisted act=%lu",
                       activity.c_str(), (unsigned long)dominantActionHash);
+                if (shouldLogApeDiagSample(std::string("skip_action_blacklist#") + actKey, 20)) {
+                    const size_t blkSize = (itActionBlk == _apeRefineActionBlacklist.end()) ? 0 : itActionBlk->second.size();
+                    BLOG("ape naming: diag skip-summary activity=%s reason=action_blacklisted act=%lu checks=%d hits=%d blacklistSize=%zu nonDetPairs=%d domTargets=%zu",
+                         activity.c_str(), (unsigned long)dominantActionHash,
+                         st.actionBlacklistChecks, st.actionBlacklistHits, blkSize,
+                         nonDetPairs, dominantPairTargets);
+                }
                 return false;
             }
         }
@@ -1710,6 +2327,10 @@ namespace fastbotx {
         if (nonDetPairs < minNonDetPairs) {
             BDLOG("ape naming: skip refine activity=%s reason=nonDetPairs<%d (%d)",
                   activity.c_str(), minNonDetPairs, nonDetPairs);
+            if (shouldLogApeDiagSample(std::string("skip_non_det_pairs#") + actKey, 20)) {
+                BLOG("ape naming: diag skip-summary activity=%s reason=nonDetPairs now=%d min=%d",
+                     activity.c_str(), nonDetPairs, minNonDetPairs);
+            }
             return false;
         }
         const int minNonDetPairDelta =
@@ -1720,6 +2341,10 @@ namespace fastbotx {
             if (nonDetPairs < lastPairs + minNonDetPairDelta) {
                 BDLOG("ape naming: skip refine activity=%s reason=nonDetPairDelta<%d (now=%d,last=%d)",
                       activity.c_str(), minNonDetPairDelta, nonDetPairs, lastPairs);
+                if (shouldLogApeDiagSample(std::string("skip_non_det_delta#") + actKey, 20)) {
+                    BLOG("ape naming: diag skip-summary activity=%s reason=nonDetPairDelta now=%d last=%d minDelta=%d",
+                         activity.c_str(), nonDetPairs, lastPairs, minNonDetPairDelta);
+                }
                 return false;
             }
         }
@@ -1738,6 +2363,10 @@ namespace fastbotx {
         if (activityStateCount < static_cast<size_t>(minStates)) {
             BDLOG("ape naming: skip refine activity=%s reason=stateCount<%d (%zu)",
                   activity.c_str(), minStates, activityStateCount);
+            if (shouldLogApeDiagSample(std::string("skip_state_count#") + actKey, 20)) {
+                BLOG("ape naming: diag skip-summary activity=%s reason=stateCount now=%zu min=%d",
+                     activity.c_str(), activityStateCount, minStates);
+            }
             return false;
         }
         const int minStateDelta = (_preference ? _preference->getApeNamingActionRefineMinStateDelta() : 1);
@@ -1746,6 +2375,10 @@ namespace fastbotx {
             if (activityStateCount < lastCount + static_cast<size_t>(minStateDelta)) {
                 BDLOG("ape naming: skip refine activity=%s reason=stateDelta<%d (now=%zu,last=%zu)",
                       activity.c_str(), minStateDelta, activityStateCount, lastCount);
+                if (shouldLogApeDiagSample(std::string("skip_state_delta#") + actKey, 20)) {
+                    BLOG("ape naming: diag skip-summary activity=%s reason=stateDelta now=%zu last=%zu minDelta=%d",
+                         activity.c_str(), activityStateCount, lastCount, minStateDelta);
+                }
                 return false;
             }
         }
@@ -1847,73 +2480,71 @@ namespace fastbotx {
         };
         std::vector<uintptr_t> guiTreeBlacklistCheckHashes;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+        // Build keyHash -> stateHash list once (avoid repeated graph scans in replay/blacklist selection).
+        std::unordered_map<uintptr_t, std::vector<uintptr_t>> stateHashesByKeyHash;
+        stateHashesByKeyHash.reserve(64);
+        for (const auto &sp : getGraph()->getStates()) {
+            if (!sp) {
+                continue;
+            }
+            uintptr_t kH = 0;
+            if (tryGetApeStateKeyHash(sp->hash(), &kH)) {
+                stateHashesByKeyHash[kH].push_back(sp->hash());
+            }
+        }
         std::vector<uintptr_t> triggerSourceStateHashesForReplay;
         if (dominantSourceKeyHash != 0) {
-            for (const auto &sp : getGraph()->getStates()) {
-                if (!sp) {
-                    continue;
-                }
-                auto ap = sp->getActivityString();
-                const std::string a =
-                    (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                if (a != actKey) {
-                    continue;
-                }
-                uintptr_t kH = 0;
-                if (tryGetApeStateKeyHash(sp->hash(), &kH) && kH == dominantSourceKeyHash) {
-                    triggerSourceStateHashesForReplay.push_back(sp->hash());
-                }
+            auto itSrc = stateHashesByKeyHash.find(dominantSourceKeyHash);
+            if (itSrc != stateHashesByKeyHash.end()) {
+                triggerSourceStateHashesForReplay = itSrc->second;
             }
         }
         guiTreeBlacklistCheckHashes = triggerSourceStateHashesForReplay;
         bool replayActive = false;
         std::string replaySrcXml;
-        std::vector<std::string> replayTgtXmls;
+        uintptr_t replaySrcStateHash = 0;
+        std::vector<uintptr_t> replayTgtStateHashes;
         if (_preference && _preference->useApeNamingCandidateTransitionReplay() &&
             dominantPairTargets >= static_cast<size_t>(minTargets) && dominantSourceKeyHash != 0 &&
             !dominantTargetKeyHashes.empty()) {
-            auto findStateHashForApeKey = [&](uintptr_t keyH) -> uintptr_t {
-                for (const auto &sp : getGraph()->getStates()) {
-                    if (!sp) {
-                        continue;
-                    }
-                    auto ap = sp->getActivityString();
-                    const std::string a =
-                        (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                    if (a != actKey) {
-                        continue;
-                    }
-                    uintptr_t kH = 0;
-                    if (tryGetApeStateKeyHash(sp->hash(), &kH) && kH == keyH) {
-                        return sp->hash();
+            auto findRepresentativeStateHashForKey = [&](uintptr_t keyH) -> uintptr_t {
+                auto it = stateHashesByKeyHash.find(keyH);
+                if (it == stateHashesByKeyHash.end()) {
+                    return static_cast<uintptr_t>(0);
+                }
+                // Prefer one with cached XML (replay requires XML).
+                for (uintptr_t sh : it->second) {
+                    auto itXml = _apeStateXmlByStateHash.find(sh);
+                    if (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty()) {
+                        return sh;
                     }
                 }
-                return static_cast<uintptr_t>(0);
+                return it->second.empty() ? static_cast<uintptr_t>(0) : it->second.front();
             };
-            const uintptr_t srcSh = findStateHashForApeKey(dominantSourceKeyHash);
-            if (srcSh != 0) {
-                auto itS = _apeStateXmlByStateHash.find(srcSh);
+            replaySrcStateHash = findRepresentativeStateHashForKey(dominantSourceKeyHash);
+            if (replaySrcStateHash != 0) {
+                auto itS = _apeStateXmlByStateHash.find(replaySrcStateHash);
                 if (itS != _apeStateXmlByStateHash.end() && !itS->second.empty()) {
                     replaySrcXml = itS->second;
                 }
             }
-            replayTgtXmls.reserve(dominantTargetKeyHashes.size());
+            replayTgtStateHashes.reserve(dominantTargetKeyHashes.size());
             for (uintptr_t th : dominantTargetKeyHashes) {
-                const uintptr_t tsh = findStateHashForApeKey(th);
+                const uintptr_t tsh = findRepresentativeStateHashForKey(th);
                 if (tsh == 0) {
                     continue;
                 }
                 auto itT = _apeStateXmlByStateHash.find(tsh);
                 if (itT != _apeStateXmlByStateHash.end() && !itT->second.empty()) {
-                    replayTgtXmls.push_back(itT->second);
+                    replayTgtStateHashes.push_back(tsh);
                 }
             }
             replayActive =
-                !replaySrcXml.empty() && replayTgtXmls.size() == dominantTargetKeyHashes.size() &&
-                replayTgtXmls.size() >= static_cast<size_t>(minTargets);
+                !replaySrcXml.empty() && replayTgtStateHashes.size() == dominantTargetKeyHashes.size() &&
+                replayTgtStateHashes.size() >= static_cast<size_t>(minTargets);
             if (!replayActive && dominantPairTargets >= static_cast<size_t>(minTargets)) {
                 BDLOG("ape naming: replay skipped activity=%s haveSrcXml=%d tgtXml=%zu needTgt=%zu",
-                      activity.c_str(), replaySrcXml.empty() ? 0 : 1, replayTgtXmls.size(),
+                      activity.c_str(), replaySrcStateHash != 0 ? 1 : 0, replayTgtStateHashes.size(),
                       dominantTargetKeyHashes.size());
             }
         }
@@ -1946,22 +2577,13 @@ namespace fastbotx {
             std::unordered_set<uintptr_t> seenGtb(guiTreeBlacklistCheckHashes.begin(),
                                                   guiTreeBlacklistCheckHashes.end());
             for (uintptr_t tkh : dominantTargetKeyHashes) {
-                for (const auto &sp : getGraph()->getStates()) {
-                    if (!sp) {
-                        continue;
-                    }
-                    auto ap = sp->getActivityString();
-                    const std::string a2 =
-                        (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                    if (a2 != actKey) {
-                        continue;
-                    }
-                    uintptr_t k2H = 0;
-                    if (tryGetApeStateKeyHash(sp->hash(), &k2H) && k2H == tkh) {
-                        const uintptr_t sh = sp->hash();
-                        if (seenGtb.insert(sh).second) {
-                            guiTreeBlacklistCheckHashes.push_back(sh);
-                        }
+                auto it = stateHashesByKeyHash.find(tkh);
+                if (it == stateHashesByKeyHash.end()) {
+                    continue;
+                }
+                for (uintptr_t sh : it->second) {
+                    if (seenGtb.insert(sh).second) {
+                        guiTreeBlacklistCheckHashes.push_back(sh);
                     }
                 }
             }
@@ -2128,16 +2750,45 @@ namespace fastbotx {
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
             if (replayActive) {
                 e.replayUsed = true;
+                std::unordered_map<uintptr_t, uintptr_t> replayKeyCacheCur;
+                // Local memoization: avoid repeated XML parse + rebuildTree for the same (stateHash, naming).
+                std::unordered_map<uintptr_t, uintptr_t> keyCacheCand;
+                keyCacheCand.reserve(replayTgtStateHashes.size() + triggerSourceStateHashesForReplay.size() + 8);
+                auto getApeKeyHashForStateHash = [&](const naming::NamingPtr &nm,
+                                                     std::unordered_map<uintptr_t, uintptr_t> &cache,
+                                                     uintptr_t sh,
+                                                     uintptr_t *out) -> bool {
+                    if (!out || !nm || sh == 0) {
+                        return false;
+                    }
+                    auto it = cache.find(sh);
+                    if (it != cache.end()) {
+                        *out = it->second;
+                        return true;
+                    }
+                    auto itXml = _apeStateXmlByStateHash.find(sh);
+                    if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
+                        return false;
+                    }
+                    uintptr_t h = 0;
+                    if (!apeStateHashFromXmlWithNaming(activity, itXml->second, nm, &h)) {
+                        return false;
+                    }
+                    cache.emplace(sh, h);
+                    *out = h;
+                    return true;
+                };
                 uintptr_t srcKeyCandH = 0;
                 uintptr_t srcKeyCurH = 0;
-                if (apeStateHashFromXmlWithNaming(activity, replaySrcXml, cand, &srcKeyCandH) &&
-                    apeStateHashFromXmlWithNaming(activity, replaySrcXml, cur, &srcKeyCurH)) {
+                if (getApeKeyHashForStateHash(cand, keyCacheCand, replaySrcStateHash, &srcKeyCandH) &&
+                    getApeKeyHashForStateHash(cur, replayKeyCacheCur, replaySrcStateHash, &srcKeyCurH)) {
                     e.replaySourceChanged = (srcKeyCandH != srcKeyCurH) ? 1 : 0;
                 }
                 std::unordered_set<uintptr_t> uniqTgt;
-                for (const auto &tx : replayTgtXmls) {
+                uniqTgt.reserve(replayTgtStateHashes.size() * 2 + 1);
+                for (uintptr_t tsh : replayTgtStateHashes) {
                     uintptr_t tkH = 0;
-                    if (apeStateHashFromXmlWithNaming(activity, tx, cand, &tkH)) {
+                    if (getApeKeyHashForStateHash(cand, keyCacheCand, tsh, &tkH)) {
                         uniqTgt.insert(tkH);
                     }
                 }
@@ -2147,23 +2798,17 @@ namespace fastbotx {
 
                 // APE checkStateRefinement partition sizes: |states1| (source transition trees) + |states2| (targets).
                 std::unordered_set<uintptr_t> srcKeysUnderCand;
+                srcKeysUnderCand.reserve(triggerSourceStateHashesForReplay.size() * 2 + 1);
                 for (uintptr_t sh : triggerSourceStateHashesForReplay) {
-                    auto itXml = _apeStateXmlByStateHash.find(sh);
-                    if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
-                        continue;
-                    }
                     uintptr_t skH = 0;
-                    if (apeStateHashFromXmlWithNaming(activity, itXml->second, cand, &skH)) {
-                        srcKeysUnderCand.insert(skH);
-                    }
-                }
-                if (srcKeysUnderCand.empty() && !replaySrcXml.empty()) {
-                    uintptr_t skH = 0;
-                    if (apeStateHashFromXmlWithNaming(activity, replaySrcXml, cand, &skH)) {
+                    if (getApeKeyHashForStateHash(cand, keyCacheCand, sh, &skH)) {
                         srcKeysUnderCand.insert(skH);
                     }
                 }
                 bool tgtIntersectsSrc = false;
+                if (srcKeysUnderCand.empty() && srcKeyCandH != 0) {
+                    srcKeysUnderCand.insert(srcKeyCandH);
+                }
                 for (uintptr_t th : uniqTgt) {
                     if (srcKeysUnderCand.count(th) != 0) {
                         tgtIntersectsSrc = true;
@@ -2173,8 +2818,7 @@ namespace fastbotx {
                 if (tgtIntersectsSrc) {
                     continue;
                 }
-                e.apePartitionStateCost =
-                    static_cast<int>(srcKeysUnderCand.size() + uniqTgt.size());
+                e.apePartitionStateCost = static_cast<int>(srcKeysUnderCand.size() + uniqTgt.size());
             }
 #endif
             // Match java.util.Predicate.Type order: STATE_ABSTRACTION before STATE_REFINEMENT.
@@ -2241,72 +2885,163 @@ namespace fastbotx {
         ctx.triggerTargetCountAtRefine = dominantPairTargets;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
         {
+            auto hasXml = [&](uintptr_t sh) -> bool {
+                auto itXml = _apeStateXmlByStateHash.find(sh);
+                return itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty();
+            };
             std::vector<std::vector<uintptr_t>> predParts;
-            std::vector<uintptr_t> partA;
             constexpr size_t kMaxSourcePartitionRepr = 2;
             constexpr size_t kMaxTargetPartitionParts = 4; // total target partitions (each by one tkh)
             constexpr size_t kMaxTargetPartitionReprPerKey = 2;
-            if (dominantSourceKeyHash != 0) {
-                for (const auto &sp : getGraph()->getStates()) {
-                    if (!sp) {
-                        continue;
+            bool builtFromEvidence = false;
+            if (dominantSourceKeyHash != 0 && dominantActionHash != 0) {
+                const ApePairKey triggerPairKey{dominantSourceKeyHash, dominantActionHash};
+                auto itPool = _apeEvidencePools.find(triggerPairKey);
+                if (itPool != _apeEvidencePools.end()) {
+                    std::vector<uintptr_t> partA;
+                    partA.reserve(kMaxSourcePartitionRepr);
+                    std::unordered_set<uintptr_t> seenSrc;
+                    seenSrc.reserve(8);
+                    struct TargetBucket {
+                        int count{0};
+                        std::vector<uintptr_t> repr;
+                    };
+                    std::unordered_map<uintptr_t, TargetBucket> buckets;
+                    buckets.reserve(8);
+
+                    itPool->second.forEach([&](const ApeEvidenceSample &s) {
+                        if (!s.valid) {
+                            return;
+                        }
+                        if (partA.size() < kMaxSourcePartitionRepr && hasXml(s.sourceStateHash)) {
+                            if (seenSrc.insert(s.sourceStateHash).second) {
+                                partA.push_back(s.sourceStateHash);
+                            }
+                        }
+                        if (dominantTargetKeyHashes.count(s.targetKeyHash) == 0) {
+                            return;
+                        }
+                        auto &b = buckets[s.targetKeyHash];
+                        b.count++;
+                        if (b.repr.size() < kMaxTargetPartitionReprPerKey && hasXml(s.targetStateHash)) {
+                            bool dup = false;
+                            for (uintptr_t h : b.repr) {
+                                if (h == s.targetStateHash) {
+                                    dup = true;
+                                    break;
+                                }
+                            }
+                            if (!dup) {
+                                b.repr.push_back(s.targetStateHash);
+                            }
+                        }
+                    });
+
+                    if (partA.size() >= 1) {
+                        predParts.push_back(std::move(partA));
                     }
-                    auto ap = sp->getActivityString();
-                    const std::string a =
-                        (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                    if (a != actKey) {
-                        continue;
+
+                    size_t targetPartitionsAdded = 0;
+                    std::vector<std::pair<uintptr_t, int>> targetOrder;
+                    targetOrder.reserve(buckets.size());
+                    for (const auto &kv : buckets) {
+                        if (!kv.second.repr.empty()) {
+                            targetOrder.emplace_back(kv.first, kv.second.count);
+                        }
                     }
-                    uintptr_t kH = 0;
-                    if (tryGetApeStateKeyHash(sp->hash(), &kH) && kH == dominantSourceKeyHash) {
-                        partA.push_back(sp->hash());
-                        if (partA.size() >= kMaxSourcePartitionRepr) {
+                    std::sort(targetOrder.begin(), targetOrder.end(),
+                              [](const auto &a, const auto &b) {
+                                  return a.second > b.second;
+                              });
+                    for (const auto &tc : targetOrder) {
+                        if (targetPartitionsAdded >= kMaxTargetPartitionParts) {
                             break;
+                        }
+                        auto itB = buckets.find(tc.first);
+                        if (itB == buckets.end() || itB->second.repr.empty()) {
+                            continue;
+                        }
+                        predParts.push_back(itB->second.repr);
+                        ++targetPartitionsAdded;
+                    }
+
+                    builtFromEvidence = predParts.size() >= 2;
+                }
+            }
+
+            if (!builtFromEvidence) {
+                predParts.clear();
+                std::vector<uintptr_t> partA;
+                if (dominantSourceKeyHash != 0) {
+                    for (const auto &sp : getGraph()->getStates()) {
+                        if (!sp) {
+                            continue;
+                        }
+                        if (!hasXml(sp->hash())) {
+                            continue;
+                        }
+                        auto ap = sp->getActivityString();
+                        const std::string a =
+                            (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
+                        if (a != actKey) {
+                            continue;
+                        }
+                        uintptr_t kH = 0;
+                        if (tryGetApeStateKeyHash(sp->hash(), &kH) &&
+                            kH == dominantSourceKeyHash) {
+                            partA.push_back(sp->hash());
+                            if (partA.size() >= kMaxSourcePartitionRepr) {
+                                break;
+                            }
                         }
                     }
                 }
-            }
-            if (partA.size() >= 1) {
-                predParts.push_back(std::move(partA));
-            }
-
-            size_t targetPartitionsAdded = 0;
-            for (uintptr_t tkh : dominantTargetKeyHashes) {
-                if (targetPartitionsAdded >= kMaxTargetPartitionParts) {
-                    break;
+                if (partA.size() >= 1) {
+                    predParts.push_back(std::move(partA));
                 }
-                std::vector<uintptr_t> partT;
-                for (const auto &sp : getGraph()->getStates()) {
-                    if (!sp) {
-                        continue;
+
+                size_t targetPartitionsAdded = 0;
+                for (uintptr_t tkh : dominantTargetKeyHashes) {
+                    if (targetPartitionsAdded >= kMaxTargetPartitionParts) {
+                        break;
                     }
-                    auto ap = sp->getActivityString();
-                    const std::string a2 =
-                        (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                    if (a2 != actKey) {
-                        continue;
-                    }
-                    uintptr_t k2H = 0;
-                    if (tryGetApeStateKeyHash(sp->hash(), &k2H) && k2H == tkh) {
-                        partT.push_back(sp->hash());
+                    std::vector<uintptr_t> partT;
+                    for (const auto &sp : getGraph()->getStates()) {
+                        if (!sp) {
+                            continue;
+                        }
+                        if(!hasXml(sp->hash())) {
+                            continue;
+                        }
+
+                        auto ap = sp->getActivityString();
+                        const std::string a2 =
+                            (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
+                        if (a2 != actKey) {
+                            continue;
+                        }
+                        uintptr_t k2H = 0;
+                        if (tryGetApeStateKeyHash(sp->hash(), &k2H) && k2H == tkh) {
+                            partT.push_back(sp->hash());
+                            if (partT.size() >= kMaxTargetPartitionReprPerKey) {
+                                break;
+                            }
+                        }
                         if (partT.size() >= kMaxTargetPartitionReprPerKey) {
                             break;
                         }
                     }
-                    if (partT.size() >= kMaxTargetPartitionReprPerKey) {
-                        break;
+                    if (!partT.empty()) {
+                        predParts.push_back(std::move(partT));
+                        ++targetPartitionsAdded;
                     }
-                }
-                if (!partT.empty()) {
-                    predParts.push_back(std::move(partT));
-                    ++targetPartitionsAdded;
                 }
             }
 
             if (predParts.size() >= 2) {
                 pushApeSourcePartitionPredicate(activity, next, std::move(predParts));
             }
-            if (dominantActionHash != 0 && triggerSourceStateHashesForReplay.size() >= 1) {
+            if (dominantActionHash != 0) {
                 // Java AssertActionDivergent2 partitions "resolved nodes" by the Name generated from @next.
                 // Native does not store ModelAction.resolvedNodes directly, so we approximate them by:
                 // 1) find the action target widget (matching dominantActionHash) for each source state;
@@ -2326,10 +3061,36 @@ namespace fastbotx {
                 // across other source states could under-collect resolved nodes.
                 // Extract a more stable identity (action type + target widget hash) from the first
                 // state where the full hash matches, then match by that identity for other states.
+                // Prefer evidence-driven source trees: those that actually executed (sourceKeyHash, actionSig).
+                std::vector<uintptr_t> actionPredSourceStateHashes;
+                actionPredSourceStateHashes.reserve(4);
+                {
+                    const ApePairKey triggerPairKey{dominantSourceKeyHash, dominantActionHash};
+                    auto itPool = _apeEvidencePools.find(triggerPairKey);
+                    if (itPool != _apeEvidencePools.end()) {
+                        std::unordered_set<uintptr_t> seen;
+                        seen.reserve(8);
+                        itPool->second.forEach([&](const ApeEvidenceSample &s) {
+                            if (actionPredSourceStateHashes.size() >= 4) {
+                                return;
+                            }
+                            if (!s.valid || !hasXml(s.sourceStateHash)) {
+                                return;
+                            }
+                            if (seen.insert(s.sourceStateHash).second) {
+                                actionPredSourceStateHashes.push_back(s.sourceStateHash);
+                            }
+                        });
+                    }
+                }
+                if (actionPredSourceStateHashes.empty()) {
+                    actionPredSourceStateHashes = triggerSourceStateHashesForReplay;
+                }
+
                 ActionType dominantActionType = ActionType::NOP;
                 uintptr_t dominantTargetWidgetHash = 0;
                 bool hasDominantActionIdentity = false;
-                for (uintptr_t repSh : triggerSourceStateHashesForReplay) {
+                for (uintptr_t repSh : actionPredSourceStateHashes) {
                     StatePtr repSp;
                     for (const auto &s : getGraph()->getStates()) {
                         if (s && s->hash() == repSh) {
@@ -2358,7 +3119,7 @@ namespace fastbotx {
                 }
 
                 size_t actionPredAdded = 0;
-                for (uintptr_t sh : triggerSourceStateHashesForReplay) {
+                for (uintptr_t sh : actionPredSourceStateHashes) {
                     if (actionPredAdded >= kMaxSrcForActionPred) {
                         break;
                     }
@@ -2528,25 +3289,69 @@ namespace fastbotx {
             _apeStateNamingManager->updateNamingWithStateKey(
                 actKey, naming::NamingUpdateKind::Refine, cur, next, ctx.triggerSourceKey);
         } else {
+            _ape_correctness_counters.naming_update_by_hash++;
             _apeStateNamingManager->updateNamingWithStateHash(
                 actKey, naming::NamingUpdateKind::Refine, cur, next, ctx.triggerSourceKeyHash);
         }
         invalidateApeGraphStateKeyDedupMap();
         std::vector<uintptr_t> repKeyHashes;
+        std::unordered_set<uintptr_t> focusOldKeyHashes;
+        std::unordered_set<uintptr_t> affectedTrees;
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
         if (ctx.triggerSourceKeyHash != 0) {
-            repKeyHashes.push_back(ctx.triggerSourceKeyHash);
-        }
-        for (uintptr_t th : ctx.triggerTargetKeyHashes) {
-            repKeyHashes.push_back(th);
-            if (repKeyHashes.size() >= 5) {
-                break;
+            // Q8/P0: build affected set from naming mismatch (oldH != newH) instead of only trigger bucket.
+            for (const auto &kv : _apeStateXmlByStateHash) {
+                const uintptr_t sh = kv.first;
+                const std::string &xml = kv.second;
+                if (xml.empty()) {
+                    continue;
+                }
+                auto itBucket = _ape_state_keys_by_hash.find(sh);
+                if (itBucket == _ape_state_keys_by_hash.end() || itBucket->second.empty()) {
+                    continue;
+                }
+                bool activityMatch = false;
+                for (const auto &k : itBucket->second) {
+                    if (k.activity() == actKey) {
+                        activityMatch = true;
+                        break;
+                    }
+                }
+                if (!activityMatch) {
+                    continue;
+                }
+                uintptr_t oldH = 0;
+                uintptr_t newH = 0;
+                if (!apeStateHashFromXmlWithNaming(activity, xml, cur, &oldH) ||
+                    !apeStateHashFromXmlWithNaming(activity, xml, next, &newH)) {
+                    continue;
+                }
+                if (oldH != newH) {
+                    focusOldKeyHashes.insert(oldH);
+                    affectedTrees.insert(sh);
+                }
             }
         }
-        if (!repKeyHashes.empty()) {
-            rebuildApeStateRepresentativesForKeyHashes(activity, cur, repKeyHashes, 2);
+#endif
+        repKeyHashes.reserve(8);
+        if (!focusOldKeyHashes.empty()) {
+            for (uintptr_t h : focusOldKeyHashes) {
+                repKeyHashes.push_back(h);
+                if (repKeyHashes.size() >= 8) {
+                    break;
+                }
+            }
+        } else if (ctx.triggerSourceKeyHash != 0) {
+            repKeyHashes.push_back(ctx.triggerSourceKeyHash);
         }
-        remapApeTransitionAggregationForActivity(activity, cur, next);
-        pruneStaleApeStatesForActivity(actKey, ctx.previousNamingFingerprintBeforeRefine);
+        if (!repKeyHashes.empty()) {
+            rebuildApeStateRepresentativesForKeyHashes(activity, cur, repKeyHashes, 1);
+        }
+        if (!focusOldKeyHashes.empty()) {
+            remapApeTransitionAggregationForActivity(activity, cur, next, &focusOldKeyHashes);
+        }
+        pruneStaleApeStatesForActivity(actKey, ctx.previousNamingFingerprintBeforeRefine,
+                                       affectedTrees.empty() ? nullptr : &affectedTrees);
         BLOG("ape naming: refine activity=%s", activity.c_str());
         return true;
     }
@@ -2595,21 +3400,34 @@ namespace fastbotx {
             }
             naming::StateKey apeKey = naming::StateKey::fromParts(
                 naming::StateKey::canonicalActivityString(rawActivity), nullptr, {});
+            ApeStateKeyBuildFailReason failReason = ApeStateKeyBuildFailReason::None;
             const bool haveApeKey = buildApeStateKeyFromElementTree(
-                elem, rawActivity, &apeKey, wantApeRlIdentity ? built : StatePtr());
+                elem, rawActivity, &apeKey, &failReason, wantApeRlIdentity ? built : StatePtr());
             if (haveApeKey) {
                 built->applyDynamicAbstractionIdentityHash(apeKey.hash());
             }
             StatePtr canonical = built;
             if (haveApeKey && _preference->useApeGraphDedupByStateKey()) {
                 const uintptr_t kh = apeKey.hash();
-                auto itDedup = _ape_graph_state_by_key.find(kh);
-                if (itDedup != _ape_graph_state_by_key.end()) {
-                    _graph->recordStateVisit(itDedup->second, built);
-                    canonical = itDedup->second;
-                } else {
+                bool deduped = false;
+                auto &bucket = _ape_graph_state_by_key[kh];
+                for (const auto &entry : bucket) {
+                    if (entry.key == apeKey) {
+                        _ape_correctness_counters.graph_dedup_exact_hit++;
+                        _graph->recordStateVisit(entry.state, built);
+                        canonical = entry.state;
+                        deduped = true;
+                        break;
+                    }
+                }
+                if (!deduped) {
+                    if (!bucket.empty()) {
+                        _ape_correctness_counters.graph_dedup_hash_collision++;
+                    }
                     canonical = _graph->addState(built);
-                    _ape_graph_state_by_key.emplace(kh, canonical);
+                    bucket.push_back(ApeGraphStateKeyDedupEntry{apeKey, canonical});
+                } else {
+                    _ape_correctness_counters.graph_dedup_hash_hit++;
                 }
             } else {
                 canonical = _graph->addState(built);
@@ -2624,9 +3442,13 @@ namespace fastbotx {
 
         auto keyHashSet = std::unordered_set<uintptr_t>(oldKeyHashes.begin(), oldKeyHashes.end());
         std::unordered_map<uintptr_t, size_t> rebuiltPerKey;
-        std::vector<std::string> xmlsToRebuild;
-        xmlsToRebuild.reserve(16);
+        std::unordered_set<uintptr_t> satisfiedKeys;
+        std::vector<uintptr_t> stateHashesToRebuild;
+        stateHashesToRebuild.reserve(16);
         for (const auto &kv : _apeStateXmlByStateHash) {
+            if (satisfiedKeys.size() >= keyHashSet.size()) {
+                break;
+            }
             const uintptr_t stateHash = kv.first;
             const std::string &xml = kv.second;
             if (xml.empty()) {
@@ -2648,13 +3470,21 @@ namespace fastbotx {
             }
             size_t &n = rebuiltPerKey[oldH];
             if (n >= maxStatesPerKeyHash) {
+                satisfiedKeys.insert(oldH);
                 continue;
             }
-            xmlsToRebuild.push_back(xml);
+            stateHashesToRebuild.push_back(stateHash);
             ++n;
+            if (n >= maxStatesPerKeyHash) {
+                satisfiedKeys.insert(oldH);
+            }
         }
-        for (const auto &xml : xmlsToRebuild) {
-            rebuildOneXml(xml);
+        for (uintptr_t sh : stateHashesToRebuild) {
+            auto it = _apeStateXmlByStateHash.find(sh);
+            if (it == _apeStateXmlByStateHash.end() || it->second.empty()) {
+                continue;
+            }
+            rebuildOneXml(it->second);
         }
 #endif
     }
@@ -2662,7 +3492,8 @@ namespace fastbotx {
     void Model::remapApeTransitionAggregationForActivity(
         const std::string &rawActivity,
         const naming::NamingPtr &fromNaming,
-        const naming::NamingPtr &toNaming) {
+        const naming::NamingPtr &toNaming,
+        const std::unordered_set<uintptr_t> *focusOldKeyHashes) {
 #if !defined(FASTBOT_HAS_PUGIXML) || !FASTBOT_HAS_PUGIXML
         (void)rawActivity;
         (void)fromNaming;
@@ -2673,6 +3504,18 @@ namespace fastbotx {
         }
         const std::string actKey = naming::StateKey::canonicalActivityString(rawActivity);
         const std::string &toFp = toNaming->fingerprintString();
+        const bool hasFocus = (focusOldKeyHashes && !focusOldKeyHashes->empty());
+
+        // Evidence pools are keyed by current (sourceKeyHash, actionSignature).
+        // Since remap mutates hashes in-place, drop old-space pools for this activity and rebuild
+        // from the remapped transition log.
+        if (!_apeEvidencePools.empty()) {
+            for (const auto &slot : _apeTransitionLog) {
+                if (slot.valid && slot.sourceActivity == actKey) {
+                    _apeEvidencePools.erase(ApePairKey{slot.sourceKeyHash, slot.actionHash});
+                }
+            }
+        }
 
         uint32_t fullMask = 0;
         for (auto t : naming::namerTypesUsed()) {
@@ -2680,94 +3523,174 @@ namespace fastbotx {
         }
         naming::NamerPtr fullNamer = naming::NamerFactory::current().getByMask(fullMask);
 
-        auto findRepresentativeStateHash = [&](uintptr_t keyHash) -> uintptr_t {
-            for (const auto &kv : _ape_state_keys_by_hash) {
-                const uintptr_t sh = kv.first;
-                const naming::StateKey &k = kv.second;
-                if (k.activity() == actKey && k.namingFingerprint() == toFp && k.hash() == keyHash) {
-                    return sh;
+        // Build keyHash -> representative stateHash map once (avoid O(|states|*|transitions|) scan).
+        std::unordered_map<uintptr_t, uintptr_t> representativeStateHashByKeyHash;
+        representativeStateHashByKeyHash.reserve(256);
+        for (const auto &kv : _ape_state_keys_by_hash) {
+            const uintptr_t sh = kv.first;
+            for (const auto &k : kv.second) {
+                if (k.activity() == actKey && k.namingFingerprint() == toFp) {
+                    representativeStateHashByKeyHash.emplace(k.hash(), sh);
                 }
             }
-            return 0;
+        }
+        auto findRepresentativeStateHash = [&](uintptr_t keyHash) -> uintptr_t {
+            auto it = representativeStateHashByKeyHash.find(keyHash);
+            return it == representativeStateHashByKeyHash.end() ? 0 : it->second;
         };
 
-        auto computeActionHash = [&](const std::string &xml, const ApeTransitionEntry &e,
-                                     uintptr_t *out) -> bool {
+        std::string pkg;
+        std::string cls;
+        naming::StateKey::splitActivityPackageClass(rawActivity, &pkg, &cls);
+
+        struct RemapTreeCacheEntry {
+            gui_tree::GUITreeBuildResult built;
+            std::vector<gui_tree::GUITreeNode *> preorder;
+            std::vector<uintptr_t> fullPathHashes;
+            std::vector<uintptr_t> xpathHashes;
+            std::vector<Rect> bounds;
+            bool ready{false};
+            bool hasStateKey{false};
+            naming::StateKey stateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        };
+
+        std::unordered_map<uintptr_t, RemapTreeCacheEntry> treeCache;
+        treeCache.reserve(64);
+        std::unordered_map<uintptr_t, uintptr_t> keyHashCache;
+        keyHashCache.reserve(128);
+
+        auto getTreeEntry = [&](uintptr_t stateHash, const std::string &xml,
+                                RemapTreeCacheEntry **out) -> bool {
+            if (!out || stateHash == 0 || xml.empty()) {
+                return false;
+            }
+            auto it = treeCache.find(stateHash);
+            if (it != treeCache.end()) {
+                *out = &it->second;
+                return it->second.ready;
+            }
+            RemapTreeCacheEntry entry;
+            entry.built = gui_tree::GUITreeFactory::buildFromXml(xml, pkg, cls);
+            if (!entry.built.tree || !entry.built.dom) {
+                treeCache.emplace(stateHash, std::move(entry));
+                *out = &treeCache.find(stateHash)->second;
+                return false;
+            }
+            if (!naming::NamingFactory::rebuildTree(toNaming, *entry.built.tree, entry.built.dom)) {
+                treeCache.emplace(stateHash, std::move(entry));
+                *out = &treeCache.find(stateHash)->second;
+                return false;
+            }
+            collectGUITreeNodesPreOrder(entry.built.tree->getRootNode(), &entry.preorder);
+            const size_t n = entry.preorder.size();
+            entry.fullPathHashes.assign(n, 0);
+            entry.xpathHashes.assign(n, 0);
+            entry.bounds.resize(n);
+            for (size_t i = 0; i < n; ++i) {
+                auto *node = entry.preorder[i];
+                if (!node) {
+                    continue;
+                }
+                entry.bounds[i] = node->getBounds();
+                if (auto nxp = node->getXPathName(); nxp) {
+                    const std::string xp = nxp->toXPath();
+                    if (!xp.empty()) {
+                        entry.xpathHashes[i] = fastStringHash(xp);
+                    }
+                }
+                if (fullNamer) {
+                    std::string fullKey = fullNamer->xpathKeyForNode(*node);
+                    if (fullKey.empty()) {
+                        if (naming::NamePtr fullName = fullNamer->naming(*node); fullName) {
+                            fullKey = fullName->toXPath();
+                        }
+                    }
+                    if (!fullKey.empty()) {
+                        entry.fullPathHashes[i] = fastStringHash(fullKey);
+                    }
+                }
+            }
+            entry.ready = true;
+            treeCache.emplace(stateHash, std::move(entry));
+            *out = &treeCache.find(stateHash)->second;
+            return true;
+        };
+
+        auto getStateKeyHashUnderToNaming = [&](uintptr_t stateHash, const std::string &xml,
+                                                uintptr_t *out) -> bool {
+            if (!out || stateHash == 0) {
+                return false;
+            }
+            auto it = keyHashCache.find(stateHash);
+            if (it != keyHashCache.end()) {
+                *out = it->second;
+                return true;
+            }
+            RemapTreeCacheEntry *entry = nullptr;
+            if (!getTreeEntry(stateHash, xml, &entry) || !entry || !entry->built.tree) {
+                return false;
+            }
+            const uintptr_t h = naming::StateKey::hashFromGUITree(*entry->built.tree);
+            keyHashCache.emplace(stateHash, h);
+            *out = h;
+            return true;
+        };
+
+        auto computeActionHash = [&](uintptr_t sourceStateHash, const std::string &xml,
+                                     const ApeTransitionEntry &e, uintptr_t *out) -> bool {
             if (!out) {
                 return false;
             }
             const uintptr_t activityH = fastStringHash(actKey);
             uintptr_t abstractTargetHash = 0x1;
             if (e.hasTargetFullPath || e.hasTargetBounds) {
-                std::string pkg;
-                std::string cls;
-                naming::StateKey::splitActivityPackageClass(rawActivity, &pkg, &cls);
-                gui_tree::GUITreeBuildResult built = gui_tree::GUITreeFactory::buildFromXml(xml, pkg, cls);
-                if (built.tree && built.dom) {
-                    if (naming::NamingFactory::rebuildTree(toNaming, *built.tree, built.dom)) {
-                        std::vector<gui_tree::GUITreeNode *> po;
-                        collectGUITreeNodesPreOrder(built.tree->getRootNode(), &po);
-                        gui_tree::GUITreeNode *matched = nullptr;
-                        if (e.hasTargetFullPath && fullNamer) {
-                            gui_tree::GUITreeNode *best = nullptr;
-                            long bestDist = 0;
-                            for (auto *node : po) {
-                                if (!node) {
-                                    continue;
-                                }
-                                std::string fullKey = fullNamer->xpathKeyForNode(*node);
-                                if (fullKey.empty()) {
-                                    if (naming::NamePtr fullName = fullNamer->naming(*node); fullName) {
-                                        fullKey = fullName->toXPath();
-                                    }
-                                }
-                                if (fullKey.empty()) {
-                                    continue;
-                                }
-                                if (fastStringHash(fullKey) != e.targetFullPathHash) {
-                                    continue;
-                                }
-                                if (!e.hasTargetBounds) {
-                                    matched = node;
-                                    break;
-                                }
-                                const Rect b = node->getBounds();
-                                const long cx = static_cast<long>(b.left + (b.right - b.left) / 2);
-                                const long cy = static_cast<long>(b.top + (b.bottom - b.top) / 2);
-                                const long tx =
-                                    static_cast<long>(e.targetBounds.left + (e.targetBounds.right - e.targetBounds.left) / 2);
-                                const long ty =
-                                    static_cast<long>(e.targetBounds.top + (e.targetBounds.bottom - e.targetBounds.top) / 2);
-                                const long dx = (cx > tx) ? (cx - tx) : (tx - cx);
-                                const long dy = (cy > ty) ? (cy - ty) : (ty - cy);
-                                const long dist = dx + dy;
-                                if (!best || dist < bestDist) {
-                                    best = node;
-                                    bestDist = dist;
-                                }
+                RemapTreeCacheEntry *entry = nullptr;
+                if (getTreeEntry(sourceStateHash, xml, &entry) && entry && entry->ready) {
+                    size_t matchedIdx = static_cast<size_t>(-1);
+                    if (e.hasTargetFullPath && fullNamer) {
+                        size_t bestIdx = static_cast<size_t>(-1);
+                        long bestDist = 0;
+                        bool haveBest = false;
+                        for (size_t i = 0; i < entry->preorder.size(); ++i) {
+                            if (entry->fullPathHashes[i] == 0 || entry->fullPathHashes[i] != e.targetFullPathHash) {
+                                continue;
                             }
-                            if (!matched) {
-                                matched = best;
+                            if (!e.hasTargetBounds) {
+                                matchedIdx = i;
+                                break;
+                            }
+                            const Rect &b = entry->bounds[i];
+                            const long cx = static_cast<long>(b.left + (b.right - b.left) / 2);
+                            const long cy = static_cast<long>(b.top + (b.bottom - b.top) / 2);
+                            const long tx = static_cast<long>(
+                                e.targetBounds.left + (e.targetBounds.right - e.targetBounds.left) / 2);
+                            const long ty = static_cast<long>(
+                                e.targetBounds.top + (e.targetBounds.bottom - e.targetBounds.top) / 2);
+                            const long dx = (cx > tx) ? (cx - tx) : (tx - cx);
+                            const long dy = (cy > ty) ? (cy - ty) : (ty - cy);
+                            const long dist = dx + dy;
+                            if (!haveBest || dist < bestDist) {
+                                bestIdx = i;
+                                bestDist = dist;
+                                haveBest = true;
                             }
                         }
-                        if (!matched && e.hasTargetBounds) {
-                            for (auto *node : po) {
-                                if (!node) {
-                                    continue;
-                                }
-                                if (node->getBounds() == e.targetBounds) {
-                                    matched = node;
-                                    break;
-                                }
+                        if (matchedIdx == static_cast<size_t>(-1) && haveBest) {
+                            matchedIdx = bestIdx;
+                        }
+                    }
+                    if (matchedIdx == static_cast<size_t>(-1) && e.hasTargetBounds) {
+                        for (size_t i = 0; i < entry->preorder.size(); ++i) {
+                            if (entry->bounds[i] == e.targetBounds) {
+                                matchedIdx = i;
+                                break;
                             }
                         }
-                        if (matched) {
-                            if (auto nxp = matched->getXPathName(); nxp) {
-                                const std::string xp = nxp->toXPath();
-                                if (!xp.empty()) {
-                                    abstractTargetHash = fastStringHash(xp);
-                                }
-                            }
+                    }
+                    if (matchedIdx != static_cast<size_t>(-1)) {
+                        const uintptr_t xpH = entry->xpathHashes[matchedIdx];
+                        if (xpH != 0) {
+                            abstractTargetHash = xpH;
                         }
                     }
                 }
@@ -2781,11 +3704,23 @@ namespace fastbotx {
             if (!slot.valid || slot.sourceActivity != actKey) {
                 continue;
             }
+            // Q8 (affectedTrees): when focus is provided, only remap transition entries that
+            // reference affected StateKey hashes. Keep other entries intact to avoid losing evidence.
+            if (hasFocus) {
+                const bool inFocus = (focusOldKeyHashes->count(slot.sourceKeyHash) != 0 ||
+                                      focusOldKeyHashes->count(slot.targetKeyHash) != 0);
+                if (!inFocus) {
+                    apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot);
+                    continue;
+                }
+            }
             // Remove old-space aggregation first so that any remap failure won't leave stale counts.
             // Also avoid clearing pairAgg for other activities (APE Model.rebuild keeps unaffected evidence).
             apePairAggRemove(slot);
-            auto itSx = _apeStateXmlByStateHash.find(slot.sourceStateHash);
-            auto itTx = _apeStateXmlByStateHash.find(slot.targetStateHash);
+            const uintptr_t oldSrcStateHash = slot.sourceStateHash;
+            const uintptr_t oldTgtStateHash = slot.targetStateHash;
+            auto itSx = _apeStateXmlByStateHash.find(oldSrcStateHash);
+            auto itTx = _apeStateXmlByStateHash.find(oldTgtStateHash);
             if (itSx == _apeStateXmlByStateHash.end() || itTx == _apeStateXmlByStateHash.end() ||
                 itSx->second.empty() || itTx->second.empty()) {
                 slot.valid = false;
@@ -2793,13 +3728,13 @@ namespace fastbotx {
             }
             uintptr_t newSrcKeyHash = 0;
             uintptr_t newTgtKeyHash = 0;
-            if (!apeStateHashFromXmlWithNaming(rawActivity, itSx->second, toNaming, &newSrcKeyHash) ||
-                !apeStateHashFromXmlWithNaming(rawActivity, itTx->second, toNaming, &newTgtKeyHash)) {
+            if (!getStateKeyHashUnderToNaming(oldSrcStateHash, itSx->second, &newSrcKeyHash) ||
+                !getStateKeyHashUnderToNaming(oldTgtStateHash, itTx->second, &newTgtKeyHash)) {
                 slot.valid = false;
                 continue;
             }
             uintptr_t newActionHash = 0;
-            if (!computeActionHash(itSx->second, slot, &newActionHash)) {
+            if (!computeActionHash(oldSrcStateHash, itSx->second, slot, &newActionHash)) {
                 slot.valid = false;
                 continue;
             }
@@ -2812,33 +3747,40 @@ namespace fastbotx {
             slot.hasTargetStateKey = false;
             slot.targetStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
             {
-                std::string pkg;
-                std::string cls;
-                naming::StateKey::splitActivityPackageClass(rawActivity, &pkg, &cls);
-                gui_tree::GUITreeBuildResult built = gui_tree::GUITreeFactory::buildFromXml(itSx->second, pkg, cls);
-                if (built.tree && built.dom) {
-                    if (naming::NamingFactory::rebuildTree(toNaming, *built.tree, built.dom)) {
-                        slot.sourceStateKey = naming::StateKey::fromGUITree(*built.tree);
-                        slot.hasSourceStateKey = true;
+                RemapTreeCacheEntry *entry = nullptr;
+                if (getTreeEntry(oldSrcStateHash, itSx->second, &entry) && entry && entry->built.tree) {
+                    if (!entry->hasStateKey) {
+                        entry->stateKey = naming::StateKey::fromGUITree(*entry->built.tree);
+                        entry->hasStateKey = true;
                     }
+                    slot.sourceStateKey = entry->stateKey;
+                    slot.hasSourceStateKey = true;
                 }
             }
             {
-                std::string pkg;
-                std::string cls;
-                naming::StateKey::splitActivityPackageClass(rawActivity, &pkg, &cls);
-                gui_tree::GUITreeBuildResult built = gui_tree::GUITreeFactory::buildFromXml(itTx->second, pkg, cls);
-                if (built.tree && built.dom) {
-                    if (naming::NamingFactory::rebuildTree(toNaming, *built.tree, built.dom)) {
-                        slot.targetStateKey = naming::StateKey::fromGUITree(*built.tree);
-                        slot.hasTargetStateKey = true;
+                RemapTreeCacheEntry *entry = nullptr;
+                if (getTreeEntry(oldTgtStateHash, itTx->second, &entry) && entry && entry->built.tree) {
+                    if (!entry->hasStateKey) {
+                        entry->stateKey = naming::StateKey::fromGUITree(*entry->built.tree);
+                        entry->hasStateKey = true;
                     }
+                    slot.targetStateKey = entry->stateKey;
+                    slot.hasTargetStateKey = true;
                 }
             }
-            slot.sourceStateHash = findRepresentativeStateHash(newSrcKeyHash);
-            slot.targetStateHash = findRepresentativeStateHash(newTgtKeyHash);
+            {
+                const uintptr_t repSrc = findRepresentativeStateHash(newSrcKeyHash);
+                slot.sourceStateHash = (repSrc != 0) ? repSrc : oldSrcStateHash;
+            }
+            {
+                const uintptr_t repTgt = findRepresentativeStateHash(newTgtKeyHash);
+                slot.targetStateHash = (repTgt != 0) ? repTgt : oldTgtStateHash;
+            }
             // Re-add into aggregation under the new key space.
             apePairAggAdd(slot);
+            if (slot.valid) {
+                apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot);
+            }
         }
 #endif
     }
@@ -3249,6 +4191,18 @@ namespace fastbotx {
         } else {
             shouldRollback = overSplit || overAffected || overTargets || unresolvedTriggerPair;
         }
+        if (!shouldRollback && shouldLogApeDiagSample(std::string("coarsen_gate_no_rollback#") + actKey, 10)) {
+            BLOG("ape naming: coarsen-gate activity=%s rollback=0 hasTriggerSource=%d triggerSource=%lu "
+                 "overSplit=%d overAffected=%d overTargets=%d overFilteredAffected=%d overFilteredTargets=%d "
+                 "unresolvedTriggerPair=%d affected=%zu totalNew=%zu filteredAffected=%zu filteredTargets=%zu "
+                 "triggerTargets=%zu postFanout=%zu targetThreshold=%d",
+                 activity.c_str(), hasTriggerSource ? 1 : 0, (unsigned long)triggerSource,
+                 overSplit ? 1 : 0, overAffected ? 1 : 0, overTargets ? 1 : 0,
+                 overFilteredAffected ? 1 : 0, overFilteredTargets ? 1 : 0,
+                 unresolvedTriggerPair ? 1 : 0, affectedStateObservations, totalNewKeys.size(),
+                 filteredAffected, filteredTargets, ctx.triggerTargetCountAtRefine,
+                 postRefineMaxFanoutForAction, targetThreshold);
+        }
         if (shouldRollback) {
             std::string fpFiner = cur->fingerprintString();
             std::unordered_set<uintptr_t> affectedStateHashesForBlacklist;
@@ -3518,20 +4472,44 @@ namespace fastbotx {
                 }
             }
             std::vector<uintptr_t> repKeyHashes;
-            if (ctx.triggerSourceKeyHash != 0) {
-                repKeyHashes.push_back(ctx.triggerSourceKeyHash);
+            std::unordered_set<uintptr_t> focusOldKeyHashes;
+            // Q8 (local remap): cur is in refined key space; use observed old-new mismatch
+            // to identify which refined key hashes should be remapped back.
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+            if (!affectedStateHashesForPrune.empty()) {
+                for (uintptr_t sh : affectedStateHashesForPrune) {
+                    auto itXml = _apeStateXmlByStateHash.find(sh);
+                    if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
+                        continue;
+                    }
+                    uintptr_t oldH = 0;
+                    uintptr_t newH = 0;
+                    if (!apeStateHashFromXmlWithNaming(activity, itXml->second, cur, &oldH) ||
+                        !apeStateHashFromXmlWithNaming(activity, itXml->second, prev, &newH)) {
+                        continue;
+                    }
+                    if (oldH != newH) {
+                        focusOldKeyHashes.insert(oldH);
+                    }
+                }
             }
-            for (uintptr_t th : ctx.triggerTargetKeyHashes) {
-                repKeyHashes.push_back(th);
-                if (repKeyHashes.size() >= 5) {
+#endif
+            repKeyHashes.reserve(8);
+            for (uintptr_t h : focusOldKeyHashes) {
+                repKeyHashes.push_back(h);
+                if (repKeyHashes.size() >= 8) {
                     break;
                 }
             }
             if (!repKeyHashes.empty()) {
-                rebuildApeStateRepresentativesForKeyHashes(activity, prev, repKeyHashes, 2);
+                rebuildApeStateRepresentativesForKeyHashes(activity, cur, repKeyHashes, 1);
             }
-            remapApeTransitionAggregationForActivity(activity, cur, prev);
-            pruneStaleApeStatesForActivity(actKey, fpFiner);
+            if (!focusOldKeyHashes.empty()) {
+                remapApeTransitionAggregationForActivity(activity, cur, prev, &focusOldKeyHashes);
+            }
+            pruneStaleApeStatesForActivity(actKey, fpFiner,
+                                           affectedStateHashesForPrune.empty() ? nullptr
+                                                                               : &affectedStateHashesForPrune);
             _apeNamingCoarseningBlacklist.insert(std::make_pair(actKey, fpFiner));
             if (ctx.triggerSourceKeyHash != 0 || ctx.triggerActionHash != 0) {
                 _apeRefinePairBlacklist[actKey].insert(
@@ -3550,6 +4528,9 @@ namespace fastbotx {
             ctx.triggerTargetCountAtRefine = 0;
             ctx.stateCountAtLastNamingRefinement = getApeStateCountByActivityAndNamingFingerprint(
                 actKey, prev ? prev->fingerprintString() : std::string());
+            ApeActivityRebuildStats &st = _apeRebuildStatsByActivity[actKey];
+            ++st.consecutiveRollbacks;
+            (void)apeLocalRebuildFromHistoryIfNeeded(actKey, "rollback");
             BLOG("ape naming: coarsen activity=%s rollback split=%d overAffected=%d overTargets=%d "
                  "overFilteredAffected=%d overFilteredTargets=%d unresolvedTriggerPair=%d "
                  "affectedStates=%zu totalNew=%zu filteredAffected=%zu filteredTargets=%zu triggerTargets=%zu postFanout=%zu "
@@ -3561,6 +4542,7 @@ namespace fastbotx {
                  postRefineMaxFanoutForAction, targetThreshold, fpFiner.c_str());
             return true;
         }
+        _apeRebuildStatsByActivity[actKey].consecutiveRollbacks = 0;
         return false;
     }
 
@@ -3679,12 +4661,18 @@ namespace fastbotx {
                 } else if (rp.actionHash != 0 &&
                            p.targetCount >= static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) {
                     const std::string actKey = naming::StateKey::canonicalActivityString(p.sourceActivity);
-                    _apeRefineActionBlacklist[actKey].insert(rp.actionHash);
+                    auto &blk = _apeRefineActionBlacklist[actKey];
+                    const bool inserted = blk.insert(rp.actionHash).second;
                     apeCapApeNamingCoarsenAndRefineBlacklists();
                     BLOG("ape naming: NDActionBlacklist add (APE: out>=%d after failed resolve) activity=%s "
                          "act=%lu targets=%zu",
                          kApeNDActionBlacklistMinOutEdges, p.sourceActivity.c_str(),
                          (unsigned long)rp.actionHash, p.targetCount);
+                    if (shouldLogApeDiagSample(std::string("nd_blacklist_batch_add#") + actKey, 25)) {
+                        BLOG("ape naming: diag NDActionBlacklist[batch] activity=%s act=%lu inserted=%d size=%zu targets=%zu",
+                             p.sourceActivity.c_str(), (unsigned long)rp.actionHash,
+                             inserted ? 1 : 0, blk.size(), p.targetCount);
+                    }
                 }
             }
         } else {
@@ -3713,12 +4701,18 @@ namespace fastbotx {
                 } else if (rp.actionHash != 0 &&
                            p.targetCount >= static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) {
                     const std::string actKey = naming::StateKey::canonicalActivityString(p.sourceActivity);
-                    _apeRefineActionBlacklist[actKey].insert(rp.actionHash);
+                    auto &blk = _apeRefineActionBlacklist[actKey];
+                    const bool inserted = blk.insert(rp.actionHash).second;
                     apeCapApeNamingCoarsenAndRefineBlacklists();
                     BLOG("ape naming: NDActionBlacklist add (APE: out>=%d after failed resolve) activity=%s "
                          "act=%lu targets=%zu",
                          kApeNDActionBlacklistMinOutEdges, p.sourceActivity.c_str(),
                          (unsigned long)rp.actionHash, p.targetCount);
+                    if (shouldLogApeDiagSample(std::string("nd_blacklist_batch_add#") + actKey, 25)) {
+                        BLOG("ape naming: diag NDActionBlacklist[batch] activity=%s act=%lu inserted=%d size=%zu targets=%zu",
+                             p.sourceActivity.c_str(), (unsigned long)rp.actionHash,
+                             inserted ? 1 : 0, blk.size(), p.targetCount);
+                    }
                 }
             }
             for (const auto &a : refinedActs) {
@@ -3754,6 +4748,28 @@ namespace fastbotx {
                      edgeStats.hash_only_hit, fallbackRate, edgeStats.miss, missRate);
             }
         }
+        const ApeCorrectnessCounters counters = _ape_correctness_counters;
+        const uint64_t stateKeyBuildTotal = counters.statekey_build_ok + counters.statekey_build_fail;
+        if (stateKeyBuildTotal > 0 || counters.statekey_fallback_used > 0 ||
+            counters.graph_dedup_hash_hit > 0 || counters.naming_update_by_hash > 0 ||
+            counters.statekey_record_hash_collision > 0 || counters.evidence_pool_sample_add > 0 ||
+            counters.evidence_pool_new_pair > 0 || counters.evidence_pool_evict > 0) {
+            BLOG("ape correctness: stateKeyBuild=%" PRIu64 " ok=%" PRIu64 " fail=%" PRIu64
+                 " failNull=%" PRIu64 " failTree=%" PRIu64 " failNaming=%" PRIu64 " failRebuild=%" PRIu64
+                 " fallback=%" PRIu64 " stateKeyHashMulti=%" PRIu64
+                 " graphDedupLookups=%" PRIu64 " graphDedupExact=%" PRIu64 " graphDedupCollision=%" PRIu64
+                 " namingUpdateHash=%" PRIu64 " evidencePoolSampleAdd=%" PRIu64
+                 " evidencePoolNewPair=%" PRIu64 " evidencePoolEvict=%" PRIu64,
+                 stateKeyBuildTotal, counters.statekey_build_ok, counters.statekey_build_fail,
+                 counters.statekey_fail_null_input, counters.statekey_fail_build_tree_dom,
+                 counters.statekey_fail_no_naming, counters.statekey_fail_rebuild_tree,
+                 counters.statekey_fallback_used, counters.statekey_record_hash_collision,
+                 counters.graph_dedup_hash_hit, counters.graph_dedup_exact_hit,
+                 counters.graph_dedup_hash_collision, counters.naming_update_by_hash,
+                 counters.evidence_pool_sample_add, counters.evidence_pool_new_pair,
+                 counters.evidence_pool_evict);
+        }
+        _ape_correctness_counters = ApeCorrectnessCounters{};
         const bool batchMutated = (batchRefineDelta > 0 || batchRollbackDelta > 0);
         if (batchMutated) {
             notifyAgentsOfApeNamingChange();
@@ -3920,9 +4936,36 @@ namespace fastbotx {
 
     bool Model::buildApeStateKeyFromElementTree(const ElementPtr &element, const std::string &activity,
                                                naming::StateKey *outKey,
-                                               const StatePtr &stateForDynamicApply) {
-        if (!element || !outKey) {
+                                               ApeStateKeyBuildFailReason *outFailReason,
+                                               const StatePtr &stateForDynamicApply,
+                                               std::string *ioXmlCache) {
+        auto fail = [&](ApeStateKeyBuildFailReason reason) -> bool {
+            if (outFailReason != nullptr) {
+                *outFailReason = reason;
+            }
+            _ape_correctness_counters.statekey_build_fail++;
+            switch (reason) {
+                case ApeStateKeyBuildFailReason::NullInput:
+                    _ape_correctness_counters.statekey_fail_null_input++;
+                    break;
+                case ApeStateKeyBuildFailReason::BuildTreeOrDomFailed:
+                    _ape_correctness_counters.statekey_fail_build_tree_dom++;
+                    break;
+                case ApeStateKeyBuildFailReason::NoNaming:
+                    _ape_correctness_counters.statekey_fail_no_naming++;
+                    break;
+                case ApeStateKeyBuildFailReason::RebuildTreeFailed:
+                    _ape_correctness_counters.statekey_fail_rebuild_tree++;
+                    break;
+                case ApeStateKeyBuildFailReason::None:
+                default:
+                    break;
+            }
             return false;
+        };
+
+        if (!element || !outKey) {
+            return fail(ApeStateKeyBuildFailReason::NullInput);
         }
         // When static reuse abstraction is enabled, we must not sync APE naming fixed-point
         // refinement or update dynamic naming bookkeeping; we only need enough naming to
@@ -3935,11 +4978,21 @@ namespace fastbotx {
         const std::string actKey = naming::StateKey::canonicalActivityString(activity);
         gui_tree::GUITreeBuildResult built = gui_tree::GUITreeFactory::buildFromElement(element, pkg, cls);
         if (!built.tree || !built.dom) {
-            const std::string xml = element->toXML();
-            built = gui_tree::GUITreeFactory::buildFromXml(xml, pkg, cls);
+            const std::string *xmlPtr = nullptr;
+            std::string xmlLocal;
+            if (ioXmlCache && !ioXmlCache->empty()) {
+                xmlPtr = ioXmlCache;
+            } else {
+                xmlLocal = element->toXML();
+                if (ioXmlCache) {
+                    *ioXmlCache = xmlLocal;
+                }
+                xmlPtr = &xmlLocal;
+            }
+            built = gui_tree::GUITreeFactory::buildFromXml(*xmlPtr, pkg, cls);
         }
         if (!built.tree || !built.dom) {
-            return false;
+            return fail(ApeStateKeyBuildFailReason::BuildTreeOrDomFailed);
         }
         naming::ActivityNamingManager &mgr = _apeStateNamingManager->activityManager();
         const int fpSteps = (_preference && wantApeRlIdentity)
@@ -3954,7 +5007,7 @@ namespace fastbotx {
             }
             naming = _apeStateNamingManager->getNamingFixedPoint(actKey, *built.tree, built.dom, fpSteps);
             if (!naming) {
-                return false;
+                return fail(ApeStateKeyBuildFailReason::NoNaming);
             }
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
             const std::string fpAfter = naming->fingerprintString();
@@ -3962,8 +5015,41 @@ namespace fastbotx {
                 // getNamingFixedPoint persists the new naming into ActivityNamingManager.
                 // Align the rest of the runtime caches with the new key space.
                 invalidateApeGraphStateKeyDedupMap();
-                remapApeTransitionAggregationForActivity(activity, beforeNaming, naming);
-                pruneStaleApeStatesForActivity(actKey, fpBefore);
+                uintptr_t focusOldKeyHash = 0;
+                if (beforeNaming && built.tree && built.dom) {
+                    if (naming::NamingFactory::rebuildTree(beforeNaming, *built.tree, built.dom)) {
+                        focusOldKeyHash = naming::StateKey::hashFromGUITree(*built.tree);
+                    }
+                    (void)naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom);
+                }
+                std::unordered_set<uintptr_t> focusOldKeyHashes;
+                if (focusOldKeyHash != 0) {
+                    focusOldKeyHashes.insert(focusOldKeyHash);
+                }
+                remapApeTransitionAggregationForActivity(
+                    activity, beforeNaming, naming,
+                    focusOldKeyHashes.empty() ? nullptr : &focusOldKeyHashes);
+                std::unordered_set<uintptr_t> affectedTrees;
+                if (focusOldKeyHash != 0 && beforeNaming) {
+                    for (const auto &kv : _apeStateXmlByStateHash) {
+                        const uintptr_t sh = kv.first;
+                        const std::string &xml = kv.second;
+                        if (xml.empty()) {
+                            continue;
+                        }
+                        naming::StateKey storedKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+                        if (!tryGetApeStateKey(sh, &storedKey) || storedKey.activity() != actKey) {
+                            continue;
+                        }
+                        uintptr_t oldH = 0;
+                        if (apeStateHashFromXmlWithNaming(activity, xml, beforeNaming, &oldH) &&
+                            oldH == focusOldKeyHash) {
+                            affectedTrees.insert(sh);
+                        }
+                    }
+                }
+                pruneStaleApeStatesForActivity(actKey, fpBefore,
+                                               affectedTrees.empty() ? nullptr : &affectedTrees);
                 notifyAgentsOfApeNamingChange();
             }
 #endif
@@ -3978,10 +5064,10 @@ namespace fastbotx {
                 }
             }
             if (!naming) {
-                return false;
+                return fail(ApeStateKeyBuildFailReason::NoNaming);
             }
             if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
-                return false;
+                return fail(ApeStateKeyBuildFailReason::RebuildTreeFailed);
             }
         }
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
@@ -4013,6 +5099,10 @@ namespace fastbotx {
         }
 #endif
         *outKey = std::move(kNew);
+        if (outFailReason != nullptr) {
+            *outFailReason = ApeStateKeyBuildFailReason::None;
+        }
+        _ape_correctness_counters.statekey_build_ok++;
         return true;
     }
 #endif
@@ -4021,33 +5111,51 @@ namespace fastbotx {
         if (!state) {
             return;
         }
-        const uintptr_t h = state->hash();
-        auto it = _ape_state_keys_by_hash.find(h);
-        if (it != _ape_state_keys_by_hash.end()) {
-            it->second = key;
-        } else {
-            _ape_state_keys_by_hash.emplace(h, key);
+        const uintptr_t stateHash = state->hash();
+        auto &bucket = _ape_state_keys_by_hash[stateHash];
+
+        // In dynamic APE identity mode, State::hash() is overridden to StateKey::hash().
+        // Only in this mode does it make sense to treat multiple different keys under the
+        // same hash as a potential hash collision.
+        const bool inApeHashSpace = (stateHash == key.hash());
+        if (!inApeHashSpace) {
+            bucket.clear();
+            bucket.push_back(key);
+            return;
         }
+
+        for (const auto &existing : bucket) {
+            if (existing == key) {
+                return;
+            }
+        }
+        if (!bucket.empty()) {
+            _ape_correctness_counters.statekey_record_hash_collision++;
+        }
+        bucket.push_back(key);
     }
 
     bool Model::tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out) const {
         auto it = _ape_state_keys_by_hash.find(stateHash);
-        if (it == _ape_state_keys_by_hash.end()) {
+        if (it == _ape_state_keys_by_hash.end() || it->second.empty()) {
+            return false;
+        }
+        if (it->second.size() != 1) {
             return false;
         }
         if (out != nullptr) {
-            *out = it->second;
+            *out = it->second.front();
         }
         return true;
     }
 
     bool Model::tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash) const {
-        auto it = _ape_state_keys_by_hash.find(stateHash);
-        if (it == _ape_state_keys_by_hash.end()) {
+        naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        if (!tryGetApeStateKey(stateHash, &k)) {
             return false;
         }
         if (outKeyHash != nullptr) {
-            *outKeyHash = it->second.hash();
+            *outKeyHash = k.hash();
         }
         return true;
     }

@@ -321,6 +321,43 @@ namespace fastbotx {
     size_t State::getUniqueWidgetCountUnderMask(WidgetKeyMask /*mask*/) const {
         return _widgets.size();
     }
+
+    void State::filterActionsByKeepMask(const std::vector<uint8_t> &keepMask) {
+        if (keepMask.size() != _actions.size()) {
+            return;
+        }
+
+        ActivityStateActionPtrVec filtered;
+        filtered.reserve(_actions.size());
+        ActivityStateActionPtr back = nullptr;
+
+        for (size_t i = 0; i < _actions.size(); ++i) {
+            const auto &a = _actions[i];
+            if (!a) {
+                continue;
+            }
+
+            if (a->isBack()) {
+                filtered.push_back(a);
+                back = a;
+                continue;
+            }
+
+            if (keepMask[i] != 0) {
+                filtered.push_back(a);
+            }
+        }
+
+        if (!back && _backAction) {
+            filtered.push_back(_backAction);
+            back = _backAction;
+        }
+
+        _actions.swap(filtered);
+        if (back) {
+            _backAction = back;
+        }
+    }
 #endif
 
     bool State::operator<(const State &state) const {

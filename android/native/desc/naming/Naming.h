@@ -35,23 +35,21 @@
 namespace fastbotx {
 namespace naming {
 
-    namespace detail {
-        inline bool nameletLess(const std::shared_ptr<Namelet> &a, const std::shared_ptr<Namelet> &b) {
+    static bool nameletLess(const std::shared_ptr<Namelet> &a, const std::shared_ptr<Namelet> &b) {
             if (!a || !b) {
                 return a.get() < b.get();
             }
             return *a < *b;
-        }
-    } // namespace detail
+    }
 
     struct NamingEdge {
         std::shared_ptr<Namelet> from;
         std::shared_ptr<Namelet> to;
 
         bool operator<(const NamingEdge &o) const {
-            if (detail::nameletLess(from, o.from)) return true;
-            if (detail::nameletLess(o.from, from)) return false;
-            return detail::nameletLess(to, o.to);
+            if (nameletLess(from, o.from)) return true;
+            if (nameletLess(o.from, from)) return false;
+            return nameletLess(to, o.to);
         }
     };
 

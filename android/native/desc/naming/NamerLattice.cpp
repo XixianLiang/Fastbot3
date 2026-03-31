@@ -165,10 +165,10 @@ namespace {
             if (fm == cm) {
                 continue;
             }
-            if (!n->refinesTo(*coarse)) {
+            if (popcount32(fm) <= cpc) {
                 continue;
             }
-            if (popcount32(fm) <= cpc) {
+            if (!n->refinesTo(*coarse)) {
                 continue;
             }
             out.push_back(n);

@@ -13,16 +13,321 @@
 #include <cstdlib>
 #include <climits>
 #include <cctype>
+#include <cstdio>
 #include "utils.hpp"
 #include "Preference.h"
 #include "../desc/naming/NamerType.h"
 #include "../desc/naming/NamingFactory.h"
+#include "../desc/naming/ActionPatchNamer.h"
 #include "../thirdpart/json/json.hpp"
 
 // Performance optimization: Maximum number of page texts to cache
 #define PageTextsMaxCount 300
 
 namespace fastbotx {
+
+    namespace {
+        int countDescendantsUpTo(const ElementPtr &node, int limit) {
+            if (!node || limit <= 0) {
+                return 0;
+            }
+            int count = 0;
+            std::vector<ElementPtr> stack;
+            const auto &children = node->getChildren();
+            stack.reserve(children.size());
+            for (const auto &c : children) {
+                if (c) {
+                    stack.push_back(c);
+                }
+            }
+            while (!stack.empty()) {
+                ElementPtr cur = stack.back();
+                stack.pop_back();
+                if (!cur) {
+                    continue;
+                }
+                ++count;
+                if (count > limit) {
+                    return count;
+                }
+                const auto &chs = cur->getChildren();
+                for (const auto &cc : chs) {
+                    if (cc) {
+                        stack.push_back(cc);
+                    }
+                }
+            }
+            return count;
+        }
+
+        bool apeIsWebViewClassName(const std::string &cls,
+                                   const std::vector<std::string> &extraPatterns) {
+            if (cls.empty()) {
+                return false;
+            }
+            // Keep strict match as baseline.
+            if (cls == "android.webkit.WebView") {
+                return true;
+            }
+            for (const auto &p : extraPatterns) {
+                if (p.empty()) {
+                    continue;
+                }
+                if (p.back() == '*') {
+                    const std::string prefix = p.substr(0, p.size() - 1);
+                    if (!prefix.empty() && cls.compare(0, prefix.size(), prefix) == 0) {
+                        return true;
+                    }
+                } else {
+                    if (cls == p) {
+                        return true;
+                    }
+                }
+            }
+            return false;
+        }
+
+        bool apeIsWebViewNode(const ElementPtr &node,
+                              const std::vector<std::string> &extraPatterns) {
+            if (!node) {
+                return false;
+            }
+            return apeIsWebViewClassName(node->getClassname(), extraPatterns);
+        }
+
+        void applyApeWebViewPrunePolicy(const ElementPtr &node,
+                                        const std::vector<std::string> &webViewClassPatterns,
+                                        bool alwaysIgnoreWebView, int ignoreWebViewThreshold) {
+            if (!node) {
+                return;
+            }
+            // APE-aligned: optionally drop WebView nodes entirely (skip root).
+            if (alwaysIgnoreWebView && apeIsWebViewNode(node, webViewClassPatterns)) {
+                auto parent = node->getParent();
+                if (!parent.expired()) {
+                    node->deleteElement();
+                    return;
+                }
+            }
+
+            // Snapshot children to make deletion safe.
+            std::vector<ElementPtr> children = node->getChildren();
+            for (const auto &child : children) {
+                if (!child) {
+                    continue;
+                }
+                if (alwaysIgnoreWebView && apeIsWebViewNode(child, webViewClassPatterns)) {
+                    child->deleteElement();
+                    continue;
+                }
+                if (apeIsWebViewNode(child, webViewClassPatterns)) {
+                    if (ignoreWebViewThreshold > 0 &&
+                        countDescendantsUpTo(child, ignoreWebViewThreshold) > ignoreWebViewThreshold) {
+                        child->clearChildren();
+                        continue;
+                    }
+                }
+                applyApeWebViewPrunePolicy(child, webViewClassPatterns, alwaysIgnoreWebView, ignoreWebViewThreshold);
+            }
+        }
+
+        void applyApeIgnoreActionsInWebView(const ElementPtr &node,
+                                            const std::vector<std::string> &webViewClassPatterns,
+                                            bool ignore) {
+            if (!node) {
+                return;
+            }
+            bool nowIgnore = ignore || apeIsWebViewNode(node, webViewClassPatterns);
+            if (nowIgnore) {
+                node->reSetClickable(false);
+                node->reSetLongClickable(false);
+                node->reSetCheckable(false);
+                node->reSetScrollable(false);
+            }
+            for (const auto &child : node->getChildren()) {
+                applyApeIgnoreActionsInWebView(child, webViewClassPatterns, nowIgnore);
+            }
+        }
+
+        bool sameRow(const std::vector<ElementPtr> &children) {
+            if (children.size() < 2) {
+                return false;
+            }
+            RectPtr b0 = children[0] ? children[0]->getBounds() : nullptr;
+            if (!b0 || b0->isEmpty()) {
+                return false;
+            }
+            const int top = b0->top;
+            const int bottom = b0->bottom;
+            for (size_t i = 1; i < children.size(); ++i) {
+                RectPtr b = children[i] ? children[i]->getBounds() : nullptr;
+                if (!b || b->isEmpty()) {
+                    return false;
+                }
+                if (b->top != top || b->bottom != bottom) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool sameColumn(const std::vector<ElementPtr> &children) {
+            if (children.size() < 2) {
+                return false;
+            }
+            RectPtr b0 = children[0] ? children[0]->getBounds() : nullptr;
+            if (!b0 || b0->isEmpty()) {
+                return false;
+            }
+            const int left = b0->left;
+            const int right = b0->right;
+            for (size_t i = 1; i < children.size(); ++i) {
+                RectPtr b = children[i] ? children[i]->getBounds() : nullptr;
+                if (!b || b->isEmpty()) {
+                    return false;
+                }
+                if (b->left != left || b->right != right) {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        bool unionChildrenBounds(const std::vector<ElementPtr> &children, Rect *out) {
+            if (!out) {
+                return false;
+            }
+            bool inited = false;
+            int l = 0, t = 0, r = 0, b = 0;
+            for (const auto &ch : children) {
+                RectPtr cb = ch ? ch->getBounds() : nullptr;
+                if (!cb || cb->isEmpty()) {
+                    continue;
+                }
+                if (!inited) {
+                    l = cb->left;
+                    t = cb->top;
+                    r = cb->right;
+                    b = cb->bottom;
+                    inited = true;
+                } else {
+                    l = std::min(l, cb->left);
+                    t = std::min(t, cb->top);
+                    r = std::max(r, cb->right);
+                    b = std::max(b, cb->bottom);
+                }
+            }
+            if (!inited) {
+                return false;
+            }
+            *out = Rect(l, t, r, b);
+            return true;
+        }
+
+        void applyApeClickablePatching(const ElementPtr &node,
+                                       const std::vector<std::string> &webViewClassPatterns) {
+            if (!node) {
+                return;
+            }
+            if (apeIsWebViewNode(node, webViewClassPatterns)) {
+                // APE: do not patch inside WebView.
+                return;
+            }
+            const auto &childrenRef = node->getChildren();
+            std::vector<ElementPtr> children(childrenRef.begin(), childrenRef.end());
+            if (node->getClickable() && !children.empty()) {
+                RectPtr nb = node->getBounds();
+                Rect childUnion;
+                if (nb && !nb->isEmpty() && unionChildrenBounds(children, &childUnion)) {
+                    const bool containsChildren =
+                        nb->left <= childUnion.left && nb->top <= childUnion.top &&
+                        nb->right >= childUnion.right && nb->bottom >= childUnion.bottom;
+                    const bool patchLayout = (children.size() == 1) || sameRow(children) || sameColumn(children);
+                    if (containsChildren && patchLayout) {
+                        for (const auto &ch : children) {
+                            if (!ch) {
+                                continue;
+                            }
+                            if (!ch->getClickable()) {
+                                ch->reSetClickable(true);
+                            }
+                            if (children.size() == 1 && ch->getIndex() != node->getIndex()) {
+                                ch->reSetIndex(node->getIndex());
+                            }
+                        }
+                        if (childUnion.contains(nb->center())) {
+                            node->reSetClickable(false);
+                        }
+                    }
+                }
+            }
+            for (const auto &ch : childrenRef) {
+                applyApeClickablePatching(ch, webViewClassPatterns);
+            }
+        }
+
+        bool apeIsImageButtonClassName(const std::string &cls) {
+            return cls == "android.widget.ImageButton";
+        }
+
+        void applyApeComputeImageTextHash(const ElementPtr &node,
+                                          const std::vector<std::string> &webViewClassPatterns,
+                                          bool inWebView) {
+            if (!node) {
+                return;
+            }
+            const bool nowWebView = inWebView || apeIsWebViewNode(node, webViewClassPatterns);
+            const auto &childrenRef = node->getChildren();
+            for (const auto &ch : childrenRef) {
+                applyApeComputeImageTextHash(ch, webViewClassPatterns, nowWebView);
+            }
+
+            // APE computeImageText runs after patchGUITree and before ignoreActionsInWebView.
+            if (nowWebView) {
+                return;
+            }
+            if (!childrenRef.empty()) {
+                return;
+            }
+            if (!apeIsImageButtonClassName(node->getClassname())) {
+                return;
+            }
+            if (!node->getEnable()) {
+                return;
+            }
+            if (!(node->getClickable() || node->getLongClickable() || node->getScrollable())) {
+                return;
+            }
+            if (!node->getText().empty() || !node->getContentDesc().empty()) {
+                return;
+            }
+            RectPtr b = node->getBounds();
+            if (!b || b->isEmpty()) {
+                return;
+            }
+
+            std::string key;
+            key.reserve(96);
+            key.append(node->getClassname());
+            key.push_back('|');
+            key.append(node->getResourceID());
+            key.push_back('|');
+            key.append(std::to_string(b->left));
+            key.push_back(',');
+            key.append(std::to_string(b->top));
+            key.push_back(',');
+            key.append(std::to_string(b->right));
+            key.push_back(',');
+            key.append(std::to_string(b->bottom));
+            key.push_back('|');
+            key.append(std::to_string(node->getIndex()));
+
+            const uint32_t h = static_cast<uint32_t>(fastStringHash(key));
+            char textBuf[16];
+            std::snprintf(textBuf, sizeof(textBuf), "#%x", h);
+            node->reSetText(textBuf);
+        }
+    } // namespace
 
     static void substituteEnvVars(std::string &s);
 
@@ -500,11 +805,11 @@ namespace fastbotx {
      * @note Performance: Tree traversal reduced from 3 passes to 2 passes
      *       (resolveBlackWidgets + resolveElement which includes deMixResMapping)
      * 
-     * @note Performance optimizations:
-     *       - Early validation of rootXML
-     *       - Simplified root size caching logic
-     *       - Reduced redundant bounds checks
-     *       - Cached children reference
+     * @note APE-aligned L-input normalization order:
+     *       - WebView prune (before external rules)
+     *       - external rules (avoid/modify)
+     *       - clickable patch (after external rules)
+     *       - optional ignore actions in WebView subtree
      */
     void Preference::resolvePage(const std::string &activity, const ElementPtr &rootXML) {
         // Performance: Early validation
@@ -557,14 +862,46 @@ namespace fastbotx {
         addRulesForActivity(activity);
         addRulesForActivity("");
 
-        this->resolveElementWithAvoid(rootXML, activity);
+        // APE-aligned: WebView strategy first (reduce WebView noise before applying rules).
+        if (!this->_useStaticReuseAbstraction) {
+            if (this->_apeAlwaysIgnoreWebView || this->_apeIgnoreWebViewThreshold > 0) {
+                applyApeWebViewPrunePolicy(rootXML, this->_apeWebViewClassPatterns,
+                                           this->_apeAlwaysIgnoreWebView,
+                                           this->_apeIgnoreWebViewThreshold);
+            }
+        }
+
+
+        // External rules mechanism (avoid/modify/validText pruning). todo test it
+        // APE-aligned: apply Modify rules before patching.
+        this->resolveElementWithAvoid(rootXML, activity, ResolveRulePhase::ModifyOnly);
+
+        // APE-aligned: clickable patch after external rules.
+        if (!this->_useStaticReuseAbstraction && this->_apePatchGUITree) {
+            applyApeClickablePatching(rootXML, this->_apeWebViewClassPatterns);
+        }
+
+        // APE-aligned: compute stable pseudo-text for icon-only widgets.
+        if (!this->_useStaticReuseAbstraction && this->_apeComputeImageText) {
+            applyApeComputeImageTextHash(rootXML, this->_apeWebViewClassPatterns, false);
+        }
+
+        // APE-aligned: optionally ignore actions inside WebView subtree.
+        if (!this->_useStaticReuseAbstraction && this->_apeAlwaysIgnoreWebViewAction) {
+            applyApeIgnoreActionsInWebView(rootXML, this->_apeWebViewClassPatterns, false);
+        }
+
+        // APE-aligned: apply Avoid rules after patching (and after optional WebView ignore policy).
+        this->resolveElementWithAvoid(rootXML, activity, ResolveRulePhase::AvoidOnly);
     }
 
     /**
      * @brief Single-pass resolve: avoid (delete + rect cache) + modify (property overrides), deMixResMapping, cachePageTexts, pruningValidTexts, then recurse.
      * Replaces former resolveBlackWidgets + resolveElement + resolveTreePruning.
      */
-    void Preference::resolveElementWithAvoid(const ElementPtr &element, const std::string &activity) {
+    void Preference::resolveElementWithAvoid(const ElementPtr &element,
+                                           const std::string &activity,
+                                           ResolveRulePhase phase) {
         if (!element) return;
 
         if (!this->_resMixedMapping.empty()) {
@@ -578,7 +915,7 @@ namespace fastbotx {
             }
         }
 
-        if (!element->getText().empty()) {
+        if (phase == ResolveRulePhase::ModifyOnly && !element->getText().empty()) {
             if (this->_pageTextsCache.size() > PageTextsMaxCount) {
                 for (int i = 0; i < 20 && !this->_pageTextsCache.empty(); i++)
                     this->_pageTextsCache.pop_front();
@@ -607,6 +944,9 @@ namespace fastbotx {
             if (it == this->_avoidRulesByActivity.end()) continue;
             for (const AvoidRulePtr &rule : it->second) {
                 if (rule->action == AvoidRule::Action::Avoid) {
+                    if (phase != ResolveRulePhase::AvoidOnly) {
+                        continue;
+                    }
                     if (rule->xpath && element->matchXpathSelector(rule->xpath)) {
                         if (rule->bounds.size() == 4) {
                             RectPtr rejectRect = boundsToRect(rule->bounds);
@@ -633,6 +973,9 @@ namespace fastbotx {
                         }
                     }
                 } else if (rule->action == AvoidRule::Action::Modify && rule->xpath && element->matchXpathSelector(rule->xpath)) {
+                    if (phase != ResolveRulePhase::ModifyOnly) {
+                        continue;
+                    }
                     if (rule->resourceID != InvalidProperty) element->reSetResourceID(rule->resourceID);
                     if (rule->contentDescription != InvalidProperty) element->reSetContentDesc(rule->contentDescription);
                     if (rule->text != InvalidProperty) element->reSetText(rule->text);
@@ -642,10 +985,13 @@ namespace fastbotx {
             }
         }
 
-        if (this->_pruningValidTexts) this->pruningValidTexts(element);
+        // APE-aligned: pruningValidTexts should run only after Avoid rules (avoid-only phase).
+        if (phase == ResolveRulePhase::AvoidOnly && this->_pruningValidTexts) {
+            this->pruningValidTexts(element);
+        }
 
         for (const auto &child : element->getChildren()) {
-            this->resolveElementWithAvoid(child, activity);
+            this->resolveElementWithAvoid(child, activity, phase);
         }
     }
 
@@ -1202,10 +1548,18 @@ namespace fastbotx {
 #define ApeNamingActionRefineRuleProfileSTR "max.apeNamingActionRefineRuleProfile"
 #define ApeNamingCandidateTransitionReplaySTR "max.apeNamingCandidateTransitionReplay"
 #define ApeNamingActionRefinementFirstSTR "max.apeNamingActionRefinementFirst"
+#define ApeAlwaysIgnoreWebViewSTR "max.apeAlwaysIgnoreWebView"
+#define ApeAlwaysIgnoreWebViewActionSTR "max.apeAlwaysIgnoreWebViewAction"
+#define ApeIgnoreWebViewThresholdSTR "max.apeIgnoreWebViewThreshold"
+#define ApeWebViewClassPatternsSTR "max.apeWebViewClassPatterns"
+#define ApeComputeImageTextSTR "max.apeComputeImageText"
+#define ApePatchGUITreeSTR "max.apePatchGUITree"
 #define ApeBaseNamingSTR "max.ape.baseNaming"
 #define ApeBaseNamingAliasSTR "ape.baseNaming"
 #define UseAncestorNamerSTR "max.useAncestorNamer"
 #define UsePatchNamerSTR "max.usePatchNamer"
+#define ApeActionPatchProfileSTR "max.apeActionPatchProfile"
+#define ApeActionPatchDeriveActionsSTR "max.apeActionPatchDeriveActions"
 #define LlmEnabledSTR             "max.llm.enabled"
 #define LlmKnowledgeSTR           "max.llm.knowledge"
 #define LlmWidgetPrioritySTR      "max.llm.widgetpriority"
@@ -1492,6 +1846,73 @@ namespace fastbotx {
                 BLOG("APE: actionRefinementFirst pass order=%s (%s)",
                      this->_apeNamingActionRefinementFirst ? "true" : "false",
                      ApeNamingActionRefinementFirstSTR);
+            } else if (key == ApeAlwaysIgnoreWebViewSTR) {
+                this->_apeAlwaysIgnoreWebView = (value == "true");
+                BLOG("APE: alwaysIgnoreWebView=%s (%s)",
+                     this->_apeAlwaysIgnoreWebView ? "true" : "false",
+                     ApeAlwaysIgnoreWebViewSTR);
+            } else if (key == ApeAlwaysIgnoreWebViewActionSTR) {
+                this->_apeAlwaysIgnoreWebViewAction = (value == "true");
+                BLOG("APE: alwaysIgnoreWebViewAction=%s (%s)",
+                     this->_apeAlwaysIgnoreWebViewAction ? "true" : "false",
+                     ApeAlwaysIgnoreWebViewActionSTR);
+            } else if (key == ApeIgnoreWebViewThresholdSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 0) {
+                        v = 0;
+                    }
+                    if (v > 100000) {
+                        v = 100000;
+                    }
+                    this->_apeIgnoreWebViewThreshold = v;
+                    BLOG("APE: ignoreWebViewThreshold=%d (%s)", v, ApeIgnoreWebViewThresholdSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeIgnoreWebViewThreshold value: %s", value.c_str());
+                }
+            } else if (key == ApeWebViewClassPatternsSTR) {
+                this->_apeWebViewClassPatterns.clear();
+                // Comma/semicolon-separated patterns. Supported:
+                // - Exact match:  android.webkit.WebView
+                // - Prefix match: com.tencent.smtt.sdk.WebView* (suffix '*')
+                {
+                    std::string cur;
+                    cur.reserve(value.size());
+                    auto flush = [&]() {
+                        size_t l = 0;
+                        while (l < cur.size() && (cur[l] == ' ' || cur[l] == '\t')) {
+                            ++l;
+                        }
+                        size_t r = cur.size();
+                        while (r > l && (cur[r - 1] == ' ' || cur[r - 1] == '\t')) {
+                            --r;
+                        }
+                        if (r > l) {
+                            this->_apeWebViewClassPatterns.push_back(cur.substr(l, r - l));
+                        }
+                        cur.clear();
+                    };
+                    for (char ch : value) {
+                        if (ch == ',' || ch == ';') {
+                            flush();
+                        } else {
+                            cur.push_back(ch);
+                        }
+                    }
+                    flush();
+                }
+                BLOG("APE: webViewClassPatterns=%zu (%s)", this->_apeWebViewClassPatterns.size(),
+                     ApeWebViewClassPatternsSTR);
+            } else if (key == ApeComputeImageTextSTR) {
+                this->_apeComputeImageText = (value == "true");
+                BLOG("APE: computeImageText=%s (%s)",
+                     this->_apeComputeImageText ? "true" : "false",
+                     ApeComputeImageTextSTR);
+            } else if (key == ApePatchGUITreeSTR) {
+                this->_apePatchGUITree = (value == "true");
+                BLOG("APE: patchGUITree=%s (%s)",
+                     this->_apePatchGUITree ? "true" : "false",
+                     ApePatchGUITreeSTR);
             } else if (key == ApeBaseNamingSTR || key == ApeBaseNamingAliasSTR) {
                 std::string mode = value;
                 std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
@@ -1527,6 +1948,15 @@ namespace fastbotx {
                 naming::setUsePatchNamer(enabled);
                 BLOG("APE: usePatchNamer=%s (%s) — matches ape.usePatchNamer", enabled ? "true" : "false",
                      UsePatchNamerSTR);
+            } else if (key == ApeActionPatchProfileSTR) {
+                naming::setActionPatchProfile(value);
+                BLOG("APE: actionPatchProfile=%s (%s)", naming::getActionPatchProfile().c_str(),
+                     ApeActionPatchProfileSTR);
+            } else if (key == ApeActionPatchDeriveActionsSTR) {
+                const bool enabled = (value == "true");
+                naming::setActionPatchDeriveActionsFromName(enabled);
+                BLOG("APE: actionPatchDeriveActions=%s (%s)", enabled ? "true" : "false",
+                     ApeActionPatchDeriveActionsSTR);
             } else if (key == LlmEnabledSTR) {
                 this->_llmRuntimeConfig.enabled = (value == "true");
             } else if (key == LlmKnowledgeSTR) {

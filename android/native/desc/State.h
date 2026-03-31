@@ -25,6 +25,7 @@
 #include "Widget.h"
 #include "Element.h"
 #include "ActionFilter.h"
+#include <cstdint>
 #include <vector>
 
 
@@ -195,6 +196,11 @@ namespace fastbotx {
          * @brief Number of distinct widget hashes under the given mask (for "skip Text if would explode").
          */
         virtual size_t getUniqueWidgetCountUnderMask(WidgetKeyMask mask) const;
+
+        /**
+         * Keep only actions whose index has keepMask[i]!=0, always preserving BACK.
+         */
+        void filterActionsByKeepMask(const std::vector<uint8_t> &keepMask);
 #endif
 
         /**
