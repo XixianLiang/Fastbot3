@@ -23,7 +23,7 @@ namespace naming {
 
         std::shared_ptr<Namer> getNamer() const override { return namer_; }
 
-        std::string toXPath() const override;
+        const std::string &toXPath() const override;
 
         void appendXPathLocalProperties(std::string &sb) const override;
 
@@ -52,7 +52,7 @@ namespace naming {
 
         std::shared_ptr<Namer> getNamer() const override { return namer_; }
 
-        std::string toXPath() const override { return xpath_; }
+        const std::string &toXPath() const override { return xpath_; }
 
         void appendXPathLocalProperties(std::string &sb) const override { (void)sb; }
 

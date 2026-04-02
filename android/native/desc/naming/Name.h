@@ -39,7 +39,7 @@ namespace naming {
         virtual std::shared_ptr<Namer> getNamer() const = 0;
 
         /** XPath fragment for this name (APE: toXPath). */
-        virtual std::string toXPath() const = 0;
+        virtual const std::string &toXPath() const = 0;
 
         /** Local predicate fragment after `// *` (any node) for AbstractLocalName-style names. */
         virtual void appendXPathLocalProperties(std::string &sb) const { (void)sb; }

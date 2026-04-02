@@ -161,79 +161,78 @@ namespace fastbotx {
 
         // reset properties, in Preference
         // Performance: Clear hash cache when properties change
+        void invalidateCaches() const { _hashCached = false; _xmlCached = false; }
+
         void reSetResourceID(const std::string &resourceID) { 
             this->_resourceID = resourceID; 
-            this->_hashCached = false; // Invalidate hash cache
+            invalidateCaches();
         }
 
         void reSetContentDesc(const std::string &content) { 
             this->_contentDesc = content; 
-            this->_hashCached = false; // Invalidate hash cache
+            invalidateCaches();
         }
 
         void reSetText(const std::string &text) { 
             this->_text = text; 
-            this->_hashCached = false; // Invalidate hash cache
+            invalidateCaches();
         }
 
         void reSetIndex(const int &index) { 
             this->_index = index; 
-            // Index doesn't affect hash in current implementation, but clear cache for safety
-            this->_hashCached = false;
+            invalidateCaches();
         }
 
         void reSetClassname(const std::string &className) { 
             this->_classname = className; 
-            this->_hashCached = false; // Invalidate hash cache
+            invalidateCaches();
         }
 
         void reSetClickable(bool clickable) { 
             this->_clickable = clickable; 
-            this->_hashCached = false; // Invalidate hash cache
+            invalidateCaches();
         }
 
         void reSetLongClickable(bool longClickable) {
             this->_longClickable = longClickable;
-            this->_hashCached = false;
+            invalidateCaches();
         }
 
         void reSetCheckable(bool checkable) {
             this->_checkable = checkable;
-            this->_hashCached = false;
+            invalidateCaches();
         }
 
         void reSetScrollable(bool scrollable) { 
             this->_scrollable = scrollable; 
-            // Scrollable doesn't affect hash, but clear cache for consistency
-            this->_hashCached = false;
+            invalidateCaches();
         }
 
         void reSetEnabled(bool enable) { 
             this->_enabled = enable; 
-            // Enabled doesn't affect hash, but clear cache for consistency
-            this->_hashCached = false;
+            invalidateCaches();
         }
 
         void reSetBounds(RectPtr rect) { 
             this->_bounds = std::move(rect); 
-            // Bounds doesn't affect hash, but clear cache for consistency
-            this->_hashCached = false;
+            invalidateCaches();
         }
 
         void reSetParent(const std::shared_ptr<Element> &parent) { 
             this->_parent = parent; 
-            // Parent doesn't affect hash, but clear cache for consistency
-            this->_hashCached = false;
+            invalidateCaches();
         }
 
         void reAddChild(const std::shared_ptr<Element> &child) {
             this->_children.emplace_back(child);
-            this->_hashCached = false; // Invalidate hash cache (children affect recursive hash)
+            invalidateCaches();
         }
 
         std::string toJson() const;
 
         std::string toXML() const;
+
+        const std::string &toXMLCached() const;
 
         void fromJson(const std::string &jsonData);
 
@@ -302,6 +301,9 @@ namespace fastbotx {
         // Performance optimization: Cache hash to avoid repeated computation
         mutable long _cachedHash;
         mutable bool _hashCached;
+        
+        mutable std::string _cachedXml;
+        mutable bool _xmlCached = false;
 
         // a construct helper
         static bool _allClickableFalse;

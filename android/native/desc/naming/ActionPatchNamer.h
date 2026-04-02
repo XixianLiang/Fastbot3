@@ -58,7 +58,7 @@ public:
 
     std::shared_ptr<Namer> getNamer() const override { return namer_; }
 
-    std::string toXPath() const override;
+    const std::string &toXPath() const override;
 
     void appendXPathLocalProperties(std::string &sb) const override;
 

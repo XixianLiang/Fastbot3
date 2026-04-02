@@ -334,7 +334,7 @@ ActionPatchName::ActionPatchName(NamerPtr namer, NamePtr baseName, int patch, Sc
     }
 }
 
-std::string ActionPatchName::toXPath() const {
+const std::string &ActionPatchName::toXPath() const {
     return xpath_full_;
 }
 

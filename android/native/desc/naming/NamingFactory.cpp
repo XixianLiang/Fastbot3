@@ -298,13 +298,16 @@ namespace {
         }
 
         std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> node_to_namer;
+        std::unordered_map<gui_tree::GUITreeNode *, NameletPtr> node_to_selected;
         node_to_namer.reserve(all_nodes.size());
+        node_to_selected.reserve(all_nodes.size());
         for (gui_tree::GUITreeNode *n : all_nodes) {
             auto itNl = node_to_namelets.find(n);
             if (itNl == node_to_namelets.end()) {
                 continue;
             }
             NameletPtr sel = selectNameletForNode(itNl->second);
+            node_to_selected[n] = sel;
             if (sel && sel->getNamerPtr()) {
                 node_to_namer[n] = &sel->getNamer();
             }
@@ -316,12 +319,9 @@ namespace {
             if (itNode == node_ref.end()) {
                 continue;
             }
-            auto itNamelets = node_to_namelets.find(raw);
-            if (itNamelets == node_to_namelets.end() || itNamelets->second.empty()) {
-                continue;
-            }
             gui_tree::GUITreeNodePtr nptr = itNode->second;
-            NameletPtr selected = selectNameletForNode(itNamelets->second);
+            auto itSel = node_to_selected.find(raw);
+            NameletPtr selected = (itSel != node_to_selected.end()) ? itSel->second : nullptr;
             if (!selected || !selected->getNamerPtr()) {
                 // Force rebuildTree() to fail via resolveNonDeterminism size guard.
                 out.names.push_back(nullptr);

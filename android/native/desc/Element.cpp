@@ -84,7 +84,8 @@ namespace {
               _focusable(false), _scrollable(false), _longClickable(false), _childCount(0),
               _focused(false), _index(0), _password(false), _selected(false), _isEditable(false),
               _cachedScrollType(ScrollType::NONE), _scrollTypeCached(false),
-              _cachedHash(0), _hashCached(false) {
+              _cachedHash(0), _hashCached(false),
+              _xmlCached(false) {
         _children.clear();
         this->_bounds = Rect::RectZero;
     }
@@ -138,6 +139,7 @@ namespace {
         this->_children.clear();
         this->_childCount = 0;
         this->_hashCached = false;
+        this->_xmlCached = false;
     }
 
 /// According to given xpath selector, containing text, content, classname, resource id, test if
@@ -533,6 +535,14 @@ namespace {
         return xmlStr;
     }
 
+    const std::string &Element::toXMLCached() const {
+        if (!_xmlCached) {
+            _cachedXml = toXML();
+            _xmlCached = true;
+        }
+        return _cachedXml;
+    }
+
     void Element::fromXml(const tinyxml2::XMLDocument &nodeOfDoc, const ElementPtr &parentOfNode) {
         const ::tinyxml2::XMLElement *node = nodeOfDoc.RootElement();
         this->fromXMLNode(node, parentOfNode);
@@ -545,6 +555,8 @@ namespace {
     void Element::fromXMLNode(const tinyxml2::XMLElement *xmlNode, const ElementPtr &parentOfNode) {
         if (nullptr == xmlNode)
             return;
+        this->_hashCached = false;
+        this->_xmlCached = false;
         if (parentOfNode)
             this->_parent = parentOfNode;
         int indexOfNode = 0;

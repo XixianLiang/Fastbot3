@@ -47,7 +47,8 @@ namespace fastbotx {
         }
         
         // Combine class, resource ID, and actions
-        this->_widgetHashcode = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^ ((127U * hashcode3 << 1));
+        this->_widgetHashcodeBase = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^ ((127U * hashcode3 << 1));
+        this->_widgetHashcode = this->_widgetHashcodeBase;
         
         // Include text from widget or children if available
         // Use fast string hash for better performance
@@ -134,7 +135,11 @@ namespace fastbotx {
     }
 
     uintptr_t RichWidget::hashWithMask(WidgetKeyMask mask) const {
-        return Widget::hashWithMask(mask);
+        uintptr_t h = _widgetHashcodeBase;
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Text)) h ^= _hashText;
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::ContentDesc)) h ^= _hashContentDesc;
+        if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Index)) h ^= _hashIndex;
+        return h;
     }
 
 }

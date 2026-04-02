@@ -78,7 +78,11 @@ namespace {
             if (!np) {
                 continue;
             }
-            xs.push_back(np->toXPath());
+            const std::string &xp = np->toXPath();
+            if (xp.empty()) {
+                continue;
+            }
+            xs.push_back(xp);
         }
         // Fast path: GUITree::rebuild() keeps current names sorted lexicographically by toXPath().
         // If input is already sorted, skip the O(n log n) sort.

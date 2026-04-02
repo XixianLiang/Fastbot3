@@ -13,7 +13,7 @@ namespace naming {
         xpath_full_ = localXPathToXPathWithPredicateTail(predicates_);
     }
 
-    std::string LocalXPathName::toXPath() const { return xpath_full_; }
+    const std::string &LocalXPathName::toXPath() const { return xpath_full_; }
 
     void LocalXPathName::appendXPathLocalProperties(std::string &sb) const { sb.append(predicates_); }
 

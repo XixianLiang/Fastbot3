@@ -45,6 +45,7 @@ namespace fastbotx {
         RichWidget();
 
         uintptr_t _widgetHashcode{};
+        uintptr_t _widgetHashcodeBase{};
 
     private:
         /// Get Element valid text. If parent widget are not clickable, get children's valid text

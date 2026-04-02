@@ -71,7 +71,8 @@ namespace gui_tree {
         size_t stateCountAtLastNamingRefinement{0};
         int nonDetPairsAtLastNamingRefinement{0};
         // Pair-driven refine/coarsen context (Java resolveNonDeterminism / batchAbstract style)
-        uintptr_t triggerSourceKeyHash{0};
+        uintptr_t triggerSourceKeyHash{0};        // XML-space hash (for coarsen gate alignment)
+        uintptr_t triggerSourceKeyHashOriginal{0}; // Element-space hash (for blacklist lookup)
         bool triggerSourceKeyExact{false};
         naming::StateKey triggerSourceKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
         uintptr_t triggerActionHash{0};

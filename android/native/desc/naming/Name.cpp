@@ -24,9 +24,17 @@ namespace naming {
 
     Name::~Name() = default;
 
-    bool Name::operator<(const Name &other) const { return toXPath() < other.toXPath(); }
+    bool Name::operator<(const Name &other) const {
+        const std::string &a = toXPath();
+        const std::string &b = other.toXPath();
+        return a < b;
+    }
 
-    bool Name::operator==(const Name &other) const { return toXPath() == other.toXPath(); }
+    bool Name::operator==(const Name &other) const {
+        const std::string &a = toXPath();
+        const std::string &b = other.toXPath();
+        return a == b;
+    }
 
 } // namespace naming
 } // namespace fastbotx
