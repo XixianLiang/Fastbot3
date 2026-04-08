@@ -289,6 +289,25 @@ namespace fastbotx {
         const LlmRuntimeConfig &getLlmRuntimeConfig() const { return this->_llmRuntimeConfig; }
 
         /**
+         * Whether the LLMDroid pipeline is on (MergedState / GPT exploration modes).
+         * Named under max.llm.* for discoverability; orthogonal to max.llm.enabled (LLMTaskAgent HTTP gate).
+         * Default false. Only the literal value "true" enables; omitted key or any other value stays off after reload.
+         * max.config: max.llm.llmdroid=true|false — see android/docs/MIGRATION_LLMDROID_B2.md.
+         */
+        bool isLlmdroidEnabled() const { return this->_llmdroidEnabled; }
+        /**
+         * EXPLORE stage window in seconds for LLMDroid time-mode switching.
+         * max.config: max.llm.llmdroid.exploreWindowSec=N (default 120s).
+         */
+        int getLlmdroidExploreWindowSec() const { return this->_llmdroidExploreWindowSec; }
+
+        /**
+         * Native unit tests only (`test_merged_state` / MIGRATION_LLMDROID_B2 §3.5).
+         * Production monkey code should rely on max.config `max.llm.llmdroid`, not this.
+         */
+        void setLlmdroidEnabledForTests(bool enabled) { this->_llmdroidEnabled = enabled; }
+
+        /**
          * Whether to call LLM knowledge_org for same-function grouping (LLMExplorerAgent).
          * Controlled via max.config: max.llm.knowledge=true|false. Only when true is the LLM called.
          */
@@ -445,6 +464,11 @@ namespace fastbotx {
 
         /// Runtime LLM HTTP configuration loaded from base config.
         LlmRuntimeConfig _llmRuntimeConfig;
+
+        /// max.llm.llmdroid: LLMDroid B2 pipeline (default off). Invalid/missing value treated as false.
+        bool _llmdroidEnabled{false};
+        /// max.llm.llmdroid.exploreWindowSec: time-mode EXPLORE window in seconds (default 120).
+        int _llmdroidExploreWindowSec{120};
 
         /// max.llm.knowledge: when true, LLMExplorerAgent calls knowledge_org for same-function grouping.
         bool _llmKnowledge{false};

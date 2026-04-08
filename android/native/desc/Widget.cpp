@@ -15,6 +15,7 @@
 #include <utility>
 #include <vector>
 #include <cstring>
+#include <sstream>
 
 namespace fastbotx {
 
@@ -315,6 +316,11 @@ namespace fastbotx {
         return this->toXPath();
     }
 
+    std::string Widget::toHTML(const std::vector<ElementPtr> &, bool, int) const {
+        std::ostringstream oss;
+        oss << _clazz << "|" << _resourceID << "|" << _text << "|h=" << hash();
+        return oss.str();
+    }
 
     std::string Widget::toXPath() const {
         // Details cleared for memory (e.g. after state merge); skip per-call log to avoid noise

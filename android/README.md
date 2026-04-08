@@ -7,7 +7,7 @@
 
 ***More detail see at [Fastbot architecture](https://mp.weixin.qq.com/s/QhzqBFZygkIS6C69__smyQ)
 
-We gratefully acknowledge Prof. Ting Su, the SSE Lab at East China Normal University, Dr. Tianxiao Gu（Bytedance）, and Tiesong Liu (OPay) for their valuable support and contributions.
+We gratefully acknowledge Prof. Ting Su, the SSE Lab at East China Normal University, Dr. Tianxiao Gu (Bytedance), Dr. Tianming Liu (Monash University), and Tiesong Liu (OPay) for their valuable support and contributions.
 
 
 ## Features
@@ -55,6 +55,26 @@ We gratefully acknowledge Prof. Ting Su, the SSE Lab at East China Normal Univer
 * **Compatibility**: This feature only affects dynamic state abstraction (`max.staticStateAbstraction=false`). It does not change the refinement/coarsening algorithm itself—only its initial masks and the blacklist of masks that should not be retried.
 
 ### Changelog
+
+**update 2026.5**
+* **LLMDroid mode machine (EXPLORE/NAVIGATE/TEST_FUNCTION)**: Adds coverage-aware LLM guidance that summarizes pages, selects high-value target functions, navigates offline via shortest-path replay, and executes up to 5 guided function-testing steps to break exploration bottlenecks and improve coverage; in our experiments, LLMDroid improves activity coverage by about 20-30% over the DoubleSarsa baseline (see [LLMDROID_ALGORITHM_EXPLANATION.md](./native/agent/LLMDROID_ALGORITHM_EXPLANATION.md)).
+* **How to use (mode A: time mode)**: Set `max.llm.llmdroid=true` in `max.config` (together with normal LLM settings such as `max.llm.enabled`, `max.llm.apiUrl`, `max.llm.apiKey`, and `max.llm.model`), then run Fastbot as usual; tune the EXPLORE window with `max.llm.llmdroid.exploreWindowSec` (default `120`, e.g. set `60` to switch sooner when activity coverage stops growing).
+* **How to use (mode B: external coverage mode, alternative to time mode)**: Enable Fastbot-side collection via `--use-code-coverage jacoco|androlog` and ensure the app under test exposes runtime coverage data first (e.g., integrate JaCoCo for white-box apps, or use an AndroLog-instrumented APK for black-box apps); `/sdcard/config.json` is recommended, and when omitted Fastbot will fallback for JaCoCo (`/sdcard/Android/data/<pkg>/files/coverage.ec` + `/data/local/tmp/<pkg>-classes`), while AndroLog still requires `TotalMethod` (and optional `Tag`, default `METHOD`).
+  Example `/sdcard/config.json` for `--use-code-coverage jacoco`:
+  ```json
+  {
+    "EcFilePath": "/sdcard/Android/data/<your.package.name>/files/coverage.ec",
+    "ClassFilePath": "/data/local/tmp/<your.package.name>-classes"
+  }
+  ```
+  Example `/sdcard/config.json` for `--use-code-coverage androlog`:
+  ```json
+  {
+    "TotalMethod": 12345,
+    "Tag": "METHOD"
+  }
+  ```
+
 
 **update 2026.4**
 * **Static reuse state abstraction**: Added a runtime switch in `max.config` (`max.staticStateAbstraction=true|false`) to control how UI states are abstracted for RL/reuse. The default `false` mode keeps the current per-activity **APE naming** dynamic abstraction (runtime refine/coarsen/rollback). When set to `true`, dynamic abstraction is disabled and a **legacy-compatible hash** is used: each widget is a `RichWidget` whose hash is built from `(class + resource-id + supported actions + valid text/children text, with clickable-children masking)`, and each state hash is `hash(activityName) XOR combineHash(RichWidgets, withOrder)`. This matches the older `ReuseAgent` abstraction and uses a separate FBM file `/sdcard/fastbot_{pkg}.static.fbm` so that dynamic and static reuse models do not interfere with each other.

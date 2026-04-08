@@ -27,6 +27,9 @@
 
 namespace fastbotx {
 
+    // C++14: odr-use (e.g. std::max(kDefaultAlpha, …)) requires a namespace-scope definition.
+    constexpr double SarsaAgent::kDefaultAlpha;
+
     std::string SarsaAgent::DefaultModelSavePath = "/sdcard/fastbot.model.fbm";
 
     SarsaAgent::SarsaAgent(const ModelPtr &model)

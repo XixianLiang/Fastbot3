@@ -2,6 +2,10 @@
  * C++ analogue of Java APE StringCache: intern repeated text / content-desc to cut allocations.
  * removeQuotes + truncateText happen before cache (see ApeTextNormalize + GUITreeFactory).
  */
+/**
+ * @authors Zhao Zhang
+ */
+
 #ifndef FASTBOTX_DESC_APE_STRING_CACHE_H_
 #define FASTBOTX_DESC_APE_STRING_CACHE_H_
 

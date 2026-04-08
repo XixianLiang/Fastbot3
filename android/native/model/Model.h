@@ -396,6 +396,13 @@ namespace gui_tree {
         std::string getCoverageJson() const;
 
         /**
+         * Scalar for LLMDroid CodeCoverageMonitor / stagnation: RL graph stateSize, distinct
+         * activities from reportActivity, and step count. Java: AiClient.getLlmdroidCoverageMetric /
+         * com.android.commands.monkey.utils.CodeCoverage.getCoverage.
+         */
+        double getLlmdroidStagnationMetric() const;
+
+        /**
          * @brief Load persisted dynamic state abstraction policy metadata for the current package (if enabled).
          *
          * Policy file path (per package):

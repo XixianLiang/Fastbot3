@@ -3,6 +3,10 @@
  * for BitmaskNamer when ANCESTOR (+ PARENT) semantics need each node's assigned Namer
  * (APE AncestorNamer useParent branch).
  */
+/**
+ * @authors Zhao Zhang
+ */
+
 #ifndef FASTBOTX_DESC_NAMING_NAMINGRUNTIME_H_
 #define FASTBOTX_DESC_NAMING_NAMINGRUNTIME_H_
 

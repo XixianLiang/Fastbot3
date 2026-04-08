@@ -10,17 +10,41 @@
 #include "State.h"
 #include "RichWidget.h"
 #include "../Base.h"
+#include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 
 namespace fastbotx {
 
+    class ReuseState;
+    typedef std::shared_ptr<ReuseState> ReuseStatePtr;
+
+    class MergedState;
+    typedef std::shared_ptr<MergedState> MergedStatePtr;
+
+    struct MiniGraphEdge {
+        ReuseStatePtr next;
+        ActionPtr action;
+        bool isVisited;
+    };
+
+    struct StateGraphEdge {
+        ActionPtr action;
+        ReuseStatePtr nextState;
+        int remainTimes{1};
+        bool isDrawn{false};
+        uintptr_t hash{};
+        int whichWidget{-1};
+        double createdTime{0};
+    };
+
     /**
      * @brief ReuseState class for building states with RichWidgets
-     * 
+     *
      * ReuseState extends State to use RichWidget instead of regular Widget.
      * RichWidget contains additional information for reuse-based algorithms.
-     * 
+     *
      * This class builds a state that holds all RichWidgets and their associated
      * actions, optimized for reuse-based reinforcement learning algorithms.
      */
@@ -28,7 +52,7 @@ namespace fastbotx {
     public:
         /**
          * @brief Factory method to create a ReuseState from Element and activity name
-         * 
+         *
          * @param element Root Element of the UI hierarchy
          * @param activityName Activity name string pointer
          * @param mask Widget key mask for dynamic state abstraction (default: DefaultWidgetKeyMask)
@@ -37,6 +61,59 @@ namespace fastbotx {
         static std::shared_ptr<ReuseState>
         create(const ElementPtr &element, const stringPtr &activityName,
                WidgetKeyMask mask = DefaultWidgetKeyMask);
+
+        // --- LLMDroid / MergedState overlay (see MIGRATION_LLMDROID_B2.md §3) ---
+
+        void setMergedState(MergedStatePtr mergedState) { _mergedState = std::move(mergedState); }
+
+        MergedStatePtr getMergedState() const { return _mergedState; }
+
+        std::vector<MiniGraphEdge> _miniEdges;
+
+        const std::vector<StateGraphEdge> &getEdges() const { return _edges; }
+
+        void addSubSequentState(const ReuseStatePtr &state);
+
+        /** LLMDroid RL graph: last action chosen while on this ReuseState (edge label to next). */
+        ActionPtr _actionToPerform;
+
+        std::vector<StateGraphEdge> _edges;
+
+        MiniGraphEdge *getUnvisitedMiniEdge();
+
+        void addMiniEdge(MiniGraphEdge edge);
+
+        /** Textual page summary for GPT / MergedState::stateDescription (not RL identity). */
+        std::string getStateDescriptionForMergedState() const;
+
+        /**
+         * Similarity for MergedState merge only (LLMDroid-style widget overlap).
+         * Do not use for APE or RL clustering; see {@link computeSimilarityForMergedState} name.
+         */
+        float computeSimilarityForMergedState(const ReuseStatePtr &target) const;
+
+        /** Widget-overlap similarity for navigation {@link guideCheck} (LLMDroid). */
+        float computeSimilarity(const ReuseStatePtr &target) const;
+
+        ActionPtr findSimilarAction(const ActionPtr &origin);
+
+        ElementPtr findElementById(int id) const;
+
+        WidgetPtr getWidgetForElement(const ElementPtr &element) const;
+
+        int findWhichWidget(WidgetPtr target) const;
+
+        WidgetPtr findWidgetByHashAndLocation(uintptr_t hash, int location) const;
+
+        std::vector<WidgetPtr> getAllWidgets() const;
+
+        std::vector<ActivityStateActionPtr> findActionsByWidget(WidgetPtr widget) const;
+
+        /** Resolve action index in {@link #getActions} from GPT element id + {@link ActionType}. */
+        int findActionByElementId(int elementId, int actionType);
+
+        /** Widgets in this state whose widget hash is not present in {@code target} (LLMDroid reanalysis). */
+        std::vector<WidgetPtr> diffWidgets(const ReuseStatePtr &target);
 
     protected:
         virtual void buildStateFromElement(WidgetPtr parentWidget, ElementPtr element);
@@ -77,9 +154,18 @@ namespace fastbotx {
 
     private:
         void buildFromElement(WidgetPtr parentWidget, ElementPtr elem) override;
-    };
 
-    typedef std::shared_ptr<ReuseState> ReuseStatePtr;
+        void rebuildElementIdMaps(const ElementPtr &root);
+
+        MergedStatePtr _mergedState;
+        ElementPtr _rootElement;
+        std::unordered_map<int, ElementPtr> _elementByStableId;
+        std::unordered_map<const Element *, WidgetPtr> _elementPtrToWidget;
+
+        std::unordered_set<uintptr_t> _existedStateGraphEdges;
+
+        ActivityStateActionPtr findActionByWidgetHash(uintptr_t h, ActionType actionType) const;
+    };
 
 }
 

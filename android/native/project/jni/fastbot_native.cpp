@@ -16,6 +16,7 @@
 #include <random>
 #include <chrono>
 #include <cstring>
+#include <limits>
 #include <jni.h>
 
 #ifdef __cplusplus
@@ -29,6 +30,39 @@ static JavaVM *g_jvm = nullptr;
 static jobject g_llmHttpRunner = nullptr;
 static jmethodID g_llmHttpDoPostFromPrompt = nullptr;
 static jmethodID g_llmHttpDoPostFromPayload = nullptr;
+
+// CodeCoverage.getCoverage() (Jacoco / AndroLog / AiClient fallback) for LLMDroid stagnation
+static jclass g_code_coverage_class = nullptr;
+static jmethodID g_code_coverage_get = nullptr;
+static jmethodID g_code_coverage_is_external_enabled = nullptr;
+
+static void initCodeCoverageJvm(JNIEnv *env) {
+    if (g_code_coverage_class != nullptr) {
+        return;
+    }
+    jclass local = env->FindClass("com/android/commands/monkey/utils/CodeCoverage");
+    if (local == nullptr) {
+        env->ExceptionClear();
+        BLOGE("CodeCoverage: FindClass failed");
+        return;
+    }
+    g_code_coverage_class = static_cast<jclass>(env->NewGlobalRef(local));
+    env->DeleteLocalRef(local);
+    if (g_code_coverage_class == nullptr) {
+        return;
+    }
+    g_code_coverage_get = env->GetStaticMethodID(g_code_coverage_class, "getCoverage", "()D");
+    if (g_code_coverage_get == nullptr) {
+        env->ExceptionClear();
+        BLOGE("CodeCoverage: getCoverage ()D not found");
+    }
+    g_code_coverage_is_external_enabled =
+            env->GetStaticMethodID(g_code_coverage_class, "isExternalCoverageEnabled", "()Z");
+    if (g_code_coverage_is_external_enabled == nullptr) {
+        env->ExceptionClear();
+        BLOGE("CodeCoverage: isExternalCoverageEnabled ()Z not found");
+    }
+}
 
 // Fuzzer: RNG and one fuzz action JSON (performance §3.3)
 static std::mt19937 &fuzzRng() {
@@ -218,6 +252,7 @@ jobject JNICALL Java_com_bytedance_fastbot_AiClient_getActionFromBufferNativeStr
 // InitAgent: for single device, just addAgent as empty device
 void JNICALL Java_com_bytedance_fastbot_AiClient_initAgentNative(JNIEnv *env, jobject, jint agentType,
                                                                  jstring packageName, jint deviceType) {
+    initCodeCoverageJvm(env);
     if (nullptr == _fastbot_model) {
         _fastbot_model = fastbotx::Model::create();
     }
@@ -354,6 +389,12 @@ jstring JNICALL Java_com_bytedance_fastbot_AiClient_getCoverageJsonNative(JNIEnv
     return env->NewStringUTF(json.c_str());
 }
 
+// LLMDroid stagnation metric: graph size + activity diversity + step count scalar.
+jdouble JNICALL Java_com_bytedance_fastbot_AiClient_getLlmdroidCoverageMetricNative(JNIEnv *, jobject) {
+    if (nullptr == _fastbot_model) return 0.0;
+    return static_cast<jdouble>(_fastbot_model->getLlmdroidStagnationMetric());
+}
+
 // Save reuse model when test ends normally (Agent destructor is not called because _fastbot_model is static).
 void JNICALL Java_com_bytedance_fastbot_AiClient_saveReuseModelNative(JNIEnv *, jobject) {
     if (nullptr == _fastbot_model) return;
@@ -391,9 +432,9 @@ JNIEXPORT void JNICALL Java_com_bytedance_fastbot_AiClient_nativeRegisterLlmHttp
     g_llmHttpRunner = env->NewGlobalRef(thiz);
     jclass c = env->GetObjectClass(thiz);
     g_llmHttpDoPostFromPrompt = env->GetMethodID(c, "doLlmHttpPostFromPrompt",
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/String;");
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)Ljava/lang/String;");
     g_llmHttpDoPostFromPayload = env->GetMethodID(c, "doLlmHttpPostFromPayload",
-        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;I)Ljava/lang/String;");
+        "(Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;II)Ljava/lang/String;");
     if (g_llmHttpDoPostFromPrompt == nullptr || g_llmHttpDoPostFromPayload == nullptr) {
         BLOGE("LLM Java HTTP: GetMethodID failed; LLM HTTP will fail until runner is registered");
         env->DeleteGlobalRef(g_llmHttpRunner);
@@ -412,6 +453,7 @@ bool llmHttpPostViaJavaWithPrompt(const char *url,
                                   const char *prompt,
                                   const char *model,
                                   int maxTokens,
+                                  int timeoutMs,
                                   std::string *outResponse) {
     if (!g_jvm || !g_llmHttpRunner || !g_llmHttpDoPostFromPrompt || !outResponse) {
         BLOGE("LLM Java HTTP: runner not registered (g_jvm=%d g_runner=%d g_method=%d)", !!g_jvm, !!g_llmHttpRunner, !!g_llmHttpDoPostFromPrompt);
@@ -430,7 +472,8 @@ bool llmHttpPostViaJavaWithPrompt(const char *url,
     jstring jPrompt = env->NewStringUTF(prompt ? prompt : "");
     jstring jModel = env->NewStringUTF(model ? model : "");
     jstring jResult = (jstring) env->CallObjectMethod(g_llmHttpRunner, g_llmHttpDoPostFromPrompt,
-                                                       jUrl, jKey, jPrompt, jModel, static_cast<jint>(maxTokens));
+                                                       jUrl, jKey, jPrompt, jModel, static_cast<jint>(maxTokens),
+                                                       static_cast<jint>(timeoutMs));
     env->DeleteLocalRef(jUrl);
     env->DeleteLocalRef(jKey);
     env->DeleteLocalRef(jPrompt);
@@ -462,6 +505,7 @@ bool llmHttpPostViaJavaWithPayload(const char *url,
                                     const char *payloadJson,
                                     const char *model,
                                     int maxTokens,
+                                    int timeoutMs,
                                     std::string *outResponse) {
     if (!g_jvm || !g_llmHttpRunner || !g_llmHttpDoPostFromPayload || !outResponse) {
         BLOGE("LLM Java HTTP: runner not registered");
@@ -481,7 +525,8 @@ bool llmHttpPostViaJavaWithPayload(const char *url,
     jstring jPayload = env->NewStringUTF(payloadJson ? payloadJson : "{}");
     jstring jModel = env->NewStringUTF(model ? model : "");
     jstring jResult = (jstring) env->CallObjectMethod(g_llmHttpRunner, g_llmHttpDoPostFromPayload,
-                                                     jUrl, jKey, jPromptType, jPayload, jModel, static_cast<jint>(maxTokens));
+                                                     jUrl, jKey, jPromptType, jPayload, jModel, static_cast<jint>(maxTokens),
+                                                     static_cast<jint>(timeoutMs));
     env->DeleteLocalRef(jUrl);
     env->DeleteLocalRef(jKey);
     env->DeleteLocalRef(jPromptType);
@@ -506,6 +551,61 @@ bool llmHttpPostViaJavaWithPayload(const char *url,
     env->DeleteLocalRef(jResult);
     if (attach == JNI_EDETACHED) g_jvm->DetachCurrentThread();
     return true;
+}
+
+double getLlmdroidCoverageFromJava() {
+    if (g_jvm == nullptr || g_code_coverage_class == nullptr || g_code_coverage_get == nullptr) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    JNIEnv *env = nullptr;
+    jint attach = g_jvm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+    const bool needDetach = (attach == JNI_EDETACHED);
+    if (needDetach) {
+        g_jvm->AttachCurrentThread(&env, nullptr);
+    }
+    if (env == nullptr) {
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    const jdouble v = env->CallStaticDoubleMethod(g_code_coverage_class, g_code_coverage_get);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        if (needDetach) {
+            g_jvm->DetachCurrentThread();
+        }
+        return std::numeric_limits<double>::quiet_NaN();
+    }
+    if (needDetach) {
+        g_jvm->DetachCurrentThread();
+    }
+    return static_cast<double>(v);
+}
+
+bool isLlmdroidExternalCoverageEnabledFromJava() {
+    if (g_jvm == nullptr || g_code_coverage_class == nullptr || g_code_coverage_is_external_enabled == nullptr) {
+        return false;
+    }
+    JNIEnv *env = nullptr;
+    jint attach = g_jvm->GetEnv(reinterpret_cast<void **>(&env), JNI_VERSION_1_6);
+    const bool needDetach = (attach == JNI_EDETACHED);
+    if (needDetach) {
+        g_jvm->AttachCurrentThread(&env, nullptr);
+    }
+    if (env == nullptr) {
+        return false;
+    }
+    const jboolean enabled =
+            env->CallStaticBooleanMethod(g_code_coverage_class, g_code_coverage_is_external_enabled);
+    if (env->ExceptionCheck()) {
+        env->ExceptionClear();
+        if (needDetach) {
+            g_jvm->DetachCurrentThread();
+        }
+        return false;
+    }
+    if (needDetach) {
+        g_jvm->DetachCurrentThread();
+    }
+    return enabled == JNI_TRUE;
 }
 
 } // namespace fastbotx

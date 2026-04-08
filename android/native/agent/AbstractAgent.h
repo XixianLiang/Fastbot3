@@ -2,7 +2,7 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
- * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang, Tianming Liu
  */
 
 #ifndef AbstractAgent_H_
@@ -15,6 +15,8 @@
 #include "State.h"
 #include "ActionFilter.h"
 #include "Graph.h"
+
+#include <memory>
 
 namespace fastbotx {
 
@@ -35,6 +37,8 @@ namespace fastbotx {
 
     class Model; // forward declaration
     typedef std::shared_ptr<Model> ModelPtr;
+    class ReuseState; // LLMDroid B2: processState
+    struct LlmdroidAgentOverlay;
 
     /**
      * @brief Abstract base class for all test agents
@@ -160,6 +164,22 @@ namespace fastbotx {
             (void) action;
             return "";
         }
+
+        /**
+         * LLMDroid overlay: invoked from Model::getOperateOpt only when max.llm.llmdroid=true, after
+         * addState/visit and recordTransition — canonical graph `state` identity matches the closed APE block.
+         * Updates MergedStateGraph, queues STATE_OVERVIEW / REANALYSIS to GPTAgent worker (MIGRATION_LLMDROID_B2 §4.7 A).
+         * HTTP calls need max.llm.enabled + URL/key so Model::getLlmClient() is non-null.
+         * Hard rule (§3.3): do not call applyDynamicAbstractionIdentityHash, touch naming::StateKey for RL id,
+         * or use getMergedState() inside resolveNewAction/selectAction for DoubleSarsa / curiosity features.
+         */
+        virtual void processState(const std::shared_ptr<ReuseState> &state);
+
+    private:
+        /** Lazy LLMDroid MergedStateGraph + GPT worker (max.llm.llmdroid only). */
+        void ensureLlmdroidRuntime();
+
+        std::unique_ptr<LlmdroidAgentOverlay> _llmdroid;
 
     protected:
 

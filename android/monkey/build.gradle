@@ -88,6 +88,7 @@ repositories {
 
 dependencies {
     compileOnly files('libs/framework.jar')
+    implementation 'org.jacoco:org.jacoco.core:0.8.8'
     implementation 'com.google.code.gson:gson:2.8.9'
     implementation 'com.squareup.okhttp3:okhttp:3.12.12'
     implementation 'com.squareup.okhttp3:logging-interceptor:3.12.12'
@@ -122,6 +123,7 @@ makeJar.dependsOn(clearJar, assemble)
 
 task makeThirdPartJar(type: Jar) {
     description = 'Merge all runtime dependencies into kea2-third-party.jar'
+    duplicatesStrategy = org.gradle.api.file.DuplicatesStrategy.EXCLUDE
     from {
         configurations.thirdPartDependencies.collect { dependency ->
             dependency.isDirectory() ? dependency : zipTree(dependency)

@@ -9,6 +9,7 @@
 
 #include "Model.h"
 #include "StateFactory.h"
+#include "../desc/reuse/ReuseState.h"
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
 #include "../desc/gui_tree/GUITreeNode.h"
 #include "../desc/reuse/ActivityNameAction.h"
@@ -1319,6 +1320,18 @@ namespace fastbotx {
             recordTransition(agent, state);
         }
 #endif
+        // LLMDroid (after addState,
+        // visit, recordTransition). APE/RL identity for `state` is already fixed above — processState must
+        // not call applyDynamicAbstractionIdentityHash, mutate StateKey, or alter Graph dedup keys.
+        // Gated by max.llm.llmdroid at Model layer so default runs skip dynamic_pointer_cast + virtual call.
+        {
+            const PreferencePtr pref = _preference ? _preference : Preference::inst();
+            if (pref && pref->isLlmdroidEnabled() && state && agent) {
+                if (ReuseStatePtr reuseState = std::dynamic_pointer_cast<ReuseState>(state)) {
+                    agent->processState(reuseState);
+                }
+            }
+        }
         // Step 5b: Removed — image now stays in Java (setLastScreenshotForLlm + doLlmHttpPostFromPrompt).
         // Native no longer returns NOP when screenshotBytes is empty; Java always has the image when needed.
         // Step 6: Optionally delegate to LLMTaskAgent before RL (pass pre-matched task from raw tree).
@@ -1355,11 +1368,22 @@ namespace fastbotx {
         if (llmAction) {
             opt->allowFuzzing = false;
         }
+        const PreferencePtr prefLlmdroid = _preference ? _preference : Preference::inst();
+        if (prefLlmdroid && prefLlmdroid->isLlmdroidEnabled() && state && action) {
+            if (ReuseStatePtr rs = std::dynamic_pointer_cast<ReuseState>(state)) {
+                rs->_actionToPerform = action;
+            }
+        }
         // Optional: agent-provided LLM-generated input text (e.g. LLMExplorerAgent content-aware input)
         if (agent) {
             std::string agentInputText = agent->getInputTextForAction(state, action);
             if (!agentInputText.empty()) {
                 opt->setText(agentInputText);
+            }
+        }
+        if (auto asa = std::dynamic_pointer_cast<ActivityStateAction>(action)) {
+            if (!asa->getInputText().empty()) {
+                opt->setText(asa->getInputText());
             }
         }
 
@@ -4887,6 +4911,15 @@ namespace fastbotx {
         }
         j["testedActivities"] = arr;
         return j.dump();
+    }
+
+    double Model::getLlmdroidStagnationMetric() const {
+        std::lock_guard<std::mutex> lock(_coverageMutex);
+        const size_t states = _graph ? _graph->stateSize() : 0;
+        const size_t acts = _visitedActivities.size();
+        const int steps = _coverageStepCount;
+        return static_cast<double>(states) + 0.01 * static_cast<double>(acts) +
+               1e-9 * static_cast<double>(steps);
     }
 
     void Model::loadStateAbstractionPolicy() {

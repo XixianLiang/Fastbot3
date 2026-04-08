@@ -61,6 +61,7 @@ import com.android.commands.monkey.source.MonkeySourceApeBase;
 import com.android.commands.monkey.source.MonkeySourceApeNative;
 import com.android.commands.monkey.source.MonkeySourceApeU2;
 import com.android.commands.monkey.source.MonkeySourceRandom;
+import com.android.commands.monkey.utils.CodeCoverage;
 import com.android.commands.monkey.utils.Config;
 import com.android.commands.monkey.utils.Logger;
 import com.android.commands.monkey.utils.MonkeyUtils;
@@ -76,7 +77,9 @@ import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
 import java.io.Writer;
+import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.util.Date;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -87,6 +90,8 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.Random;
 import java.util.Set;
+
+import org.json.JSONObject;
 
 
 /**
@@ -369,6 +374,12 @@ public class Monkey {
     private String mAgentType;
 
     /**
+     * Stagnation metric source when using Jacoco / AndroLog (LLMDroid-Fastbot {@code --use-code-coverage}).
+     */
+    private String mMonitorMetric = "time";
+    private CodeCoverage mCodeCoverage = null;
+
+    /**
      * outputdir for test result
      */
     private File mOutputDirectory = null;
@@ -625,6 +636,116 @@ public class Monkey {
     /**
      * Common init for ApeNative and ApeU2 event sources. Reduces duplication.
      */
+    /**
+     * Initialize Jacoco or AndroLog coverage per {@code /sdcard/config.json} when {@code mMonitorMetric} requests it.
+     */
+    private String resolveEnvPlaceholder(String value) {
+        if (value == null || value.isEmpty()) {
+            return "";
+        }
+        if (value.length() >= 4 && value.startsWith("${") && value.endsWith("}")) {
+            String envName = value.substring(2, value.length() - 1);
+            String envVal = System.getenv(envName);
+            return envVal == null ? value : envVal;
+        }
+        return value;
+    }
+
+    private void logFastbotStartupSummary() {
+        String pkg = (mMainApps != null && !mMainApps.isEmpty()) ? mMainApps.get(0).getPackageName() : "unknown";
+        boolean llmdroidEnabled = Config.getBoolean("max.llm.llmdroid", false);
+        String llmModel = Config.get("max.llm.model", "");
+        String llmApiUrl = resolveEnvPlaceholder(Config.get("max.llm.apiUrl", ""));
+        boolean hasApiKey = !Config.get("max.llm.apiKey", "").isEmpty();
+        String coverageMode = (mMonitorMetric == null || mMonitorMetric.isEmpty()) ? "time" : mMonitorMetric;
+        String agent = (mAgentType == null || mAgentType.isEmpty()) ? "DoubleSarsa(default)" : mAgentType;
+
+        Logger.println("========== Fastbot Startup ==========");
+        Logger.println("[Startup] package=" + pkg + ", agent=" + agent + ", seed=" + mSeed + ", count=" + mCount);
+        Logger.println("[Startup] LLM enabled=" + Config.llmEnabled + ", LLMDroid enabled=" + llmdroidEnabled
+                + ", model=" + (llmModel.isEmpty() ? "<empty>" : llmModel));
+        Logger.println("[Startup] LLM apiUrl=" + (llmApiUrl.isEmpty() ? "<empty>" : llmApiUrl)
+                + ", apiKeyConfigured=" + hasApiKey);
+        Logger.println("[Startup] coverage mode=" + coverageMode + " (time|jacoco|androlog)");
+        Logger.println("=====================================");
+    }
+
+    private boolean initCodeCoverage() {
+        if ("androlog".equalsIgnoreCase(mMonitorMetric)) {
+            JSONObject config = null;
+            try (BufferedReader reader = new BufferedReader(new FileReader("/sdcard/config.json"))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+                config = new JSONObject(sb.toString());
+            } catch (Exception e) {
+                Logger.println("[AndroLog] /sdcard/config.json not found or invalid: " + e.getMessage());
+            }
+            try {
+                int totalMethod = config != null ? config.optInt("TotalMethod", -1) : -1;
+                String logIdentifier = config != null ? config.optString("Tag", "") : "";
+                if (logIdentifier.isEmpty()) {
+                    logIdentifier = "METHOD";
+                    Logger.println("[AndroLog] Tag not configured, fallback to default Tag=METHOD");
+                }
+                if (totalMethod <= 0) {
+                    throw new Exception("Must specify TotalMethod (>0) in /sdcard/config.json when using androlog!");
+                }
+                mCodeCoverage = new CodeCoverage(totalMethod, logIdentifier);
+            } catch (Exception e) {
+                Logger.println(e.getMessage());
+                return false;
+            }
+            Logger.println("[AndroLog] Monitor code coverage using AndroLog");
+            return true;
+        }
+        if ("jacoco".equalsIgnoreCase(mMonitorMetric)) {
+            Logger.println("[Jacoco] start initializing jacoco");
+            JSONObject config = null;
+            try (BufferedReader reader = new BufferedReader(new FileReader("/sdcard/config.json"))) {
+                StringBuilder sb = new StringBuilder();
+                String line;
+                while ((line = reader.readLine()) != null) {
+                    sb.append(line);
+                }
+                config = new JSONObject(sb.toString());
+            } catch (Exception e) {
+                Logger.println("[Jacoco] /sdcard/config.json not found or invalid, fallback to defaults when possible: " + e.getMessage());
+            }
+            try {
+                String pkg = mMainApps.get(0).getPackageName();
+                String defaultEcFilepath = "/sdcard/Android/data/" + pkg + "/files/coverage.ec";
+                String defaultClassFilepath = "/data/local/tmp/" + pkg + "-classes";
+
+                String ecFilepath = config != null ? config.optString("EcFilePath", "") : "";
+                String classFilepath = config != null ? config.optString("ClassFilePath", "") : "";
+                if (ecFilepath.isEmpty()) {
+                    ecFilepath = defaultEcFilepath;
+                    Logger.println("[Jacoco] EcFilePath not configured, fallback to " + ecFilepath);
+                }
+                if (classFilepath.isEmpty()) {
+                    classFilepath = defaultClassFilepath;
+                    Logger.println("[Jacoco] ClassFilePath not configured, fallback to " + classFilepath);
+                }
+
+                File outDir = mOutputDirectory != null ? mOutputDirectory : Environment.getLegacyExternalStorageDirectory();
+                SimpleDateFormat dateFormat = (SimpleDateFormat) DateFormat.getDateTimeInstance();
+                dateFormat.applyPattern("yyMMdd_HHmmss");
+                String formattedTime = dateFormat.format(new Date());
+                mCodeCoverage = new CodeCoverage(outDir, pkg + "_" + formattedTime + ".ec", ecFilepath, classFilepath);
+            } catch (Exception e) {
+                Logger.println(e.getMessage());
+                return false;
+            }
+            Logger.println("[Jacoco] Monitor code coverage using jacoco");
+            return true;
+        }
+        Logger.println("Using time instead of code coverage (no --use-code-coverage androlog|jacoco)");
+        return true;
+    }
+
     private void initApeEventSource(MonkeyEventSource source, String modeLabel) {
         Logger.println("// running " + modeLabel);
         AndroidDevice.initializeAndroidDevice(mAm, mWm, mPm);
@@ -755,6 +876,11 @@ public class Monkey {
             return -5;
         }
 
+        logFastbotStartupSummary();
+
+        if (!initCodeCoverage()) {
+            return -1;
+        }
 
         mRandom = new Random(mSeed);
         String name = mMainApps.get(0).getPackageName();
@@ -1012,6 +1138,14 @@ public class Monkey {
                         mUseApeU2 = true;
                         agentType = nextOptionData();
                         mAgentType = agentType;
+                        break;
+                    case "--use-code-coverage":
+                        String cov = nextOptionData();
+                        if ("androlog".equalsIgnoreCase(cov)) {
+                            mMonitorMetric = "androlog";
+                        } else if ("jacoco".equalsIgnoreCase(cov)) {
+                            mMonitorMetric = "jacoco";
+                        }
                         break;
                     case "--replay-log":
                         String logFile = nextOptionData();
@@ -1885,6 +2019,7 @@ public class Monkey {
                 "              [--ignore-crashes] [--ignore-timeouts]\n" +
                 "              [--ignore-security-exceptions]\n" +
                 "              [--agent [AGENT_TYPE(walk,stat)]]\n" +
+                "              [--use-code-coverage androlog|jacoco]\n" +
                 "              [--running-minutes MINUTES]\n" +
                 "              [--profile-period N-STEPS]\n" +
                 "              [--monitor-native-crashes] [--ignore-native-crashes]\n" +

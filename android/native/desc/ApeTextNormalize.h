@@ -1,6 +1,10 @@
 /*
  * String normalization aligned with Java APE GUITreeBuilder (text / content-desc for naming & DOM).
  */
+/**
+ * @authors Zhao Zhang
+ */
+
 #ifndef FASTBOTX_DESC_APE_TEXT_NORMALIZE_H_
 #define FASTBOTX_DESC_APE_TEXT_NORMALIZE_H_
 

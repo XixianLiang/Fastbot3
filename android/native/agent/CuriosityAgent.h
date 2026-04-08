@@ -1,8 +1,6 @@
+
 /**
- * @authors Zhao Zhang
- */
-/**
- * Curiosity-driven exploration agent (WebRLED-aligned).
+ * Curiosity-driven exploration agent
  *
  * Aligns with WebRLED (arXiv:2504.19237) curiosity-driven reward model:
  * - Dual novelty: (1) Episode-internal novelty — prefer leaving states visited often in current episode.
@@ -11,6 +9,10 @@
  * - Action selection: ε-greedy over curiosity score (with probability ε random, else greedy max score).
  * - Episode resets on CLEAN_RESTART (state-abstraction change clears episode counts).
  */
+/**
+ * @authors Zhao Zhang
+ */
+
 #ifndef FASTBOTX_CURIOSITY_AGENT_H
 #define FASTBOTX_CURIOSITY_AGENT_H
 

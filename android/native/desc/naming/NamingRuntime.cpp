@@ -1,3 +1,7 @@
+/**
+ * @authors Zhao Zhang
+ */
+
 #include "NamingRuntime.h"
 
 namespace fastbotx {

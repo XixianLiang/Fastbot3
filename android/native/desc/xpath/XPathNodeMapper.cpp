@@ -1,3 +1,7 @@
+/**
+ * @authors Zhao Zhang
+ */
+
 #include "XPathNodeMapper.h"
 
 #include <map>

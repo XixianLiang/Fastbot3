@@ -10,6 +10,7 @@
 
 #include <set>
 #include <map>
+#include <vector>
 #include <string>
 #include <memory>
 #include "Element.h"
@@ -83,6 +84,18 @@ namespace fastbotx {
 
         std::string buildFullXpath() const;
 
+        /**
+         * LLMDroid-compatible signature; Fastbot3 returns a stable summary string (class, id, text, hash),
+         * not a DOM subtree. Parameters are ignored.
+         */
+        std::string toHTML(const std::vector<ElementPtr> &elementToMerge = {},
+                          bool noChild = true, int actionId = -1) const;
+
+        /** GPT-assigned function name for this widget (LLMDroid / MergedState overlay only). */
+        const std::string &getFunctionLabel() const { return _functionLabel; }
+
+        void setFunctionLabel(std::string label) { _functionLabel = std::move(label); }
+
         virtual void clearDetails();
 
         void fillDetails(const std::shared_ptr<Widget> &copy);
@@ -120,6 +133,7 @@ namespace fastbotx {
         RectPtr _bounds;
         std::string _contextDesc;
         std::set<ActionType> _actions;
+        std::string _functionLabel;
     };
 
 

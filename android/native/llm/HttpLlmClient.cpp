@@ -245,6 +245,7 @@ namespace fastbotx {
                                               prompt.c_str(),
                                               _config.model.c_str(),
                                               _config.maxTokens,
+                                              _config.timeoutMs,
                                               &outResponse);
         if (!ok) {
             BLOGE("HttpLlmClient: Java HTTP POST failed (runner not registered, Java returned null, or network/API error; check LLM Java HTTP logs)");
@@ -328,6 +329,7 @@ namespace fastbotx {
                                                 payloadJson.c_str(),
                                                 _config.model.c_str(),
                                                 _config.maxTokens,
+                                                _config.timeoutMs,
                                                 &outResponse);
         if (!ok) {
             BLOGE("HttpLlmClient: Java HTTP POST (payload) failed");

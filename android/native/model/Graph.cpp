@@ -2,14 +2,21 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
- * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang, Tianming Liu
  */
 #ifndef  Graph_CPP_
 #define  Graph_CPP_
 
 
 #include "Graph.h"
+#include "../desc/reuse/ReuseState.h"
+#include "../events/Preference.h"
 #include "../utils.hpp"
+#include <algorithm>
+#include <deque>
+#include <limits>
+#include <queue>
+#include <sstream>
 #include <unordered_set>
 #include <vector>
 
@@ -101,7 +108,9 @@ namespace fastbotx {
         
         // Process and index all actions from this state
         addActionFromState(state);
-        
+
+        buildStateGraph(std::dynamic_pointer_cast<ReuseState>(state));
+
         return state;
     }
 
@@ -136,6 +145,8 @@ namespace fastbotx {
         distriIt->second.second = 1.0 * distriIt->second.first / this->_totalDistri;
 
         addActionFromState(canonical);
+
+        buildStateGraph(std::dynamic_pointer_cast<ReuseState>(canonical));
     }
 
     size_t Graph::removeStatesByHash(const std::unordered_set<uintptr_t> &stateHashes) {
@@ -251,6 +262,235 @@ namespace fastbotx {
         
         BDLOG("unvisited action: %zu, visited action %zu", this->_unvisitedActions.size(),
               this->_visitedActions.size());
+    }
+
+    void Graph::buildStateGraph(const ReuseStatePtr &reuseState) {
+        const PreferencePtr pref = Preference::inst();
+        if (!pref || !pref->isLlmdroidEnabled() || !reuseState) {
+            return;
+        }
+        if (!_llmdroidFirstState) {
+            _llmdroidFirstState = reuseState;
+            _llmdroidCurrentState = reuseState;
+            _llmdroidCursor = _llmdroidFirstState;
+            return;
+        }
+        _llmdroidCurrentState->addSubSequentState(reuseState);
+        _llmdroidCurrentState = reuseState;
+    }
+
+    ReuseStatePtr Graph::findReuseStateById(int id) {
+        auto result = std::find_if(_states.begin(), _states.end(), [id](const StatePtr &s) {
+            return s && s->getIdi() == id;
+        });
+        if (result != _states.end()) {
+            return std::dynamic_pointer_cast<ReuseState>(*result);
+        }
+        BLOG("Graph::findReuseStateById: no state id=%d", id);
+        return nullptr;
+    }
+
+    void Graph::processPaths(std::vector<Path> &paths, int source, int dest) {
+        std::sort(paths.begin(), paths.end(), [](const Path &a, const Path &b) { return a.length < b.length; });
+        if (paths.size() >= 2) {
+            std::sort(paths.begin() + 1, paths.end(), [](const Path &a, const Path &b) { return a.time > b.time; });
+        }
+        if (paths.size() > 3) {
+            paths.resize(3);
+        }
+        for (size_t i = 0; i < paths.size(); i++) {
+            BLOG("[GRAPH] PATH %zu time %f length %zu: %s", i, paths[i].time, paths[i].length,
+                 pathToString(paths[i]).c_str());
+            paths[i] = transformPath(std::move(paths[i]), source, dest);
+        }
+    }
+
+    Path Graph::transformPath(Path origin, int source, int dest) {
+        Path res;
+        std::stringstream ss;
+        const int curId = _llmdroidCurrentState ? _llmdroidCurrentState->getIdi() : -1;
+        ss << "State" << curId;
+        if (curId != 0 && source == 0) {
+            res.steps.push(Step{0, Action::RESTART, 0.0});
+            ss << "-- RESTART -->State0";
+        } else if (curId == 0 && source == 0) {
+            res.steps.push(Step{0, Action::NOP, 0.0});
+            ss << "-- NOP -->State0";
+        }
+
+        while (!origin.steps.empty()) {
+            Step step = origin.steps.front();
+            origin.steps.pop();
+            if (step.action && step.action->getActionType() == ActionType::RESTART) {
+                while (!res.steps.empty()) {
+                    res.steps.pop();
+                }
+                ss.str("");
+                ss << "State" << curId;
+            }
+            step.node = (!origin.steps.empty()) ? origin.steps.front().node : dest;
+            res.steps.push(step);
+            ss << "-- " << (step.action ? step.action->toDescription() : "") << " -->State" << step.node;
+        }
+
+        BLOG("[GRAPH] transformed path\n%s", ss.str().c_str());
+        res.length = res.steps.size();
+        res.time = origin.time;
+        return res;
+    }
+
+    std::vector<std::vector<Step>> Graph::traceback(std::vector<bool> &is_used,
+                                                    std::vector<std::vector<Step>> &parent,
+                                                    int source,
+                                                    int dest,
+                                                    int layer) {
+        if (source == dest) {
+            return std::vector<std::vector<Step>>(1);
+        }
+        if (layer > 10) {
+            return std::vector<std::vector<Step>>();
+        }
+        if (static_cast<size_t>(dest) >= is_used.size()) {
+            return std::vector<std::vector<Step>>();
+        }
+        if (is_used[static_cast<size_t>(dest)]) {
+            return std::vector<std::vector<Step>>();
+        }
+        is_used[static_cast<size_t>(dest)] = true;
+        std::vector<std::vector<Step>> out;
+        const std::vector<Step> &precursors = parent[static_cast<size_t>(dest)];
+        for (const Step &precursor : precursors) {
+            std::vector<std::vector<Step>> sub = traceback(is_used, parent, source, precursor.node, layer + 1);
+            for (auto &current_path : sub) {
+                current_path.push_back(precursor);
+                out.push_back(std::move(current_path));
+            }
+        }
+        is_used[static_cast<size_t>(dest)] = false;
+        return out;
+    }
+
+    std::vector<Path> Graph::dijkstra(int source, int dest) {
+        const int stateNum = static_cast<int>(_states.size());
+        if (stateNum <= 0 || source < 0 || dest < 0 || source >= stateNum || dest >= stateNum) {
+            return {};
+        }
+        std::vector<int> dist(static_cast<size_t>(stateNum), std::numeric_limits<int>::max());
+        std::vector<std::vector<Step>> parent(static_cast<size_t>(stateNum));
+        dist[static_cast<size_t>(source)] = 0;
+        using P = std::pair<int, int>;
+        std::priority_queue<P, std::vector<P>, std::greater<P>> pq;
+        pq.push({0, source});
+        BLOG("[GRAPH] Dijkstra source=%d dest=%d", source, dest);
+
+        while (!pq.empty()) {
+            const int u = pq.top().second;
+            pq.pop();
+            ReuseStatePtr u_state = findReuseStateById(u);
+            if (!u_state) {
+                continue;
+            }
+            for (const StateGraphEdge &v_edge : u_state->getEdges()) {
+                if (!v_edge.nextState) {
+                    continue;
+                }
+                const int v = v_edge.nextState->getIdi();
+                if (v < 0 || v >= stateNum) {
+                    continue;
+                }
+                ActivityStateActionPtr tmp = std::dynamic_pointer_cast<ActivityStateAction>(v_edge.action);
+                ActivityStateActionPtr action_copy =
+                    tmp ? std::make_shared<ActivityStateAction>(*tmp) : nullptr;
+                if (tmp && action_copy && tmp->getTarget()) {
+                    const int currentWidget = tmp->getWhichWidget();
+                    if (v_edge.whichWidget != currentWidget) {
+                        WidgetPtr realTarget =
+                            u_state->findWidgetByHashAndLocation(tmp->getTarget()->hash(), v_edge.whichWidget);
+                        if (realTarget) {
+                            action_copy->setWhichWidget(v_edge.whichWidget);
+                            action_copy->setTarget(realTarget);
+                        }
+                    }
+                }
+                bool loose = false;
+                if (dist[static_cast<size_t>(u)] + 1 < dist[static_cast<size_t>(v)]) {
+                    dist[static_cast<size_t>(v)] = dist[static_cast<size_t>(u)] + 1;
+                    pq.push({dist[static_cast<size_t>(v)], v});
+                    loose = true;
+                }
+                if (u != v) {
+                    auto &pv = parent[static_cast<size_t>(v)];
+                    auto found = std::find_if(pv.begin(), pv.end(),
+                                              [u](const Step &s) { return s.node == u; });
+                    if (found == pv.end()) {
+                        if (loose) {
+                            if (action_copy) {
+                                pv.insert(pv.begin(), Step{u, action_copy, v_edge.createdTime});
+                            } else {
+                                pv.insert(pv.begin(), Step{u, v_edge.action, v_edge.createdTime});
+                            }
+                        } else {
+                            if (action_copy) {
+                                pv.push_back(Step{u, action_copy, v_edge.createdTime});
+                            } else {
+                                pv.push_back(Step{u, v_edge.action, v_edge.createdTime});
+                            }
+                        }
+                    } else if (loose) {
+                        std::rotate(pv.begin(), found, found + 1);
+                    }
+                }
+            }
+        }
+
+        std::vector<bool> is_used(static_cast<size_t>(stateNum), false);
+        std::vector<std::vector<Step>> all_paths = traceback(is_used, parent, source, dest, 0);
+        std::vector<Path> ret;
+        int num = 0;
+        for (const auto &path : all_paths) {
+            if (path.empty()) {
+                continue;
+            }
+            auto latest = std::max_element(path.begin(), path.end(),
+                                         [](const Step &a, const Step &b) { return a.time < b.time; });
+            double latest_time = 0.0;
+            if (latest != path.end()) {
+                latest_time = latest->time;
+            }
+            ret.push_back(Path{path.size(), latest_time,
+                               std::queue<Step>(std::deque<Step>(path.begin(), path.end()))});
+            if (++num >= 100) {
+                break;
+            }
+        }
+        return ret;
+    }
+
+    std::vector<Path> Graph::findPath(int dest, bool forceRestart) {
+        ReuseStatePtr destination = findReuseStateById(dest);
+        if (!destination || !_llmdroidCurrentState) {
+            return {};
+        }
+        const int source_id = _llmdroidCurrentState->getIdi();
+        BLOG("[GRAPH] findPath from ReuseState%d to ReuseState%d (forceRestart=%d)", source_id, dest,
+             forceRestart ? 1 : 0);
+
+        if (!forceRestart) {
+            std::vector<Path> forwardPath = dijkstra(source_id, dest);
+            if (!forwardPath.empty()) {
+                processPaths(forwardPath, source_id, dest);
+                return forwardPath;
+            }
+        } else {
+            BLOG("[GRAPH] findPath from R0 to ReuseState%d", dest);
+            std::vector<Path> originPath = dijkstra(0, dest);
+            if (!originPath.empty()) {
+                processPaths(originPath, 0, dest);
+                return originPath;
+            }
+        }
+        BLOG("[GRAPH] no path found to ReuseState%d", dest);
+        return {};
     }
 
     /**

@@ -107,6 +107,10 @@ namespace fastbotx {
         return strs.str();
     }
 
+    std::string Action::toDescription() const {
+        return toString();
+    }
+
     OperatePtr Action::toOperate() const {
         OperatePtr opt = std::make_shared<DeviceOperateWrapper>();
         opt->act = this->_actionType;
@@ -129,7 +133,7 @@ namespace fastbotx {
 
 /// Construct an empty ActivityStateAction object with no action, state or target.
     ActivityStateAction::ActivityStateAction()
-            : Action(), _target(nullptr) {
+            : Action(), _target(nullptr), _functionListener(nullptr), _whichWidget(-1) {
 
     }
 
@@ -139,7 +143,8 @@ namespace fastbotx {
 /// \param actionType The corresponding action type
     ActivityStateAction::ActivityStateAction(const StatePtr &state, WidgetPtr targetWidget,
                                              ActionType actionType)
-            : Action(actionType), _state(state), _target(std::move(targetWidget)) {
+            : Action(actionType), _state(state), _target(std::move(targetWidget)),
+              _functionListener(nullptr), _whichWidget(-1) {
 
         uintptr_t hashcode = std::hash<int>{}(this->getActionType());
         uintptr_t stateHash = this->_state.expired() ? 0x1 : this->_state.lock()->hash();
@@ -148,6 +153,15 @@ namespace fastbotx {
         this->_hashcode =
                 0x9e3779b9 + (hashcode << 2) ^ (((stateHash << 4) ^ (targetHash << 3)) << 1);
     }
+
+    ActivityStateAction::ActivityStateAction(const ActivityStateAction &other)
+            : Action(other.getActionType()),
+              _state(other._state),
+              _target(other._target),
+              _hashcode(other._hashcode),
+              _functionListener(nullptr),
+              _whichWidget(other._whichWidget),
+              _inputText(other._inputText) {}
 
     bool ActivityStateAction::isValid() const {
         return (this->_target == nullptr || !this->_target->getBounds()->isEmpty());
@@ -181,6 +195,15 @@ namespace fastbotx {
     ActivityStateAction::~ActivityStateAction() {
         this->_state.reset();
         this->_target = nullptr;
+        _functionListener.reset();
+    }
+
+    void ActivityStateAction::visit(time_t timestamp) {
+        Node::visit(timestamp);
+        if (_functionListener && getVisitedCount() > 0) {
+            ActivityStateActionPtr self = shared_from_this();
+            _functionListener->onActionExecuted(self);
+        }
     }
 
     OperatePtr ActivityStateAction::toOperate() const {

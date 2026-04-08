@@ -1560,6 +1560,8 @@ namespace fastbotx {
 #define UsePatchNamerSTR "max.usePatchNamer"
 #define ApeActionPatchProfileSTR "max.apeActionPatchProfile"
 #define ApeActionPatchDeriveActionsSTR "max.apeActionPatchDeriveActions"
+#define LlmdroidEnabledSTR        "max.llm.llmdroid"
+#define LlmdroidExploreWindowSecSTR "max.llm.llmdroid.exploreWindowSec"
 #define LlmEnabledSTR             "max.llm.enabled"
 #define LlmKnowledgeSTR           "max.llm.knowledge"
 #define LlmWidgetPrioritySTR      "max.llm.widgetpriority"
@@ -1610,7 +1612,11 @@ namespace fastbotx {
         if (configContent.empty()) {
             return;
         }
-        
+
+        // Re-parse defaults: keys omitted from max.config must revert to off (same reload semantics as other toggles we set explicitly per line).
+        this->_llmdroidEnabled = false;
+        this->_llmdroidExploreWindowSec = 120;
+
         // Pretty-print max.config without extra blank line, and indent each entry
         BLOG("max.config:");
         std::vector<std::string> lines;
@@ -1957,6 +1963,26 @@ namespace fastbotx {
                 naming::setActionPatchDeriveActionsFromName(enabled);
                 BLOG("APE: actionPatchDeriveActions=%s (%s)", enabled ? "true" : "false",
                      ApeActionPatchDeriveActionsSTR);
+            } else if (key == LlmdroidEnabledSTR) {
+                // Conservative: only explicit "true" enables; any other value keeps false.
+                this->_llmdroidEnabled = (value == "true");
+                if (this->_llmdroidEnabled) {
+                    BLOG("LLMDroid: %s=true (MergedState/GPT phases 4+ when implemented)", LlmdroidEnabledSTR);
+                }
+            } else if (key == LlmdroidExploreWindowSecSTR) {
+                try {
+                    int sec = std::stoi(value);
+                    if (sec < 1) {
+                        sec = 1;
+                    } else if (sec > 86400) {
+                        sec = 86400;
+                    }
+                    this->_llmdroidExploreWindowSec = sec;
+                    BLOG("LLMDroid: time-mode explore window=%d sec (%s)",
+                         this->_llmdroidExploreWindowSec, LlmdroidExploreWindowSecSTR);
+                } catch (...) {
+                    BLOGE("invalid %s value: %s", LlmdroidExploreWindowSecSTR, value.c_str());
+                }
             } else if (key == LlmEnabledSTR) {
                 this->_llmRuntimeConfig.enabled = (value == "true");
             } else if (key == LlmKnowledgeSTR) {

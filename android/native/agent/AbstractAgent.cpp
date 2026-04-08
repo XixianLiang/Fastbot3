@@ -2,7 +2,7 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
- * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang, Tianming Liu
  */
 
 #ifndef AbstractAgent_CPP_
@@ -10,10 +10,361 @@
 
 #include "AbstractAgent.h"
 
+#include "GPTAgent.h"
+#include "CodeCoverageMonitor.h"
 #include <utility>
 #include "../model/Model.h"
+#include "../desc/MergedState.h"
+#include "../desc/reuse/ReuseState.h"
+#include "../events/Preference.h"
+#include "LLMTaskAgent.h"
+#include "../llm/LlmJavaHttp.h"
+#include <cmath>
+#include <future>
 
 namespace fastbotx {
+
+    enum class LlmdroidMode { EXPLORE, NAVIGATE, TEST_FUNCTION };
+
+    struct LlmdroidAgentOverlay {
+        GraphPtr graph;
+        MergedStateGraphPtr mergedStateGraph;
+        std::unique_ptr<GPTAgent> gptAgent;
+        int totalMergedState{0};
+        double startTime{0};
+        double nextStageTime{0};
+        double exploreWindowMs{120000.0};
+        ActivityStateActionPtr mCurrentAction;
+        ReuseStatePtr mCurrentState;
+
+        /// same window/threshold defaults as LLMDroid AbstractAgent.
+        CodeCoverageMonitor cvMonitor{80, 0.05, 1.0};
+        static constexpr int kRateCapacity = 80;
+        std::vector<double> growthRateWindow;
+        double currentThreshold{0.05};
+        bool shouldWait{false};
+        size_t exploreWindowStartActivityCoverage{0};
+
+        LlmdroidMode mode{LlmdroidMode::EXPLORE};
+        Path currentPath;
+        std::vector<Path> paths;
+        int guideTarget{-1};
+        int guideTime{0};
+        int successGuideTime{0};
+        int totalGuideTime{0};
+        int executedSteps{0};
+        float currentSimilarityCheck{0.6f};
+        static constexpr float kMaxSimilarity = 0.6f;
+        static constexpr float kMinSimilarity = 0.49f;
+        ActivityStateActionPtr actionByGpt;
+        std::future<int> futureInt;
+        std::future<ActivityStateActionPtr> futureAction;
+    };
+
+    namespace {
+
+        void llmdroidResetFuture(LlmdroidAgentOverlay &L) {
+            if (!L.gptAgent) {
+                return;
+            }
+            PromiseIntPtr promInt = std::make_shared<std::promise<int>>();
+            PromiseActionPtr promAction = std::make_shared<std::promise<ActivityStateActionPtr>>();
+            L.futureInt = promInt->get_future();
+            L.futureAction = promAction->get_future();
+            L.gptAgent->resetPromise(std::move(promInt), std::move(promAction));
+        }
+
+        void llmdroidDebugMergedStates(LlmdroidAgentOverlay & /*L*/) {
+            BLOG("LLMDroid: debugMergedStates (file dump skipped)");
+        }
+
+        void llmdroidPrepareBackToExplore(LlmdroidAgentOverlay &L, AbstractAgent & /*agent*/) {
+            BLOG("LLMDroid: prepareBackToExplore");
+            L.mode = LlmdroidMode::EXPLORE;
+            L.nextStageTime = L.exploreWindowMs + currentStamp();
+            if (L.graph) {
+                L.exploreWindowStartActivityCoverage = L.graph->getVisitedActivities().size();
+            }
+            L.growthRateWindow.clear();
+            L.shouldWait = false;
+            L.guideTarget = -1;
+            L.paths.clear();
+            L.guideTime = 0;
+            L.currentSimilarityCheck = LlmdroidAgentOverlay::kMaxSimilarity;
+            L.executedSteps = 0;
+            L.actionByGpt.reset();
+            if (L.gptAgent) {
+                L.gptAgent->addTestedFunction();
+                L.gptAgent->clearExecutedEvents();
+            }
+            if (!L.mergedStateGraph || !L.gptAgent) {
+                return;
+            }
+            for (const MergedStatePtr &ms : L.mergedStateGraph->getMergedStates()) {
+                if (ms && ms->needReanalysed()) {
+                    QuestionPayload qp;
+                    qp.type = AskModel::REANALYSIS;
+                    qp.from = ms;
+                    L.gptAgent->pushStateToQueue(std::move(qp));
+                }
+            }
+        }
+
+        void llmdroidOnNavigationOver(LlmdroidAgentOverlay &L, bool success, AbstractAgent &agent) {
+            if (success) {
+                L.successGuideTime++;
+                L.mode = LlmdroidMode::TEST_FUNCTION;
+                BLOG("LLMDroid: navigation success -> TEST_FUNCTION");
+            } else {
+                llmdroidPrepareBackToExplore(L, agent);
+            }
+            BLOG("LLMDroid: guide stat %d/%d", L.successGuideTime, L.totalGuideTime);
+            L.guideTarget = -1;
+            L.paths.clear();
+            L.guideTime = 0;
+            L.currentSimilarityCheck = LlmdroidAgentOverlay::kMaxSimilarity;
+        }
+
+        void llmdroidPrepareForNavigation(LlmdroidAgentOverlay &L, const ModelPtr &model, AbstractAgent &agent);
+
+        void llmdroidOnNavigationFailed(LlmdroidAgentOverlay &L, const ModelPtr &model, AbstractAgent &agent) {
+            BLOG("LLMDroid: onNavigationFailed guideTime=%d", L.guideTime);
+            if (L.guideTime > 1 && L.currentSimilarityCheck > LlmdroidAgentOverlay::kMinSimilarity) {
+                L.currentSimilarityCheck -= 0.05f;
+            }
+            if (!L.paths.empty()) {
+                L.currentPath = L.paths[0];
+                L.paths.erase(L.paths.begin());
+                return;
+            }
+            if (L.guideTime < 3) {
+                if (L.gptAgent) {
+                    L.gptAgent->addTestedFunction();
+                }
+                llmdroidPrepareForNavigation(L, model, agent);
+                return;
+            }
+            llmdroidOnNavigationOver(L, false, agent);
+        }
+
+        void llmdroidPrepareForNavigation(LlmdroidAgentOverlay &L, const ModelPtr &model, AbstractAgent &agent) {
+            (void)model;
+            (void)agent;
+            if (!L.graph || !L.gptAgent) {
+                return;
+            }
+            L.mode = LlmdroidMode::NAVIGATE;
+            L.gptAgent->waitUntilQueueEmpty();
+            llmdroidDebugMergedStates(L);
+            L.guideTime++;
+            L.totalGuideTime++;
+            llmdroidResetFuture(L);
+            QuestionPayload qp;
+            qp.type = AskModel::GUIDE;
+            L.gptAgent->pushStateToQueue(std::move(qp));
+            L.guideTarget = L.futureInt.get();
+            BLOG("LLMDroid: guide target ReuseState id=%d", L.guideTarget);
+            if (L.guideTarget < 0) {
+                llmdroidOnNavigationFailed(L, model, agent);
+                return;
+            }
+            L.paths = L.graph->findPath(L.guideTarget, true);
+            if (L.paths.empty()) {
+                BLOG("LLMDroid: no path to ReuseState %d", L.guideTarget);
+                llmdroidOnNavigationFailed(L, model, agent);
+            } else {
+                L.currentPath = L.paths[0];
+                L.paths.erase(L.paths.begin());
+            }
+        }
+
+        int llmdroidGuideCheck(LlmdroidAgentOverlay &L) {
+            bool isCorrect = false;
+            int targetId = -1;
+            ReuseStatePtr mcs = L.mCurrentState;
+            if (!mcs) {
+                return 3;
+            }
+            while (!L.currentPath.steps.empty()) {
+                Step currentStep = L.currentPath.steps.front();
+                targetId = currentStep.node;
+                L.currentPath.steps.pop();
+                if (mcs->getIdi() == targetId) {
+                    isCorrect = true;
+                    break;
+                }
+                if (currentStep.action && currentStep.action->getActionType() == ActionType::RESTART) {
+                    if (L.currentPath.steps.empty()) {
+                        isCorrect = true;
+                        break;
+                    }
+                    ActionPtr replace = mcs->findSimilarAction(L.currentPath.steps.front().action);
+                    if (replace) {
+                        ActivityStateActionPtr tmp = std::dynamic_pointer_cast<ActivityStateAction>(replace);
+                        L.currentPath.steps.front().action =
+                            tmp ? std::static_pointer_cast<Action>(std::make_shared<ActivityStateAction>(*tmp)) : replace;
+                        isCorrect = true;
+                        break;
+                    }
+                } else if (L.graph) {
+                    ReuseStatePtr targetState = L.graph->findReuseStateById(targetId);
+                    const float sim = targetState ? mcs->computeSimilarity(targetState) : 0.f;
+                    BLOG("LLMDroid guideCheck sim target R%d now R%d -> %f", targetId, mcs->getIdi(), sim);
+                    if (sim > L.currentSimilarityCheck) {
+                        if (L.currentPath.steps.empty()) {
+                            isCorrect = true;
+                            break;
+                        }
+                        ActionPtr replace = mcs->findSimilarAction(L.currentPath.steps.front().action);
+                        if (replace) {
+                            ActivityStateActionPtr tmp = std::dynamic_pointer_cast<ActivityStateAction>(replace);
+                            L.currentPath.steps.front().action =
+                                tmp ? std::static_pointer_cast<Action>(std::make_shared<ActivityStateAction>(*tmp))
+                                    : replace;
+                            isCorrect = true;
+                            break;
+                        }
+                    }
+                }
+            }
+            if (isCorrect) {
+                return L.currentPath.steps.empty() ? 2 : 1;
+            }
+            BLOG("LLMDroid guideCheck failed target=%d now=%d", targetId, mcs->getIdi());
+            return 3;
+        }
+
+        void llmdroidPrepareTestFunction(LlmdroidAgentOverlay &L) {
+            if (!L.gptAgent || !L.mCurrentState) {
+                return;
+            }
+            if (L.executedSteps < 5) {
+                L.executedSteps++;
+                llmdroidResetFuture(L);
+                QuestionPayload qp;
+                qp.type = AskModel::TEST_FUNCTION;
+                qp.reuseState = L.mCurrentState;
+                L.gptAgent->pushStateToQueue(std::move(qp));
+                L.actionByGpt = L.futureAction.get();
+            } else {
+                L.actionByGpt.reset();
+                BLOG("LLMDroid: TEST_FUNCTION step cap reached");
+            }
+        }
+
+        MergedStatePtr findMostSimilarReuse(LlmdroidAgentOverlay &L, const ReuseStatePtr &state) {
+            constexpr float kThreshold = 0.6f;
+            MergedStatePtr origin = state->getMergedState();
+            if (origin) {
+                return origin;
+            }
+            MergedStatePtr current = L.mergedStateGraph->getCurrentNode();
+            if (!current) {
+                return nullptr;
+            }
+            ReuseStatePtr rootState = current->getRootState();
+            if (!rootState) {
+                return nullptr;
+            }
+            const float similarity = rootState->computeSimilarityForMergedState(state);
+            if (similarity < kThreshold) {
+                float maxS = 0.f;
+                MergedStatePtr best;
+                for (const MergedStatePtr &ms : L.mergedStateGraph->getMergedStates()) {
+                    if (!ms) {
+                        continue;
+                    }
+                    ReuseStatePtr r = ms->getRootState();
+                    if (!r) {
+                        continue;
+                    }
+                    const float s = r->computeSimilarityForMergedState(state);
+                    if (s > kThreshold && s > maxS) {
+                        maxS = s;
+                        best = ms;
+                    }
+                }
+                return best;
+            }
+            return current;
+        }
+
+        void llmdroidSwitchMode(LlmdroidAgentOverlay &L, const ModelPtr &model, AbstractAgent &agent) {
+            const double now = currentStamp();
+
+            if (L.mode == LlmdroidMode::EXPLORE) {
+                const bool useCoverageMode = isLlmdroidExternalCoverageEnabledFromJava();
+                if (useCoverageMode) {
+                    const double javaCoverageMetric = getLlmdroidCoverageFromJava();
+                    const auto res = L.cvMonitor.update(javaCoverageMetric);
+                    L.currentThreshold = res.second;
+                    L.growthRateWindow.push_back(res.first);
+                    if (static_cast<int>(L.growthRateWindow.size()) > LlmdroidAgentOverlay::kRateCapacity) {
+                        L.growthRateWindow.erase(L.growthRateWindow.begin());
+                    }
+
+                    if (static_cast<int>(L.growthRateWindow.size()) == LlmdroidAgentOverlay::kRateCapacity) {
+                        bool pass = false;
+                        for (double d : L.growthRateWindow) {
+                            if (d > L.currentThreshold) {
+                                pass = true;
+                                break;
+                            }
+                        }
+                        if (!pass) {
+                            L.shouldWait = true;
+                            BLOG("LLMDroid: stagnation by coverage window (threshold=%f)", L.currentThreshold);
+                        }
+                    }
+                } else {
+                    // Time mode: switch only when activity coverage has not increased within one explore window.
+                    size_t currentActivityCoverage = 0;
+                    if (L.graph) {
+                        currentActivityCoverage = L.graph->getVisitedActivities().size();
+                    }
+                    if (currentActivityCoverage > L.exploreWindowStartActivityCoverage) {
+                        BLOG("LLMDroid: time window coverage increased %zu -> %zu, extend explore window",
+                             L.exploreWindowStartActivityCoverage, currentActivityCoverage);
+                        L.exploreWindowStartActivityCoverage = currentActivityCoverage;
+                        L.nextStageTime = now + L.exploreWindowMs;
+                    } else if (now > L.nextStageTime) {
+                        L.shouldWait = true;
+                        BLOG("LLMDroid: switch by time window (activity coverage no increase: %zu)",
+                             currentActivityCoverage);
+                    }
+                }
+
+                if (L.shouldWait) {
+                    L.shouldWait = false;
+                    llmdroidPrepareForNavigation(L, model, agent);
+                    L.nextStageTime = now + L.exploreWindowMs;
+                    if (L.graph) {
+                        L.exploreWindowStartActivityCoverage = L.graph->getVisitedActivities().size();
+                    }
+                    L.growthRateWindow.clear();
+                    return;
+                }
+            }
+
+            if (L.mode == LlmdroidMode::NAVIGATE) {
+                const int st = llmdroidGuideCheck(L);
+                if (st == 1) {
+                    return;
+                }
+                if (st == 2) {
+                    llmdroidOnNavigationOver(L, true, agent);
+                    return;
+                }
+                llmdroidOnNavigationFailed(L, model, agent);
+                return;
+            }
+
+            if (L.mode == LlmdroidMode::TEST_FUNCTION) {
+                llmdroidPrepareTestFunction(L);
+            }
+        }
+
+    } // namespace
 
     /**
      * @brief Default constructor
@@ -51,6 +402,7 @@ namespace fastbotx {
      * Note: Smart pointers automatically manage memory, explicit reset here is for code clarity.
      */
     AbstractAgent::~AbstractAgent() {
+        _llmdroid.reset();
         this->_model.reset();
         this->_lastState.reset();
         this->_currentState.reset();
@@ -59,6 +411,91 @@ namespace fastbotx {
         this->_currentAction.reset();
         this->_newAction.reset();
         this->_validateFilter.reset();
+    }
+
+    void AbstractAgent::ensureLlmdroidRuntime() {
+        if (_llmdroid) {
+            return;
+        }
+        const PreferencePtr pref = Preference::inst();
+        if (!pref || !pref->isLlmdroidEnabled()) {
+            return;
+        }
+        const ModelPtr model = this->_model.lock();
+        if (!model) {
+            return;
+        }
+        _llmdroid = std::make_unique<LlmdroidAgentOverlay>();
+        _llmdroid->graph = model->getGraph();
+        _llmdroid->mergedStateGraph = std::make_shared<MergedStateGraph>(_llmdroid->graph);
+        std::shared_ptr<LlmClient> llm = model->getLlmClient();
+        std::string startPrompt = "I'm testing an Android app.\n";
+        _llmdroid->gptAgent =
+                std::make_unique<GPTAgent>(_llmdroid->mergedStateGraph, std::move(llm), std::move(startPrompt));
+        _llmdroid->startTime = currentStamp();
+        const int exploreWindowSec = pref->getLlmdroidExploreWindowSec();
+        _llmdroid->exploreWindowMs = static_cast<double>(exploreWindowSec) * 1000.0;
+        _llmdroid->nextStageTime = _llmdroid->startTime + _llmdroid->exploreWindowMs;
+        _llmdroid->exploreWindowStartActivityCoverage =
+                _llmdroid->graph ? _llmdroid->graph->getVisitedActivities().size() : 0;
+        BLOG("LLMDroid: mode source=%s",
+             isLlmdroidExternalCoverageEnabledFromJava() ? "external-coverage(jacoco/androlog)" : "time-mode");
+        BLOG("LLMDroid: time-mode explore window configured to %d sec", exploreWindowSec);
+    }
+
+    void AbstractAgent::processState(const ReuseStatePtr &state) {
+        if (!state) {
+            return;
+        }
+        const auto pref = Preference::inst();
+        if (!pref || !pref->isLlmdroidEnabled()) {
+            return;
+        }
+        const ModelPtr model = this->_model.lock();
+        if (!model) {
+            return;
+        }
+
+        ensureLlmdroidRuntime();
+        if (!_llmdroid || !_llmdroid->mergedStateGraph || !_llmdroid->gptAgent) {
+            return;
+        }
+
+        LlmdroidAgentOverlay &L = *_llmdroid;
+        L.mCurrentState = state;
+        L.mCurrentAction = _currentAction;
+
+        MergedStatePtr mergedState = findMostSimilarReuse(L, state);
+        if (mergedState) {
+            state->setMergedState(mergedState);
+            if (mergedState == L.mergedStateGraph->getCurrentNode()) {
+                mergedState->addState(state, L.mCurrentAction, false, false);
+            } else {
+                MergedStatePtr preState = L.mergedStateGraph->getCurrentNode();
+                if (preState) {
+                    preState->addState(state, L.mCurrentAction, false, true);
+                }
+                mergedState->addState(state, L.mCurrentAction, true, false);
+            }
+        } else {
+            MergedStatePtr preState = L.mergedStateGraph->getCurrentNode();
+            if (preState) {
+                preState->addState(state, L.mCurrentAction, false, true);
+            }
+            mergedState = std::make_shared<MergedState>(state, L.totalMergedState);
+            L.totalMergedState++;
+            state->setMergedState(mergedState);
+            const stringPtr actStr = state->getActivityString();
+            if (actStr && actStr.get() && actStr->find("com.android.") == std::string::npos) {
+                QuestionPayload qp;
+                qp.type = AskModel::STATE_OVERVIEW;
+                qp.from = mergedState;
+                L.gptAgent->pushStateToQueue(std::move(qp));
+            }
+        }
+
+        L.mergedStateGraph->addNode(mergedState, L.mCurrentAction, false);
+        llmdroidSwitchMode(L, model, *this);
     }
 
     /**
@@ -216,15 +653,42 @@ namespace fastbotx {
      * @return Pointer to selected action, or nullptr if selection fails
      */
     ActionPtr AbstractAgent::resolveNewAction() {
-        // Step 1: Adjust priorities of all actions
         this->adjustActions();
-        
-        // Step 2: Call subclass implementation of action selection strategy
+
+        const PreferencePtr pref = Preference::inst();
+        if (pref && pref->isLlmdroidEnabled() && _llmdroid) {
+            LlmdroidAgentOverlay &L = *_llmdroid;
+            if (L.mode == LlmdroidMode::NAVIGATE) {
+                if (!L.currentPath.steps.empty()) {
+                    ActionPtr nextAction = L.currentPath.steps.front().action;
+                    ActivityStateActionPtr tmp = std::dynamic_pointer_cast<ActivityStateAction>(nextAction);
+                    ActionPtr action =
+                        (tmp && L.mCurrentState) ? L.mCurrentState->findSimilarAction(nextAction) : nextAction;
+                    if (!action) {
+                        BLOGE("LLMDroid NAVIGATE: findSimilarAction failed");
+                    } else {
+                        _newAction = std::dynamic_pointer_cast<ActivityStateAction>(action);
+                        return action;
+                    }
+                }
+                BLOGE("LLMDroid NAVIGATE: currentPath is empty, fallback to RL selectNewAction. "
+                      "state=%d guideTarget=%d pendingPaths=%zu guideTime=%d similarity=%.3f",
+                      L.mCurrentState ? L.mCurrentState->getIdi() : -1,
+                      L.guideTarget,
+                      L.paths.size(),
+                      L.guideTime,
+                      static_cast<double>(L.currentSimilarityCheck));
+            } else if (L.mode == LlmdroidMode::TEST_FUNCTION) {
+                if (L.actionByGpt) {
+                    _newAction = L.actionByGpt;
+                    return std::static_pointer_cast<Action>(L.actionByGpt);
+                }
+                llmdroidPrepareBackToExplore(L, *this);
+            }
+        }
+
         ActionPtr action = this->selectNewAction();
-        
-        // Step 3: Save selected action to _newAction (convert to ActivityStateAction type)
         _newAction = std::dynamic_pointer_cast<ActivityStateAction>(action);
-        
         return action;
     }
 

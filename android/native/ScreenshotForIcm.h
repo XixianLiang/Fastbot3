@@ -7,6 +7,10 @@
  *   Java computes 256-dim features (UISCGD/Deformable DETR d_model aligned), no image over JNI.
  * - Fallback: setScreenshotForIcm/getScreenshotForIcm + imageFeaturesFromBytes in C++ (e.g. tests).
  */
+ /**
+ * @authors Zhao Zhang
+ */
+ 
 #ifndef FASTBOTX_SCREENSHOT_FOR_ICM_H
 #define FASTBOTX_SCREENSHOT_FOR_ICM_H
 

@@ -52,6 +52,9 @@ namespace fastbotx {
 
         std::string toString() const override;
 
+        /** Short human-readable line for logs / LLMDroid graph walk (default: {@link #toString}). */
+        virtual std::string toDescription() const;
+
         virtual bool getEnabled() const { return true; }
 
         ActionType getActionType() const { return this->_actionType; }
@@ -122,8 +125,24 @@ namespace fastbotx {
         std::string deviceid;
     } NetActionParam;
 
+    class ActivityStateAction;
+
+    typedef std::shared_ptr<ActivityStateAction> ActivityStateActionPtr;
+
+    /**
+     * Optional listener for LLMDroid / MergedState (function completion tracking).
+     * Invoked from {@link ActivityStateAction::visit} after visit count increments.
+     */
+    class FunctionListener {
+    public:
+        virtual ~FunctionListener() = default;
+        virtual void onActionExecuted(ActivityStateActionPtr action) = 0;
+    };
+
+    typedef std::shared_ptr<FunctionListener> FunctionListenerPtr;
+
 /// Embedding an action with the whole activity state, the target widget and the action to perform.
-    class ActivityStateAction : public Action {
+    class ActivityStateAction : public Action, public std::enable_shared_from_this<ActivityStateAction> {
     public:
         /// Embedding an action with the whole activity state, the target targetWidget and the type of action to perform.
         /// \param state
@@ -131,6 +150,8 @@ namespace fastbotx {
         /// \param actionType
         ActivityStateAction(const std::shared_ptr<State> &state, WidgetPtr targetWidget,
                             ActionType actionType);
+
+        ActivityStateAction(const ActivityStateAction &other);
 
         std::weak_ptr<State> getState() const { return this->_state; }
 
@@ -158,6 +179,20 @@ namespace fastbotx {
 
         std::string toString() const override;
 
+        void visit(time_t timestamp) override;
+
+        void setListener(const FunctionListenerPtr &listener) { _functionListener = listener; }
+
+        void setWhichWidget(int which) { _whichWidget = which; }
+
+        int getWhichWidget() const { return _whichWidget; }
+
+        void setInputText(std::string text) { _inputText = std::move(text); }
+
+        const std::string &getInputText() const { return _inputText; }
+
+        bool hasInput() const { return !_inputText.empty(); }
+
         std::weak_ptr<State> _state;
         std::shared_ptr<Widget> _target;
         uintptr_t _hashcode{};
@@ -167,10 +202,12 @@ namespace fastbotx {
     protected:
         ActivityStateAction();
 
+        FunctionListenerPtr _functionListener;
+        int _whichWidget{-1};
+        std::string _inputText;
+
     private:
     };
-
-    typedef std::shared_ptr<ActivityStateAction> ActivityStateActionPtr;
     typedef std::vector<ActivityStateActionPtr> ActivityStateActionPtrVec;
     typedef std::set<ActivityStateActionPtr, Comparator<ActivityStateAction>> ActivityStateActionPtrSet;
 

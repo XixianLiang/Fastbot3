@@ -12,8 +12,12 @@
 #include <utility>
 #include <unordered_map>
 #include <unordered_set>
+#include <algorithm>
+#include <functional>
+#include <sstream>
 #include "RichWidget.h"
 #include "ActivityNameAction.h"
+#include "Action.h"
 #include "../utils.hpp"
 #include "ActionFilter.h"
 #include "../events/Preference.h"
@@ -65,6 +69,7 @@ namespace fastbotx {
     void ReuseState::buildStateFromElement(WidgetPtr parentWidget, ElementPtr element) {
         buildBoundingBox(element);
         WidgetPtr widget = std::make_shared<RichWidget>(parentWidget, element);
+        _elementPtrToWidget[element.get()] = widget;
         this->_widgets.emplace_back(widget);
         for (const auto &childElement: element->getChildren()) {
             buildFromElement(widget, childElement);
@@ -95,6 +100,7 @@ namespace fastbotx {
             widget = std::make_shared<Widget>(parentWidget, elem);
         }
         this->_widgets.emplace_back(widget);
+        _elementPtrToWidget[elem.get()] = widget;
         for (const auto &childElement: elem->getChildren()) {
             buildFromElement(widget, childElement);
         }
@@ -123,8 +129,12 @@ namespace fastbotx {
     }
 
     void ReuseState::buildState(const ElementPtr &element) {
+        _rootElement = element;
+        _elementByStableId.clear();
+        _elementPtrToWidget.clear();
         buildStateFromElement(nullptr, element);
         mergeWidgetsInState();
+        rebuildElementIdMaps(element);
         buildHashForState();
         buildActionForState();
     }
@@ -300,6 +310,355 @@ namespace fastbotx {
         return seen.size();
     }
 #endif
+
+    void ReuseState::rebuildElementIdMaps(const ElementPtr &root) {
+        _elementByStableId.clear();
+        if (!root) {
+            return;
+        }
+        int next = 0;
+        const std::function<void(const ElementPtr &)> dfs = [&](const ElementPtr &e) {
+            if (!e) {
+                return;
+            }
+            e->setStableElementId(next);
+            _elementByStableId[next] = e;
+            next++;
+            for (const auto &c : e->getChildren()) {
+                dfs(c);
+            }
+        };
+        dfs(root);
+    }
+
+    void ReuseState::addMiniEdge(MiniGraphEdge edge) {
+        _miniEdges.push_back(std::move(edge));
+    }
+
+    MiniGraphEdge *ReuseState::getUnvisitedMiniEdge() {
+        for (size_t i = 0; i < _miniEdges.size(); i++) {
+            if (!_miniEdges[i].isVisited) {
+                return &(_miniEdges[i]);
+            }
+        }
+        return nullptr;
+    }
+
+    std::vector<WidgetPtr> ReuseState::diffWidgets(const ReuseStatePtr &target) {
+        std::vector<WidgetPtr> ret;
+        if (!target) {
+            return ret;
+        }
+        for (const WidgetPtr &widget : _widgets) {
+            if (!widget) {
+                continue;
+            }
+            const uintptr_t h = widget->hash();
+            const auto found = std::find_if(target->_widgets.begin(), target->_widgets.end(),
+                                            [h](const WidgetPtr &w) { return w && w->hash() == h; });
+            if (found == target->_widgets.end()) {
+                ret.push_back(widget);
+            }
+        }
+        return ret;
+    }
+
+    std::string ReuseState::getStateDescriptionForMergedState() const {
+        std::ostringstream ss;
+        if (getActivityString() && getActivityString().get()) {
+            ss << "[Activity: " << *getActivityString() << "]\n";
+        }
+        ss << "[State" << getIdi() << "]\n";
+        for (const auto &w : _widgets) {
+            if (!w) {
+                continue;
+            }
+            ss << "- " << w->getClassname() << " id=" << w->getResourceID()
+               << " text=\"" << w->getText() << "\"\n";
+        }
+        return ss.str();
+    }
+
+    float ReuseState::computeSimilarityForMergedState(const ReuseStatePtr &target) const {
+        if (!target) {
+            return 0.f;
+        }
+        size_t matchedCount = 0;
+        const bool bigger = target->_widgets.size() > _widgets.size();
+        const WidgetPtrVec &toCompare = bigger ? target->_widgets : _widgets;
+        const WidgetPtrVec &candidates = bigger ? _widgets : target->_widgets;
+        const WidgetPtrVecMap &toCompareMap = bigger ? target->_mergedWidgets : _mergedWidgets;
+
+        for (WidgetPtr candidate : candidates) {
+            if (!candidate) {
+                continue;
+            }
+            const uintptr_t ch = candidate->hash();
+            const bool inWidgets =
+                    std::any_of(toCompare.begin(), toCompare.end(),
+                                [ch](const WidgetPtr &ptr) { return ptr && ptr->hash() == ch; });
+            bool inMergedWidgets = false;
+            auto mit = toCompareMap.find(ch);
+            if (mit != toCompareMap.end()) {
+                for (const WidgetPtr &ptr : mit->second) {
+                    if (ptr && ptr->hash() == ch) {
+                        inMergedWidgets = true;
+                        break;
+                    }
+                }
+            }
+            if (inWidgets || inMergedWidgets) {
+                matchedCount++;
+            }
+        }
+        const size_t denom = toCompare.size() + candidates.size();
+        return denom == 0 ? 0.f
+                          : static_cast<float>(matchedCount * 2) / static_cast<float>(denom);
+    }
+
+    ElementPtr ReuseState::findElementById(int id) const {
+        auto it = _elementByStableId.find(id);
+        return it == _elementByStableId.end() ? ElementPtr() : it->second;
+    }
+
+    WidgetPtr ReuseState::getWidgetForElement(const ElementPtr &element) const {
+        if (!element) {
+            return nullptr;
+        }
+        auto it = _elementPtrToWidget.find(element.get());
+        return it == _elementPtrToWidget.end() ? nullptr : it->second;
+    }
+
+    int ReuseState::findWhichWidget(WidgetPtr target) const {
+        if (!target) {
+            return -3;
+        }
+        auto found = std::find_if(_widgets.begin(), _widgets.end(),
+                                  [target](const WidgetPtr &ptr) { return ptr.get() == target.get(); });
+        if (found != _widgets.end()) {
+            return -1;
+        }
+        const uintptr_t h = target->hash();
+        if (_mergedWidgets.find(h) == _mergedWidgets.end()) {
+            return -2;
+        }
+        WidgetPtrVec mergedOnes = _mergedWidgets.at(h);
+        found = std::find_if(mergedOnes.begin(), mergedOnes.end(),
+                             [target](const WidgetPtr &ptr) { return ptr.get() == target.get(); });
+        if (found == mergedOnes.end()) {
+            return -3;
+        }
+        return static_cast<int>(found - mergedOnes.begin());
+    }
+
+    WidgetPtr ReuseState::findWidgetByHashAndLocation(uintptr_t hash, int location) const {
+        auto found = std::find_if(_widgets.begin(), _widgets.end(),
+                                  [hash](const WidgetPtr &ptr) { return ptr && ptr->hash() == hash; });
+        if (found == _widgets.end()) {
+            return nullptr;
+        }
+        if (location == -1) {
+            return *found;
+        }
+        auto mit = _mergedWidgets.find(hash);
+        if (mit == _mergedWidgets.end()) {
+            return nullptr;
+        }
+        const WidgetPtrVec &vec = mit->second;
+        if (location >= static_cast<int>(vec.size())) {
+            return vec.back();
+        }
+        return vec[static_cast<size_t>(location)];
+    }
+
+    std::vector<WidgetPtr> ReuseState::getAllWidgets() const {
+        std::vector<WidgetPtr> ret(_widgets);
+        for (const WidgetPtr &widget : _widgets) {
+            if (!widget) {
+                continue;
+            }
+            auto mit = _mergedWidgets.find(widget->hash());
+            if (mit != _mergedWidgets.end()) {
+                ret.insert(ret.end(), mit->second.begin(), mit->second.end());
+            }
+        }
+        return ret;
+    }
+
+    std::vector<ActivityStateActionPtr> ReuseState::findActionsByWidget(WidgetPtr widget) const {
+        std::vector<ActivityStateActionPtr> ret;
+        if (!widget) {
+            return ret;
+        }
+        const uintptr_t h = widget->hash();
+        for (const auto &it : _actions) {
+            if (it->getTarget() && it->getTarget()->hash() == h) {
+                ret.push_back(it);
+            }
+        }
+        return ret;
+    }
+
+    int ReuseState::findActionByElementId(int elementId, int actionType) {
+        ElementPtr element = findElementById(elementId);
+        if (!element) {
+            BLOG("ReuseState::findActionByElementId: no element id=%d in state%d", elementId, getIdi());
+            return -1;
+        }
+        WidgetPtr widget = getWidgetForElement(element);
+        if (!widget) {
+            BLOGE("ReuseState::findActionByElementId: no widget for element id=%d", elementId);
+            return -1;
+        }
+        const int whichWidget = findWhichWidget(widget);
+        if (whichWidget < -1) {
+            BLOGE("ReuseState::findActionByElementId: whichWidget=%d", whichWidget);
+            return -1;
+        }
+        auto action = std::find_if(_actions.begin(), _actions.end(),
+                                   [widget, actionType](const ActivityStateActionPtr &ptr) {
+                                       if (!ptr->getTarget()) {
+                                           return false;
+                                       }
+                                       return widget->hash() == ptr->getTarget()->hash() &&
+                                              ptr->getActionType() == static_cast<ActionType>(actionType);
+                                   });
+        if (action == _actions.end()) {
+            return -1;
+        }
+        (*action)->setWhichWidget(whichWidget);
+        (*action)->setTarget(widget);
+        return static_cast<int>(action - _actions.begin());
+    }
+
+    void ReuseState::addSubSequentState(const ReuseStatePtr &state) {
+        if (!state) {
+            return;
+        }
+        ActionPtr action = this->_actionToPerform;
+        if (!action) {
+            action = Action::NOP;
+            BLOG("ReuseState::addSubSequentState: _actionToPerform null, using NOP (state id=%d)", getIdi());
+        }
+        const uintptr_t edgeHash = action->hash() + state->hash();
+        const auto itSet = this->_existedStateGraphEdges.find(edgeHash);
+        if (itSet != this->_existedStateGraphEdges.end()) {
+            auto edge = std::find_if(_edges.begin(), _edges.end(),
+                                     [edgeHash](const StateGraphEdge &e) { return e.hash == edgeHash; });
+            if (edge != _edges.end()) {
+                edge->remainTimes++;
+            }
+            return;
+        }
+        ActivityStateActionPtr tmp = std::dynamic_pointer_cast<ActivityStateAction>(action);
+        int whichWidget = -1;
+        if (tmp) {
+            whichWidget = tmp->getWhichWidget();
+        }
+        this->_edges.push_back(StateGraphEdge{action, state, 1, false, edgeHash, whichWidget, currentStamp()});
+        this->_existedStateGraphEdges.insert(edgeHash);
+    }
+
+    float ReuseState::computeSimilarity(const ReuseStatePtr &target) const {
+        if (!target) {
+            return 0.f;
+        }
+        size_t matchedCount = 0;
+        const bool bigger = target->_widgets.size() > _widgets.size();
+        const WidgetPtrVec &toCompare = bigger ? target->_widgets : _widgets;
+        const WidgetPtrVecMap &toCompareMap = bigger ? target->_mergedWidgets : _mergedWidgets;
+        const WidgetPtrVec &candidates = bigger ? _widgets : target->_widgets;
+
+        for (const WidgetPtr &candidate : candidates) {
+            if (!candidate) {
+                continue;
+            }
+            const uintptr_t ch = candidate->hash();
+            auto inWidgets = std::find_if(toCompare.begin(), toCompare.end(),
+                                          [ch](const WidgetPtr &ptr) { return ptr && ptr->hash() == ch; });
+            bool inMergedWidgets = false;
+            auto mit = toCompareMap.find(ch);
+            if (mit != toCompareMap.end()) {
+                for (const WidgetPtr &ptr : mit->second) {
+                    if (ptr && ptr->hash() == ch) {
+                        inMergedWidgets = true;
+                        break;
+                    }
+                }
+            }
+            if (inWidgets != toCompare.end() || inMergedWidgets) {
+                matchedCount++;
+            }
+        }
+        const size_t denom = toCompare.size() + candidates.size();
+        return denom == 0 ? 0.f
+                          : static_cast<float>(matchedCount * 2) / static_cast<float>(denom);
+    }
+
+    ActivityStateActionPtr ReuseState::findActionByWidgetHash(uintptr_t h, ActionType actionType) const {
+        for (const ActivityStateActionPtr &a : _actions) {
+            if (!a || !a->getTarget()) {
+                continue;
+            }
+            if (a->getTarget()->hash() == h && a->getActionType() == actionType) {
+                return a;
+            }
+        }
+        return nullptr;
+    }
+
+    ActionPtr ReuseState::findSimilarAction(const ActionPtr &origin) {
+        if (!origin) {
+            return nullptr;
+        }
+        if (origin->getActionType() == ActionType::BACK) {
+            auto found = std::find_if(_actions.begin(), _actions.end(), [](const ActivityStateActionPtr &elem) {
+                return elem && elem->getActionType() == ActionType::BACK;
+            });
+            return found != _actions.end() ? *found : nullptr;
+        }
+        if (!origin->requireTarget()) {
+            return origin;
+        }
+        ActivityStateActionPtr action = std::dynamic_pointer_cast<ActivityStateAction>(origin);
+        if (!action || !action->getTarget()) {
+            return nullptr;
+        }
+        const uintptr_t h = action->getTarget()->hash();
+        auto found = std::find_if(_widgets.begin(), _widgets.end(),
+                                  [h](const WidgetPtr &widget) { return widget && widget->hash() == h; });
+        if (found == _widgets.end()) {
+            return nullptr;
+        }
+        ActivityStateActionPtr ret = findActionByWidgetHash(h, origin->getActionType());
+        if (!ret) {
+            return nullptr;
+        }
+        if (action->hasInput()) {
+            ret->setInputText(action->getInputText());
+        }
+        const int originIndex = action->getWhichWidget();
+        auto targetWidgets = this->_mergedWidgets.find(h);
+        if (targetWidgets == this->_mergedWidgets.end()) {
+            ret->setTarget(*found);
+            ret->setWhichWidget(originIndex);
+            return ret;
+        }
+        const int total = static_cast<int>(this->_mergedWidgets.at(h).size());
+        if (originIndex == -1) {
+            ret->setTarget(*found);
+            ret->setWhichWidget(originIndex);
+            return ret;
+        }
+        if (originIndex < total) {
+            ret->setTarget(this->_mergedWidgets.at(h)[static_cast<size_t>(originIndex)]);
+            ret->setWhichWidget(originIndex);
+            return ret;
+        }
+        ret->setTarget(this->_mergedWidgets.at(h)[static_cast<size_t>(total - 1)]);
+        ret->setWhichWidget(total - 1);
+        return ret;
+    }
 
 } // namespace fastbotx
 

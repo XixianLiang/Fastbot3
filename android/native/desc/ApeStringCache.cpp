@@ -1,5 +1,5 @@
 /*
- * @authors (APE port) Zhao Zhang
+ * @authors Zhao Zhang
  */
 #include "ApeStringCache.h"
 

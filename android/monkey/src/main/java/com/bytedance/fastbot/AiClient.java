@@ -29,7 +29,14 @@ import org.json.JSONObject;
 
 import java.io.IOException;
 import java.util.Iterator;
+import java.util.concurrent.Callable;
+import java.util.concurrent.ExecutionException;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
+import java.util.concurrent.ThreadFactory;
 import java.util.concurrent.TimeUnit;
+import java.util.concurrent.TimeoutException;
 
 /**
  * @author Jianqiang Guo, Zhao Zhang
@@ -82,6 +89,19 @@ public class AiClient {
     public static void setLlmDumpDirectory(File taskOutputDir) {
         sLlmDumpDirectory = taskOutputDir;
     }
+
+    /**
+     * Single worker for OpenAI-compatible LLM HTTP. Build + POST run here; the JNI-attached thread
+     * blocks on {@link Future#get} with a deadline derived from {@code max.llm.timeoutMs} (Phase 2, MIGRATION_LLMDROID_B2.md).
+     */
+    private static final ExecutorService sLlmHttpExecutor = Executors.newSingleThreadExecutor(new ThreadFactory() {
+        @Override
+        public Thread newThread(Runnable r) {
+            Thread t = new Thread(r, "fastbot-llm-http");
+            t.setDaemon(true);
+            return t;
+        }
+    });
 
     private static final AiClient singleton;
 
@@ -230,21 +250,67 @@ public class AiClient {
      * @param prompt    User prompt text
      * @param model     Model name
      * @param maxTokens Max tokens
+     * @param timeoutMs max.llm.timeoutMs from native; drives URLConnection timeouts and Future.get deadline
      * @return response body string, or null on failure
      */
-    public String doLlmHttpPostFromPrompt(String url, String apiKey, String prompt, String model, int maxTokens) {
-        return doLlmHttpPostFromPromptInternal(url, apiKey, prompt, model, maxTokens, null);
+    public String doLlmHttpPostFromPrompt(String url, String apiKey, String prompt, String model, int maxTokens, int timeoutMs) {
+        return doLlmHttpPostFromPromptInternal(url, apiKey, prompt, model, maxTokens, null, timeoutMs);
+    }
+
+    private static long computeLlmFutureWaitMs(int timeoutMs) {
+        if (timeoutMs > 0) {
+            return Math.min(600_000L, (long) timeoutMs + 30_000L);
+        }
+        return 120_000L;
+    }
+
+    /** Connect / read millis for HttpURLConnection from max.llm.timeoutMs (<=0 → legacy 15s/20s). */
+    private static int[] llmSocketTimeouts(int timeoutMs) {
+        if (timeoutMs <= 0) {
+            return new int[] { 15000, 20000 };
+        }
+        int cap = Math.min(timeoutMs, 300_000);
+        int connect = Math.min(20000, Math.max(3000, cap / 4));
+        int read = Math.min(300_000, Math.max(5000, cap));
+        return new int[] { connect, read };
     }
 
     /**
-     * Internal: do LLM HTTP POST and log timing + response by promptType.
+     * Submits build + POST to {@link #sLlmHttpExecutor}; JNI thread waits with {@link Future#get(long, TimeUnit)}.
      * promptType null = direct prompt (legacy); non-null = executor/planner/step_summary/knowledge_org/content_aware_input.
      */
-    private String doLlmHttpPostFromPromptInternal(String url, String apiKey, String prompt, String model, int maxTokens, String promptType) {
+    private String doLlmHttpPostFromPromptInternal(String url, String apiKey, String prompt, String model, int maxTokens, String promptType, int timeoutMs) {
         if (url == null || url.isEmpty()) {
             Logger.errorPrintln("doLlmHttpPostFromPrompt: url null or empty");
             return null;
         }
+        final long waitMs = computeLlmFutureWaitMs(timeoutMs);
+        Future<String> fut = sLlmHttpExecutor.submit(new Callable<String>() {
+            @Override
+            public String call() {
+                return doLlmHttpPostFromPromptInternalSync(url, apiKey, prompt, model, maxTokens, promptType, timeoutMs);
+            }
+        });
+        try {
+            return fut.get(waitMs, TimeUnit.MILLISECONDS);
+        } catch (TimeoutException e) {
+            fut.cancel(true);
+            Logger.errorPrintln("doLlmHttpPostFromPrompt: Future timeout after " + waitMs + "ms");
+            return null;
+        } catch (InterruptedException e) {
+            Thread.currentThread().interrupt();
+            fut.cancel(true);
+            Logger.errorPrintln("doLlmHttpPostFromPrompt: interrupted");
+            return null;
+        } catch (ExecutionException e) {
+            Throwable c = e.getCause();
+            Logger.errorPrintln("doLlmHttpPostFromPrompt: execution failed: " + (c != null ? c.getMessage() : e.getMessage()));
+            return null;
+        }
+    }
+
+    /** Build JSON body + HTTP on the LLM worker thread. */
+    private String doLlmHttpPostFromPromptInternalSync(String url, String apiKey, String prompt, String model, int maxTokens, String promptType, int timeoutMs) {
         long tStart = System.currentTimeMillis();
         String body = buildLlmRequestBody(prompt, model, maxTokens, promptType);
         if (body == null) {
@@ -254,7 +320,7 @@ public class AiClient {
         long tAfterBuild = System.currentTimeMillis();
         long ts = System.currentTimeMillis();
         saveLlmRawToFile(ts + "-req.json", body);
-        String result = doLlmHttpPostBody(url, apiKey, body);
+        String result = doLlmHttpPostBody(url, apiKey, body, timeoutMs);
         long tEnd = System.currentTimeMillis();
         long buildMs = tAfterBuild - tStart;
         long requestMs = tEnd - tAfterBuild;
@@ -279,10 +345,12 @@ public class AiClient {
 
     /**
      * LLM HTTP POST with prompt assembled in Java from payload JSON (reduces JNI string copy).
-     * promptType: "executor" | "planner" | "step_summary" (LLMTaskAgent) | "knowledge_org" (widget_priority) | "content_aware_input" (LLMExplorerAgent).
+     * promptType: "executor" | "planner" | "step_summary" (LLMTaskAgent) | "knowledge_org" (widget_priority) | "content_aware_input" (LLMExplorerAgent)
+     * | "llmdroid_state_overview" | "llmdroid_reanalysis" | "llmdroid_guide" | "llmdroid_test_function"
+     * (native GPTAgent; payload is structured JSON).
      * Called from native via JNI when using predictWithPayload.
      */
-    public String doLlmHttpPostFromPayload(String url, String apiKey, String promptType, String payloadJson, String model, int maxTokens) {
+    public String doLlmHttpPostFromPayload(String url, String apiKey, String promptType, String payloadJson, String model, int maxTokens, int timeoutMs) {
         if (url == null || url.isEmpty()) {
             Logger.errorPrintln("doLlmHttpPostFromPayload: url null or empty");
             return null;
@@ -292,7 +360,7 @@ public class AiClient {
             Logger.errorPrintln("doLlmHttpPostFromPayload: buildPromptFromPayload returned null");
             return null;
         }
-        return doLlmHttpPostFromPromptInternal(url, apiKey, prompt, model, maxTokens, promptType);
+        return doLlmHttpPostFromPromptInternal(url, apiKey, prompt, model, maxTokens, promptType, timeoutMs);
     }
 
     /**
@@ -315,6 +383,18 @@ public class AiClient {
             }
             if ("content_aware_input".equals(promptType)) {
                 return buildContentAwareInputPrompt(payload);
+            }
+            if ("llmdroid_state_overview".equals(promptType)) {
+                return buildLlmdroidStateOverviewPrompt(payload);
+            }
+            if ("llmdroid_reanalysis".equals(promptType)) {
+                return buildLlmdroidReanalysisPrompt(payload);
+            }
+            if ("llmdroid_guide".equals(promptType)) {
+                return buildLlmdroidGuidePrompt(payload);
+            }
+            if ("llmdroid_test_function".equals(promptType)) {
+                return buildLlmdroidTestFunctionPrompt(payload);
             }
             Logger.errorPrintln("buildPromptFromPayload: unknown promptType=" + promptType);
             return null;
@@ -516,6 +596,177 @@ public class AiClient {
         return sb.toString();
     }
 
+    private static String buildLlmdroidStateOverviewPrompt(JSONObject j) throws JSONException {
+        StringBuilder sb = new StringBuilder();
+        sb.append(j.optString("start_prompt", ""));
+        sb.append("\n");
+        sb.append("An app's page contains many controls to display information to users and provide interactive interfaces.\n");
+        sb.append("Users can interact with the controls to perform a \"Function\", such as navigating to other tabs by clicking a navigation bar icon or accessing the settings page.\n");
+        sb.append("I will provide an HTML description of an app's page, including the components and their structural information.\n");
+        sb.append("In the HTML description of this page,\n");
+        sb.append("I use five types of HTML tags, namely <button>, <checkbox>, <scroller>, <input>, and <p>, which represent elements that can be clicked, checked, swiped, edited, and any other views respectively.\n");
+        sb.append("Each HTML element has the following attributes:\n");
+        sb.append("id(the unique id of this component), class(the class name of this component), resource-id (the resource-id of this Android component), content-desc (the content description of this component), text (the text of this component), direction (if this component is scrollable, indicating its scroll direction), value (the text that has been input to the text box).\n");
+        sb.append("\n```HTML Description\n");
+        sb.append(j.optString("state_desc", ""));
+        sb.append("```\n");
+        boolean useTop5 = j.optBoolean("use_top5", false);
+        if (useTop5) {
+            sb.append("Based on the HTML description of this page, your tasks include:\n\n");
+            sb.append("1. Page Overview: Summarize the current page, concluding what kind of information the page mainly presents to users, and what this page is primarily used for.\n");
+            sb.append("2. Function Analysis: Identify the functions present on the page, listing their corresponding element IDs. Prioritize these functions by importance. A function's importance increases if it triggers a new page or results in more code being executed. Specifically:\n");
+            sb.append("    - Navigation-related functions are crucial. These functions correspond to buttons usually located in menus, navigation drawers, or Tabs. These buttons are typically used to guide users to switch between different pages and enter pages with different functions. These buttons usually have the following characteristics:\n");
+            sb.append("        1. They are usually located at the top or bottom of the page.\n");
+            sb.append("        2. They usually appear in groups, possibly wrapped in a ScrollView.\n");
+            sb.append("        3. In the HTML description, their resource-id attributes may be the same or similar, and the resource-id may also contain \"tab\". Their class should be the same; their text attributes have a similar format and are highly general.\n");
+            sb.append("    - functions central to the page's main purpose, like video playback on a video page (play, like, subscribe, comment) or settings adjustments on a settings page.\n");
+            sb.append("    - Any other functions you believe could trigger new pages or enhance code coverage.\n");
+            sb.append("3. Page Importance Ranking: Assess this page's significance relative to the entire app, considering its content and functions in relation to the app's category and main functions. For example, if this page is a homepage or one of the main pgaes or includes core functions, it's considered more important.\n");
+            sb.append("    - I will also provide descriptions and function lists for five other pages. Compare the importance of these pages with the current one and rank the top five most important pages.\n");
+            sb.append("Current: State").append(j.optInt("current_state_id", -1)).append("\n");
+            sb.append("Five other pages:\n").append(j.optJSONObject("top_pages") != null ? j.optJSONObject("top_pages").toString(4) : "{}").append("\n");
+            sb.append("In summary, your response should include:\n\n");
+            sb.append("1. A concise summary of the page, within 30 words.\n");
+            sb.append("2. A list of the page's functions, including their element IDs, sorted by importance. If you believe the current page is empty or has no function, you can return an empty function list.\n");
+            sb.append("3. A ranking of the top five most important pages among the current and the other five pages.\n");
+            sb.append("Your anwser should be in json form. Here are the key elements to include:\n");
+            sb.append("- \"Overview\": A string that provides a summary of the page.\n");
+            sb.append("- \"Function List\": An object consisting of key-value pairs that list the functions in order of importance. The key is a string describing the function, and the value is an integer representing the element ID, which can be obtained from the 'id' attribute of the elements in the HTML description.\n");
+            sb.append("- \"Top5\": An array of integers indicating the indices of the top five most important pages, where the index is the number behind \"State\".\n");
+            sb.append("Note that the key must not be changed!\n");
+        } else {
+            sb.append("Based on the HTML description of this page, your tasks include:\n\n");
+            sb.append("1. Page Overview: Summarize the current page, concluding what kind of information the page mainly presents to users, and what this page is primarily used for.\n");
+            sb.append("2. Function Analysis: Identify the functions present on the page, listing their corresponding element IDs. Prioritize these functions by importance. A function's importance increases if it triggers a new page or results in more code being executed. Specifically:\n");
+            sb.append("    - Navigation-related functions are crucial. These functions correspond to buttons usually located in menus, navigation drawers, or Tabs. These buttons are typically used to guide users to switch between different pages and enter pages with different functions. These buttons usually have the following characteristics:\n");
+            sb.append("        1. They are usually located at the top or bottom of the page.\n");
+            sb.append("        2. They usually appear in groups, possibly wrapped in a ScrollView.\n");
+            sb.append("        3. In the HTML description, their resource-id attributes may be the same or similar, and the resource-id may also contain \"tab\". Their class should be the same; their text attributes have a similar format and are highly general.\n");
+            sb.append("    - functions central to the page's main purpose, like video playback on a video page (play, like, subscribe, comment) or settings adjustments on a settings page.\n");
+            sb.append("    - Any other functions you believe could trigger new pages or enhance code coverage.\n");
+            sb.append("In summary, your response should include:\n\n");
+            sb.append("1. A concise summary of the page, within 30 words.\n");
+            sb.append("2. A list of the page's functions, including their element IDs, sorted by importance.\n");
+            sb.append("Your anwser should be in json form. Here are the key elements to include:\n");
+            sb.append("- \"Overview\": A string that provides a summary of the page.\n");
+            sb.append("- \"Function List\": An object consisting of key-value pairs that list the functions in order of importance. The key is a string describing the function, and the value is an integer representing the element ID, which can be obtained from the 'id' attribute of the elements in the HTML description.\n");
+            sb.append("Note that the key must not be changed!\n");
+        }
+        return sb.toString();
+    }
+
+    private static String buildLlmdroidGuidePrompt(JSONObject j) throws JSONException {
+        StringBuilder sb = new StringBuilder();
+        sb.append(j.optString("start_prompt", ""));
+        sb.append("\n");
+        sb.append("After a period of testing, we have identified some pages (referred to as States below) and had you analyze their roles and functionalities. Based on this, I also asked you to rank these States in terms of their importance to the overall app.\n");
+        sb.append("Below is a list of States you ranked from highest to lowest importance in previous discussions. Each State includes its Overview and FunctionList, with FunctionList containing the five most important untested functions of that page.\n");
+        sb.append("\n```State Informations\n");
+        JSONObject infos = j.optJSONObject("state_informations");
+        sb.append(infos != null ? infos.toString(4) : "{}");
+        sb.append("\n```\n");
+        sb.append("Based on the information above, please decide: Which State should we go next, and what function would be most appropriate to test in the target State?\n");
+        sb.append("Your main objective should be to explore new pages and enhance code coverage by executing this function.\n");
+        sb.append("Specifically, you can follow these strategies:\n");
+        sb.append("1. Do not select function that has been chosen before:)");
+        sb.append("{");
+        JSONArray tested = j.optJSONArray("tested_functions");
+        if (tested != null) {
+            for (int i = 0; i < tested.length(); i++) {
+                if (i > 0) {
+                    sb.append(", ");
+                }
+                sb.append(tested.optString(i, ""));
+            }
+        }
+        sb.append("}");
+        sb.append("2. Do not choose functions related to login or registration.\n");
+        sb.append("3. Prioritize choosing functions related to navigation.\n");
+        sb.append("4. Choose other function which can trigger transition or lead to undiscovered pages.\n");
+        sb.append("5. If there are no navigation-related functions, you can choose a core function from the higher-ranked pages, like video playback on a video page (play, like, subscribe, comment) or settings adjustments on a settings page.\n");
+        sb.append("Your anwser should be in json form. Here are the key elements to include:\n");
+        sb.append("- \"Target State\": The State you want to go to, which contains the functionality you want to test.\n");
+        sb.append("- \"Target Function\": The function you want to test in the \"Target State\". This function must be chosen from the provided \"Function List\" of the corresponding State and cannot be made up.\n");
+        sb.append("Please note that the key must not be changed. You should only give me one choice!\n");
+        sb.append("Your final output should only contain the json result and no more.\n");
+        return sb.toString();
+    }
+
+    private static String buildLlmdroidTestFunctionPrompt(JSONObject j) throws JSONException {
+        StringBuilder sb = new StringBuilder();
+        sb.append(j.optString("start_prompt", ""));
+        sb.append("\n");
+        sb.append("The app's current page is provided using HTML, including the components and their structural information.\n");
+        sb.append("I use five types of HTML tags, namely <button>, <checkbox>, <scroller>, <input>, and <p>, which represent elements that can be clicked, checked, swiped, edited, and any other views respectively.\n");
+        sb.append("Each HTML element has the following attributes:\n");
+        sb.append("id(the unique id of this component), class(the class name of this component), resource-id (the resource-id of this Android component), content-desc (the content description of this component), text (the text of this component), direction (if this component is scrollable, indicating its scroll direction), value (the text that has been input to the text box).\n");
+        sb.append("\n```Page Description\n").append(j.optString("page_desc", "")).append("```\n");
+        sb.append("The target function I want to test is : ").append(j.optString("target_function", "")).append("\n");
+        JSONArray executed = j.optJSONArray("executed_functions");
+        if (executed != null && executed.length() > 0) {
+            sb.append("I've already I have already executed: [");
+            for (int i = 0; i < executed.length(); i++) {
+                if (i != 0) sb.append(",\n");
+                sb.append(executed.optString(i, ""));
+            }
+            sb.append("]\n");
+        }
+        sb.append("What action should I perform next to test the target function?\n");
+        sb.append("Your response should include the selected element's id and the action to be performed on that element.\n");
+        sb.append("The available types of actions include: click (0), long press (1), swipe from top to bottom (2), swipe from bottom to top (3), swipe from left to right (4), swipe from right to left (5) and input text (6).\n");
+        sb.append("Your answer should be in json form.\n");
+        sb.append("The key \"Element Id\" represents the value of the id attribute of the corresponding tag in the HTML description of the element you have chosen.\n");
+        sb.append("The key \"Action Type\" represents the type of action you want to perform on the element, please use the number in the parentheses of the action type.\n");
+        sb.append("The key \"Input\" represents the text you want to input to the target element, the value should be generated by you. This key is only needed when the value of \"Action Type\" is 6.\n");
+        sb.append("If you believe the target function is finished testing and no more action is needed, the value of \"Element Id\" should be -1, the value of \"Action Type\" should be 0.\n");
+        sb.append("Please note that the key must not be changed. The output should be pure json string starting with \"{\", NOT begin with \"```json\", and must not contain comments.\n");
+        if (executed != null && executed.length() > 0) {
+            sb.append("If you believe that the current page is the page that should be reached after executing the target function, or if the current page lacks the corresponding element to complete the target function, your response should be as follows:\n");
+            sb.append("{\n");
+            sb.append("    \"Element Id\": -1,\n");
+            sb.append("    \"Action Type\": 0\n");
+            sb.append("}\n");
+        }
+        return sb.toString();
+    }
+
+    private static String buildLlmdroidReanalysisPrompt(JSONObject j) throws JSONException {
+        StringBuilder sb = new StringBuilder();
+        sb.append(j.optString("start_prompt", ""));
+        sb.append("\n");
+        sb.append("You have previously analyzed a page and summarized its Overview and Function list.\n");
+        sb.append("```Overview and Function List\n");
+        Object ov = j.opt("overview_and_function_list");
+        if (ov instanceof JSONObject) {
+            sb.append(((JSONObject) ov).toString(4));
+        } else if (ov != null) {
+            sb.append(String.valueOf(ov));
+        } else {
+            sb.append("{}");
+        }
+        sb.append("\n```\n");
+        sb.append("Now, you are provided with a set of similar pages containing controls not present in the previous page. Your task is to analyze the potential functions corresponding to these controls.\n");
+        sb.append("The controls are provided in HTML format, consisting of five types of HTML tags: <button>, <checkbox>, <scroller>, <input>, and <p>, which represent elements that can be clicked, checked, swiped, edited, and other views, respectively.\n");
+        sb.append("Each HTML element has the following attributes: id (the unique ID of this component), class (the class name of this component), resource-id (the resource ID of this Android component), content-desc (the content description of this component), text (the text of this component), direction (if this component is scrollable, indicating its scroll direction)\n");
+        sb.append("value (the text that has been input to the text box)\n");
+        sb.append("```Controls in HTML Description\n");
+        sb.append(j.optString("controls_html", ""));
+        sb.append("```\n");
+        sb.append("Based on the HTML components, the page's Overview, and the existing Function List, your tasks are as follows:\n");
+        sb.append("1. Analyze the functions corresponding to the controls that have an id attribute. Cross-reference these functions with the existing function list, prioritizing matches to ensure consistency.\n");
+        sb.append("2. Rank the importance of these functions. A function's importance increases if it triggers a new page or results in more code being executed. Specifically:\n");
+        sb.append("\t- Navigation-related functions are crucial.\n");
+        sb.append("\t- Functions central to the page's main purpose, such as video playback on a video page (play, like, subscribe, comment) or settings adjustments on a settings page.\n");
+        sb.append("\t- Any other functions you believe could trigger new pages or enhance code coverage.\n");
+        sb.append("You should always respond using the correct JSON format.\n");
+        sb.append("The key is the control's `id` attribute, which must be a string representation of an integer.\n");
+        sb.append("The value is the corresponding function of that control.\n");
+        sb.append("The closer a key-value pair is to the top, the higher the importance of its function.\n");
+        sb.append("If there is no `id` attribute in html controls, just return an empty json.\n");
+        sb.append("Please note that the output should be pure json string starting with \"{\", NOT begin with \"```json\", and must not contain comments.\n");
+        return sb.toString();
+    }
+
     private static void saveLlmRawToFile(String filename, String content) {
         if (content == null || sLlmDumpDirectory == null) return;
         try {
@@ -532,12 +783,16 @@ public class AiClient {
     /**
      * Build request body. System prompt is chosen by promptType so LLMTaskAgent (executor/planner/step_summary)
      * and LLMExplorerAgent (knowledge_org/content_aware_input) get appropriate instructions.
-     * @param promptType null = legacy; "knowledge_org" (widget_priority) | "content_aware_input" use different system prompt.
+     * For llmdroid_* we intentionally do NOT add extra system instruction, to align with upstream
+     * LLMDroid behavior (prompt semantics mainly come from user content).
+     *
+     * @param promptType null = legacy; "knowledge_org" (widget_priority) | "content_aware_input" | "llmdroid_*".
      */
     private String buildLlmRequestBody(String prompt, String model, int maxTokens, String promptType) {
         try {
-            // LLMExplorerAgent (knowledge_org / content_aware_input): skip screenshot for performance testing; text-only request.
-            boolean skipImage = "knowledge_org".equals(promptType) || "content_aware_input".equals(promptType);
+            boolean llmdroid = promptType != null && promptType.startsWith("llmdroid_");
+            // LLMExplorerAgent / LLMDroid: text-only (no screenshot) for these prompt types.
+            boolean skipImage = "knowledge_org".equals(promptType) || "content_aware_input".equals(promptType) || llmdroid;
             long t0 = System.currentTimeMillis();
             byte[] img = null;
             if (!skipImage) {
@@ -550,11 +805,14 @@ public class AiClient {
             }
             long t1 = System.currentTimeMillis();
             long screenshotMs = t1 - t0;
-            String systemContent;
+            String systemContent = null;
             if ("knowledge_org".equals(promptType)) {
                 systemContent = "You are a GUI testing agent. Output a short REASONING line, then a line starting with JSON: followed by a single, complete, parseable JSON object. Use \"priorities\" as either (1) array of floats [p0,p1,...] by element index, or (2) object {\"<id>\": float, ...} keyed by element id for unambiguous matching; or use \"recommend_order\" as array of indices. No groups or functions. Output full JSON—no truncation.";
             } else if ("content_aware_input".equals(promptType)) {
                 systemContent = "You are a GUI testing agent. Reply with only the requested input text, no quotes or explanation.";
+            } else if (llmdroid) {
+                // Keep null intentionally: llmdroid_* relies on full user prompt text (upstream-compatible).
+                systemContent = null;
             } else {
                 systemContent = "You are a GUI testing agent that must respond with a strict JSON action object.";
             }
@@ -563,7 +821,9 @@ public class AiClient {
             sb.append(escapeJson(model != null ? model : ""));
             sb.append(",\"max_tokens\":").append(Math.max(0, maxTokens));
             sb.append(",\"stream\":false,\"messages\":[");
-            sb.append("{\"role\":\"system\",\"content\":").append(escapeJson(systemContent)).append("},");
+            if (systemContent != null && !systemContent.isEmpty()) {
+                sb.append("{\"role\":\"system\",\"content\":").append(escapeJson(systemContent)).append("},");
+            }
             sb.append("{\"role\":\"user\",\"content\":");
             if (!skipImage && img != null && img.length > 0) {
                 String b64 = Base64.encodeToString(img, Base64.NO_WRAP);
@@ -801,7 +1061,7 @@ public class AiClient {
         return sb.toString();
     }
 
-    private String doLlmHttpPostBody(String url, String apiKey, String body) {
+    private String doLlmHttpPostBody(String url, String apiKey, String body, int timeoutMs) {
         if (url == null || url.isEmpty()) return null;
         HttpURLConnection conn = null;
         try {
@@ -812,8 +1072,9 @@ public class AiClient {
             if (apiKey != null && !apiKey.isEmpty()) {
                 conn.setRequestProperty("Authorization", "Bearer " + apiKey);
             }
-            conn.setConnectTimeout(15000);
-            conn.setReadTimeout(20000);
+            int[] sock = llmSocketTimeouts(timeoutMs);
+            conn.setConnectTimeout(sock[0]);
+            conn.setReadTimeout(sock[1]);
             conn.setDoOutput(true);
             if (body != null && !body.isEmpty()) {
                 byte[] bytes = body.getBytes(StandardCharsets.UTF_8);
@@ -878,6 +1139,17 @@ public class AiClient {
     }
 
     /**
+     * Native fallback scalar when Jacoco/AndroLog are not active: RL graph size, reported activities, step count.
+     * {@link com.android.commands.monkey.utils.CodeCoverage#getCoverage} prefers Jacoco/AndroLog when Monkey initialized them.
+     */
+    public static double getLlmdroidCoverageMetric() {
+        if (!singleton.loaded) {
+            return 0.0;
+        }
+        return singleton.getLlmdroidCoverageMetricNative();
+    }
+
+    /**
      * Get next fuzz action JSON from native (performance §3.3). Returns one fuzz action as JSON;
      * simplify=true picks from rotation/app_switch/drag/pinch/click only.
      */
@@ -938,6 +1210,7 @@ public class AiClient {
 
     private native void reportActivityNative(String activity);
     private native String getCoverageJsonNative();
+    private native double getLlmdroidCoverageMetricNative();
     private native String getNextFuzzActionNative(int displayWidth, int displayHeight, boolean simplify);
 
     /** Register this instance as the LLM HTTP runner for native when libcurl is not available. */

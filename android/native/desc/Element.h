@@ -257,6 +257,11 @@ namespace fastbotx {
 
         std::string validText;
 
+        /** DFS-assigned id for LLMDroid payload element references (see ReuseState::rebuildElementIdMaps). */
+        int getStableElementId() const { return _stableElementId; }
+
+        void setStableElementId(int id) { _stableElementId = id; }
+
         virtual ~Element();
 
     protected:
@@ -307,6 +312,8 @@ namespace fastbotx {
 
         // a construct helper
         static bool _allClickableFalse;
+
+        int _stableElementId{-1};
     };
 
     typedef std::shared_ptr<Element> ElementPtr;

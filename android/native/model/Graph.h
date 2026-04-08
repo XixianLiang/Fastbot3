@@ -10,11 +10,16 @@
 #include "State.h"
 #include "Base.h"
 #include "Action.h"
+#include "GraphPath.h"
 #include <map>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 namespace fastbotx {
+
+    class ReuseState;
+    typedef std::shared_ptr<ReuseState> ReuseStatePtr;
 
     /**
      * @brief Map from widget to set of actions that can be performed on that widget
@@ -163,6 +168,17 @@ namespace fastbotx {
         size_t removeStatesByHash(const std::unordered_set<uintptr_t> &stateHashes);
 
         /**
+         * LLMDroid RL transition chain + shortest paths over {@link ReuseState} edges
+         * ({@link ReuseState::addSubSequentState}). Gated build in {@link #addState} when
+         * {@link Preference::isLlmdroidEnabled()}.
+         */
+        std::vector<Path> findPath(int dest, bool forceRestart);
+
+        ReuseStatePtr findReuseStateById(int id);
+
+        ReuseStatePtr getLlmdroidGraphCursorState() const { return _llmdroidCurrentState; }
+
+        /**
          * @brief Get total distribution count (total number of state accesses)
          * 
          * @return Total distribution count
@@ -195,7 +211,25 @@ namespace fastbotx {
          */
         void notifyNewStateEvents(const StatePtr &node);
 
+        void buildStateGraph(const ReuseStatePtr &reuseState);
+
     private:
+        Path transformPath(Path origin, int source, int dest);
+
+        void processPaths(std::vector<Path> &paths, int source, int dest);
+
+        std::vector<Path> dijkstra(int source, int dest);
+
+        std::vector<std::vector<Step>> traceback(std::vector<bool> &is_used,
+                                                   std::vector<std::vector<Step>> &parent,
+                                                   int source,
+                                                   int dest,
+                                                   int layer);
+
+        ReuseStatePtr _llmdroidFirstState;
+        ReuseStatePtr _llmdroidCurrentState;
+        ReuseStatePtr _llmdroidCursor;
+
         /**
          * @brief Process and index all actions from a state
          * 

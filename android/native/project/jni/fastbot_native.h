@@ -43,6 +43,8 @@ JNIEXPORT void JNICALL
 Java_com_bytedance_fastbot_AiClient_reportActivityNative(JNIEnv *env, jobject, jstring activity);
 JNIEXPORT jstring JNICALL
 Java_com_bytedance_fastbot_AiClient_getCoverageJsonNative(JNIEnv *env, jobject);
+JNIEXPORT jdouble JNICALL
+Java_com_bytedance_fastbot_AiClient_getLlmdroidCoverageMetricNative(JNIEnv *env, jobject);
 JNIEXPORT jstring JNICALL
 Java_com_bytedance_fastbot_AiClient_getNextFuzzActionNative(JNIEnv *env, jobject, jint displayWidth,
                                                             jint displayHeight, jboolean simplify);

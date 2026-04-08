@@ -1,6 +1,10 @@
 /*
  * Keeps the pugixml document used to build a GUITree and maps XPath results to GUITreeNode.
  */
+/**
+ * @authors Zhao Zhang
+ */
+
 #ifndef FASTBOTX_DESC_XPATH_XPATHNODEMAPPER_H_
 #define FASTBOTX_DESC_XPATH_XPATHNODEMAPPER_H_
 
