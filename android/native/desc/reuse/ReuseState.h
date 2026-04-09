@@ -100,6 +100,8 @@ namespace fastbotx {
         ElementPtr findElementById(int id) const;
 
         WidgetPtr getWidgetForElement(const ElementPtr &element) const;
+        
+        int getStableElementIdForWidget(const WidgetPtr &widget) const;
 
         int findWhichWidget(WidgetPtr target) const;
 
@@ -161,6 +163,7 @@ namespace fastbotx {
         ElementPtr _rootElement;
         std::unordered_map<int, ElementPtr> _elementByStableId;
         std::unordered_map<const Element *, WidgetPtr> _elementPtrToWidget;
+        std::unordered_map<const Widget *, int> _widgetPtrToStableElementId;
 
         std::unordered_set<uintptr_t> _existedStateGraphEdges;
 

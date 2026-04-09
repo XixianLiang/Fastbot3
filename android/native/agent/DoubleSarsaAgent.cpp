@@ -65,6 +65,8 @@ namespace fastbotx {
     DoubleSarsaAgent::~DoubleSarsaAgent() {
         BLOG("Double SARSA: Destructor called, saving model (reuse entries=%zu, Q1 entries=%zu, Q2 entries=%zu)", 
              this->_reuseModel.size(), this->_reuseQValue1.size(), this->_reuseQValue2.size());
+        BLOG("Double SARSA: final selected actions summary not-in-model=%" PRIu64 " in-model=%" PRIu64 " q-value=%" PRIu64,
+             _selectedNotInModelCount, _selectedInModelCount, _selectedByQValueCount);
         this->saveReuseModel(this->_modelSavePath);
         this->_reuseModel.clear();
         this->_reuseQValue1.clear();
@@ -995,18 +997,27 @@ namespace fastbotx {
      */
     ActionPtr DoubleSarsaAgent::selectNewAction() {
         ActionPtr action = nullptr;
+        const char *finalSource = "other";
         
         // Strategy 1: Select unexecuted actions not in reuse model
         action = this->selectUnperformedActionNotInReuseModel();
         if (nullptr != action) {
+            finalSource = "not-in-model";
+            _selectedNotInModelCount++;
             BLOG("Double SARSA: select action not in reuse model - %s", action->toString().c_str());
+            BLOG("Double SARSA: final selected actions count not-in-model=%" PRIu64 " in-model=%" PRIu64 " q-value=%" PRIu64,
+                 _selectedNotInModelCount, _selectedInModelCount, _selectedByQValueCount);
             return action;
         }
 
         // Strategy 2: Select unvisited unexecuted actions in reuse model
         action = this->selectUnperformedActionInReuseModel();
         if (nullptr != action) {
+            finalSource = "in-model";
+            _selectedInModelCount++;
             BLOG("Double SARSA: select action in reuse model - %s", action->toString().c_str());
+            BLOG("Double SARSA: final selected actions count not-in-model=%" PRIu64 " in-model=%" PRIu64 " q-value=%" PRIu64,
+                 _selectedNotInModelCount, _selectedInModelCount, _selectedByQValueCount);
             return action;
         }
 
@@ -1020,7 +1031,11 @@ namespace fastbotx {
         // Strategy 4: If all actions are visited, select actions based on Q-values
         action = this->selectActionByQValue();
         if (nullptr != action) {
+            finalSource = "q-value";
+            _selectedByQValueCount++;
             BLOG("Double SARSA: select action by qvalue - %s", action->toString().c_str());
+            BLOG("Double SARSA: final selected actions count not-in-model=%" PRIu64 " in-model=%" PRIu64 " q-value=%" PRIu64,
+                 _selectedNotInModelCount, _selectedInModelCount, _selectedByQValueCount);
             return action;
         }
 
@@ -1028,6 +1043,8 @@ namespace fastbotx {
         action = this->selectNewActionEpsilonGreedyRandomly();
         if (nullptr != action) {
             BLOG("Double SARSA: select action by EpsilonGreedyRandom - %s", action->toString().c_str());
+            BLOG("Double SARSA: final selected actions count not-in-model=%" PRIu64 " in-model=%" PRIu64 " q-value=%" PRIu64 " (last=%s)",
+                 _selectedNotInModelCount, _selectedInModelCount, _selectedByQValueCount, finalSource);
             return action;
         }
         

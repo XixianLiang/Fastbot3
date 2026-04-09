@@ -132,6 +132,7 @@ namespace fastbotx {
         _rootElement = element;
         _elementByStableId.clear();
         _elementPtrToWidget.clear();
+        _widgetPtrToStableElementId.clear();
         buildStateFromElement(nullptr, element);
         mergeWidgetsInState();
         rebuildElementIdMaps(element);
@@ -313,6 +314,7 @@ namespace fastbotx {
 
     void ReuseState::rebuildElementIdMaps(const ElementPtr &root) {
         _elementByStableId.clear();
+        _widgetPtrToStableElementId.clear();
         if (!root) {
             return;
         }
@@ -329,6 +331,18 @@ namespace fastbotx {
             }
         };
         dfs(root);
+        for (const auto &kv : _elementByStableId) {
+            const int stableId = kv.first;
+            const ElementPtr &elem = kv.second;
+            if (!elem) {
+                continue;
+            }
+            auto wit = _elementPtrToWidget.find(elem.get());
+            if (wit == _elementPtrToWidget.end() || !wit->second) {
+                continue;
+            }
+            _widgetPtrToStableElementId[wit->second.get()] = stableId;
+        }
     }
 
     void ReuseState::addMiniEdge(MiniGraphEdge edge) {
@@ -427,6 +441,14 @@ namespace fastbotx {
         }
         auto it = _elementPtrToWidget.find(element.get());
         return it == _elementPtrToWidget.end() ? nullptr : it->second;
+    }
+
+    int ReuseState::getStableElementIdForWidget(const WidgetPtr &widget) const {
+        if (!widget) {
+            return -1;
+        }
+        auto it = _widgetPtrToStableElementId.find(widget.get());
+        return it == _widgetPtrToStableElementId.end() ? -1 : it->second;
     }
 
     int ReuseState::findWhichWidget(WidgetPtr target) const {

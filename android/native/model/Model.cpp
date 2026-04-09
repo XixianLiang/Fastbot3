@@ -69,25 +69,45 @@ void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
     }
     naming::NamerPtr fullNamer = naming::NamerFactory::current().getByMask(fullMask);
     const uintptr_t activityH = fastStringHash(apeKey.activity());
-    const WidgetPtrVec &ws = state->getWidgets();
-    const bool indexAligned = (ws.size() == nodesPreOrder.size());
-    std::unordered_map<const Widget *, size_t> widgetIndex;
-    if (indexAligned) {
-        widgetIndex.reserve(ws.size());
-        for (size_t i = 0; i < ws.size(); ++i) {
-            const Widget *ptr = ws[i].get();
-            if (!ptr) {
-                continue;
-            }
-            widgetIndex.emplace(ptr, i);
+    auto reuseState = std::dynamic_pointer_cast<ReuseState>(state);
+    auto nodeForWidget = [&](const WidgetPtr &widget) -> gui_tree::GUITreeNode * {
+        if (!reuseState || !widget || nodesPreOrder.empty()) {
+            return nullptr;
         }
-    }
+        const int stableId = reuseState->getStableElementIdForWidget(widget);
+        if (stableId < 0) {
+            return nullptr;
+        }
+        const size_t idx = static_cast<size_t>(stableId);
+        if (idx >= nodesPreOrder.size()) {
+            return nullptr;
+        }
+        return nodesPreOrder[idx];
+    };
+    auto stableTargetHashForWidget = [&](const WidgetPtr &widget) -> uintptr_t {
+        if (!reuseState || !widget) {
+            return 0x1;
+        }
+        const int stableId = reuseState->getStableElementIdForWidget(widget);
+        if (stableId < 0) {
+            return 0x1;
+        }
+        // Build deterministic per-element hash (stable across toolchains/runs).
+        const uint64_t sid = static_cast<uint64_t>(static_cast<uint32_t>(stableId));
+        const uint64_t mixed = sid * 11400714819323198485ull;
+        return static_cast<uintptr_t>(mixed ^ (mixed >> 32));
+    };
     const ActivityStateActionPtrVec &acts = state->getActions();
     const bool deriveActions = naming::useActionPatchDeriveActionsFromName();
     std::vector<uint8_t> keepMask;
     if (deriveActions) {
         keepMask.assign(acts.size(), 1);
     }
+    size_t targetActions = 0;
+    size_t noTargetActions = 0;
+    size_t mappedXPath = 0;
+    size_t mappedStableId = 0;
+    size_t fallbackConst = 0;
 
     auto canonicalForCheck = [](ActionType t) -> ActionType {
         if (t == ActionType::SCROLL_BOTTOM_UP_N) {
@@ -122,35 +142,40 @@ void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
         naming::NamePtr nxp = nullptr;
         WidgetPtr w = ana->getTarget();
         if (!w) {
+            noTargetActions++;
             ana->applyApeDynamicRlIdentity(activityH, 0x1);
             ana->setApeDynamicTargetFullPathHash(0);
             continue;
         }
-        uintptr_t abstractTargetHash = w->hash();
+        targetActions++;
+        uintptr_t abstractTargetHash = stableTargetHashForWidget(w);
         uintptr_t fullTargetHash = 0;
-        if (indexAligned) {
-            auto it = widgetIndex.find(w.get());
-            if (it != widgetIndex.end()) {
-                gui_tree::GUITreeNode *n = nodesPreOrder[it->second];
-                if (n) {
-                    nxp = n->getXPathName();
-                    if (nxp) {
-                        abstractTargetHash = fastStringHash(nxp->toXPath());
-                    }
-                    if (fullNamer) {
-                        std::string fullKey = fullNamer->xpathKeyForNode(*n);
-                        if (fullKey.empty()) {
-                            naming::NamePtr fullName = fullNamer->naming(*n);
-                            if (fullName) {
-                                fullKey = fullName->toXPath();
-                            }
-                        }
-                        if (!fullKey.empty()) {
-                            fullTargetHash = fastStringHash(fullKey);
-                        }
+        gui_tree::GUITreeNode *n = nodeForWidget(w);
+        if (n) {
+            nxp = n->getXPathName();
+            if (nxp) {
+                abstractTargetHash = fastStringHash(nxp->toXPath());
+                mappedXPath++;
+            } else if (abstractTargetHash != 0x1) {
+                mappedStableId++;
+            }
+            if (fullNamer) {
+                std::string fullKey = fullNamer->xpathKeyForNode(*n);
+                if (fullKey.empty()) {
+                    naming::NamePtr fullName = fullNamer->naming(*n);
+                    if (fullName) {
+                        fullKey = fullName->toXPath();
                     }
                 }
+                if (!fullKey.empty()) {
+                    fullTargetHash = fastStringHash(fullKey);
+                }
             }
+        } else if (abstractTargetHash != 0x1) {
+            mappedStableId++;
+        }
+        if (!nxp && abstractTargetHash == 0x1) {
+            fallbackConst++;
         }
         ana->applyApeDynamicRlIdentity(activityH, abstractTargetHash);
         ana->setApeDynamicTargetFullPathHash(fullTargetHash);
@@ -173,6 +198,11 @@ void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
 
     if (deriveActions && !keepMask.empty()) {
         state->filterActionsByKeepMask(keepMask);
+    }
+    if ((targetActions + noTargetActions) > 0) {
+        BLOG("ape action hash mapping: activity=%s targetActions=%zu noTargetActions=%zu mappedXPath=%zu mappedStableId=%zu fallbackConst=%zu",
+             apeKey.activity().c_str(), targetActions, noTargetActions, mappedXPath, mappedStableId,
+             fallbackConst);
     }
 }
 } // namespace

@@ -324,6 +324,10 @@ namespace fastbotx {
         std::vector<ActionPtr> _previousActions;
 
     private:
+        uint64_t _selectedNotInModelCount{0};
+        uint64_t _selectedInModelCount{0};
+        uint64_t _selectedByQValueCount{0};
+
         // ========== Random Number Generators (Performance Optimization) ==========
         /// Mersenne Twister random number generator, thread-safe and performant
         mutable std::mt19937 _rng;
