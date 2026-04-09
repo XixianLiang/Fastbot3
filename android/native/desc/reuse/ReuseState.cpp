@@ -71,6 +71,8 @@ namespace fastbotx {
         WidgetPtr widget = std::make_shared<RichWidget>(parentWidget, element);
         _elementPtrToWidget[element.get()] = widget;
         this->_widgets.emplace_back(widget);
+        _stateStructure._elementMap.insert(std::make_pair(widget->hash(), element));
+        _stateStructure.insertElement(element);
         for (const auto &childElement: element->getChildren()) {
             buildFromElement(widget, childElement);
         }
@@ -101,6 +103,8 @@ namespace fastbotx {
         }
         this->_widgets.emplace_back(widget);
         _elementPtrToWidget[elem.get()] = widget;
+        _stateStructure._elementMap.insert(std::make_pair(widget->hash(), elem));
+        _stateStructure.insertElement(elem);
         for (const auto &childElement: elem->getChildren()) {
             buildFromElement(widget, childElement);
         }
@@ -130,6 +134,7 @@ namespace fastbotx {
 
     void ReuseState::buildState(const ElementPtr &element) {
         _rootElement = element;
+        _stateStructure._rootElement = element;
         _elementByStableId.clear();
         _elementPtrToWidget.clear();
         _widgetPtrToStableElementId.clear();
@@ -200,10 +205,25 @@ namespace fastbotx {
                 BLOGE("NULL Bounds happened");
                 continue;
             }
+
+            ElementPtr element = this->_stateStructure.findElement(widget->hash());
+            if (element == nullptr)
+            {
+                BLOG("ReuseState: can't find corresponding element to this widget\n"
+                     "[widget]\n\tclass: %s\n\tresource-id:%s",
+                     widget->getClassname().c_str(), widget->getResourceID().c_str());
+            }
             // getActions() returns const ref — no set copy per widget
             const std::set<ActionType> &actions = widget->getActions();
             for (ActionType action : actions) {
                 _actions.emplace_back(std::make_shared<ActivityNameAction>(activityStr, widget, action));
+                _valuableWidgets.push_back(widget);
+            }
+            // if widget doesn't have actions but have text or content-desc, also considered valuable
+            if (!widget->hasAction() &&
+                (!widget->getText().empty() || !widget->getContentDesc().empty()))
+            {
+                _valuableWidgets.push_back(widget);
             }
         }
 
@@ -392,19 +412,7 @@ namespace fastbotx {
     }
 
     std::string ReuseState::getStateDescriptionForMergedState() const {
-        std::ostringstream ss;
-        if (getActivityString() && getActivityString().get()) {
-            ss << "[Activity: " << *getActivityString() << "]\n";
-        }
-        ss << "[State" << getIdi() << "]\n";
-        for (const auto &w : _widgets) {
-            if (!w) {
-                continue;
-            }
-            ss << "- " << w->getClassname() << " id=" << w->getResourceID()
-               << " text=\"" << w->getText() << "\"\n";
-        }
-        return ss.str();
+        return _stateStructure.generateStateDescription(getIdi());
     }
 
     float ReuseState::computeSimilarityForMergedState(const ReuseStatePtr &target) const {

@@ -9,6 +9,7 @@
 
 #include "State.h"
 #include "RichWidget.h"
+#include "../StateStructure.h"
 #include "../Base.h"
 #include <unordered_map>
 #include <unordered_set>
@@ -164,6 +165,8 @@ namespace fastbotx {
 
         MergedStatePtr _mergedState;
         ElementPtr _rootElement;
+        mutable StateStructure _stateStructure;
+        std::vector<WidgetPtr> _valuableWidgets;
         std::unordered_map<int, ElementPtr> _elementByStableId;
         std::unordered_map<const Element *, WidgetPtr> _elementPtrToWidget;
         std::unordered_map<const Widget *, int> _widgetPtrToStableElementId;
