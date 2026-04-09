@@ -3,7 +3,7 @@
  * HTTP via LlmClient::predictWithPayload (Java path: promptType llmdroid_* + payload JSON).
  */
 /**
- * @authors Zhao Zhang, Tianming Liu
+ * @authors Zhao Zhang, Tianming Liu, Chenxu Wang
  */
 
 #ifndef FASTBOTX_GPT_AGENT_H_

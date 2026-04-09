@@ -1,5 +1,5 @@
 /**
- * @authors Zhao Zhang, Tianming Liu
+ * @authors Zhao Zhang, Tianming Liu, Chenxu Wang
  */
 
 #include "GPTAgent.h"

@@ -117,6 +117,9 @@ namespace fastbotx {
         /** Widgets in this state whose widget hash is not present in {@code target} (LLMDroid reanalysis). */
         std::vector<WidgetPtr> diffWidgets(const ReuseStatePtr &target);
 
+        /** LLMDroid legacy helper for activity-level graph aggregation. */
+        std::vector<WidgetPtr> getValuableWidgets() const;
+
     protected:
         virtual void buildStateFromElement(WidgetPtr parentWidget, ElementPtr element);
 

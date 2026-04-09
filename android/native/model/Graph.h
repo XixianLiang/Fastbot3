@@ -18,6 +18,9 @@
 
 namespace fastbotx {
 
+    class Activity;
+    typedef std::shared_ptr<Activity> ActivityPtr;
+
     class ReuseState;
     typedef std::shared_ptr<ReuseState> ReuseStatePtr;
 
@@ -179,6 +182,14 @@ namespace fastbotx {
         ReuseStatePtr getLlmdroidGraphCursorState() const { return _llmdroidCurrentState; }
 
         /**
+         * LLMDroid legacy-compatible activity-level graph export.
+         * This is observational/debug output and does not affect RL or APE logic.
+         */
+        std::string generateGraphCodeForActivity();
+
+        std::string generateNodeCodeForActivity();
+
+        /**
          * @brief Get total distribution count (total number of state accesses)
          * 
          * @return Total distribution count
@@ -229,6 +240,9 @@ namespace fastbotx {
         ReuseStatePtr _llmdroidFirstState;
         ReuseStatePtr _llmdroidCurrentState;
         ReuseStatePtr _llmdroidCursor;
+        ActivityPtr _firstActivity;
+        ActivityPtr _currentActivity;
+        std::map<std::string, ActivityPtr> _activityMap;
 
         /**
          * @brief Process and index all actions from a state
@@ -238,6 +252,8 @@ namespace fastbotx {
          * @param node The state node containing actions to process
          */
         void addActionFromState(const StatePtr &node);
+
+        void buildActivityGraph(const ReuseStatePtr &state, const ActionPtr &edgeAction);
 
         /// Set of all unique states in the graph (deduplicated by hash)
         StatePtrSet _states;

@@ -9,6 +9,7 @@
 
 
 #include "Graph.h"
+#include "../desc/Activity.h"
 #include "../desc/reuse/ReuseState.h"
 #include "../events/Preference.h"
 #include "../utils.hpp"
@@ -273,10 +274,41 @@ namespace fastbotx {
             _llmdroidFirstState = reuseState;
             _llmdroidCurrentState = reuseState;
             _llmdroidCursor = _llmdroidFirstState;
+            buildActivityGraph(reuseState, nullptr);
             return;
         }
+        const ActionPtr edgeAction = _llmdroidCurrentState ? _llmdroidCurrentState->_actionToPerform : nullptr;
         _llmdroidCurrentState->addSubSequentState(reuseState);
         _llmdroidCurrentState = reuseState;
+        buildActivityGraph(reuseState, edgeAction);
+    }
+
+    void Graph::buildActivityGraph(const ReuseStatePtr &state, const ActionPtr &edgeAction) {
+        if (!state || !state->getActivityString() || !state->getActivityString().get()) {
+            return;
+        }
+        const std::string activityName = *(state->getActivityString().get());
+        auto it = _activityMap.find(activityName);
+        if (it != _activityMap.end()) {
+            it->second->fillValuableWidget(state);
+            if (_currentActivity && edgeAction) {
+                _currentActivity->addSubSequentActivity(it->second, edgeAction);
+            }
+            _currentActivity = it->second;
+            return;
+        }
+
+        ActivityPtr activity = std::make_shared<Activity>(state);
+        _activityMap[activityName] = activity;
+        if (!_firstActivity) {
+            _firstActivity = activity;
+            _currentActivity = activity;
+            return;
+        }
+        if (_currentActivity && edgeAction) {
+            _currentActivity->addSubSequentActivity(activity, edgeAction);
+        }
+        _currentActivity = activity;
     }
 
     ReuseStatePtr Graph::findReuseStateById(int id) {
@@ -491,6 +523,51 @@ namespace fastbotx {
         }
         BLOG("[GRAPH] no path found to ReuseState%d", dest);
         return {};
+    }
+
+    std::string Graph::generateNodeCodeForActivity() {
+        std::string code;
+        for (const auto &it : _activityMap) {
+            code.append(it.first).append("[\"\n").append(it.second->getBriefDescription()).append("\"]\n");
+        }
+        return code;
+    }
+
+    std::string Graph::generateGraphCodeForActivity() {
+        if (_activityMap.empty() || !_firstActivity) {
+            return "flowchart LR\n";
+        }
+        for (const auto &it : _activityMap) {
+            it.second->reset();
+        }
+
+        std::string graphCode = "flowchart LR\n";
+        graphCode.append(generateNodeCodeForActivity());
+
+        std::set<ActivityPtr> unvisitedActivities;
+        unvisitedActivities.insert(_firstActivity);
+        while (!unvisitedActivities.empty()) {
+            auto it = unvisitedActivities.begin();
+            ActivityPtr targetActivity = *it;
+            unvisitedActivities.erase(it);
+            if (!targetActivity || targetActivity->isVisited()) {
+                continue;
+            }
+            targetActivity->visit();
+            for (const ActivityGraphEdgePtr &edge : targetActivity->getEdges()) {
+                if (!edge || !edge->_next || !edge->_action) {
+                    continue;
+                }
+                unvisitedActivities.insert(edge->_next);
+                graphCode.append(targetActivity->getName())
+                    .append("-- \"")
+                    .append(edge->_action->toDescription())
+                    .append("\" -->")
+                    .append(edge->_next->getName())
+                    .append("\n");
+            }
+        }
+        return graphCode;
     }
 
     /**

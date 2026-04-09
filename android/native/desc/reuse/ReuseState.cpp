@@ -377,6 +377,20 @@ namespace fastbotx {
         return ret;
     }
 
+    std::vector<WidgetPtr> ReuseState::getValuableWidgets() const {
+        std::vector<WidgetPtr> ret;
+        ret.reserve(_widgets.size());
+        for (const auto &widget : _widgets) {
+            if (!widget) {
+                continue;
+            }
+            if (widget->hasAction() || !widget->getText().empty() || !widget->getContentDesc().empty()) {
+                ret.push_back(widget);
+            }
+        }
+        return ret;
+    }
+
     std::string ReuseState::getStateDescriptionForMergedState() const {
         std::ostringstream ss;
         if (getActivityString() && getActivityString().get()) {
