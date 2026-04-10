@@ -45,7 +45,8 @@ constexpr uint32_t kDerivedKindScroll = 1u << 2;
 struct ActionPatchTokenConfig {
     /// Bit i corresponds to `kInteractiveProps[i]` in the XPath token (enabled…scrollable).
     uint8_t include_bool_props_mask{0x1Fu};
-    bool include_scroll_type{true};
+    /// Whether to include scroll-type in the XPath token. (APE Java: NOT included.)
+    bool include_scroll_type{false};
     bool derive_actions_from_name{false};
     std::string profile{"default"};
 };

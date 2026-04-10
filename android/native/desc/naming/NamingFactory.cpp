@@ -237,6 +237,29 @@ namespace {
         return best;
     }
 
+    inline bool rectIntersects(const Rect &a, const Rect &b) {
+        // Treat empty rect as non-intersecting (APE GUITreeNode.isEmpty()).
+        if (a.isEmpty() || b.isEmpty()) {
+            return false;
+        }
+        // [left, right) x [top, bottom) intersection.
+        return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
+    }
+
+    inline bool apeShouldIgnoreNodeInStateKey(const gui_tree::GUITreeNode &node, const Rect &rootBounds) {
+        // Mirror APE Java Naming.addNamedNode filters:
+        // - ignoreEmpty: GUITreeNode.isEmpty() (bounds degenerate)
+        // - ignoreOutOfBounds: GUITreeNode.isOutOfRoot() (no intersection with root bounds)
+        const Rect &b = node.getBounds();
+        if (b.isEmpty()) {
+            return true;
+        }
+        if (!rootBounds.isEmpty() && !rectIntersects(rootBounds, b)) {
+            return true;
+        }
+        return false;
+    }
+
 } // namespace
 
     void NamingFactory::setDefaultRootNamingMode(ApeBaseNamingMode mode) {
@@ -313,6 +336,7 @@ namespace {
             }
         }
         NamingEvalGuard namingEvalGuard(&node_to_namer);
+        const Rect rootBounds = tree.getRootNode() ? tree.getRootNode()->getBounds() : Rect();
 
         for (gui_tree::GUITreeNode *raw : node_order) {
             auto itNode = node_ref.find(raw);
@@ -320,6 +344,10 @@ namespace {
                 continue;
             }
             gui_tree::GUITreeNodePtr nptr = itNode->second;
+            if (nptr && apeShouldIgnoreNodeInStateKey(*nptr, rootBounds)) {
+                // APE: ignoreEmpty / ignoreOutOfBounds nodes do not participate in StateKey widgets.
+                continue;
+            }
             auto itSel = node_to_selected.find(raw);
             NameletPtr selected = (itSel != node_to_selected.end()) ? itSel->second : nullptr;
             if (!selected || !selected->getNamerPtr()) {

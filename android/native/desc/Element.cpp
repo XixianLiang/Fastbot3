@@ -307,8 +307,17 @@ namespace {
             }
         }
         BLOG("[domtree] raw XML lines=%zu (hierarchy from indentation):", strings.size());
+        constexpr size_t kDomtreeLogChunk = 2000;
         for (const auto &line : strings) {
-            BLOG("[domtree] %s", line.c_str());
+            if (line.size() <= kDomtreeLogChunk) {
+                BLOG("[domtree] %s", line.c_str());
+                continue;
+            }
+            // Print full XML content in chunks to avoid per-line log truncation.
+            for (size_t pos = 0; pos < line.size(); pos += kDomtreeLogChunk) {
+                const std::string part = line.substr(pos, kDomtreeLogChunk);
+                BLOG("[domtree] %s", part.c_str());
+            }
         }
 #endif
         if (!FASTBOT_LOG_RAW_GUITREE) {
@@ -337,14 +346,11 @@ namespace {
             });
         }
         
-        // Force set root element scrollable = true
-        // Root element should always be scrollable to allow navigation
-        elementPtr->_scrollable = true;
+        // Keep root scrollable as reported by source tree; do not force-enable.
 
 #if FASTBOT_LOG_RAW_GUITREE
         int domTreeLineCount = 0;
         logDomTreeRecursive(elementPtr, 0, &domTreeLineCount);
-        BLOG("[domtree] parsed tree (hierarchy by indent) logged above");
 #endif
 
         doc.Clear();
@@ -440,7 +446,7 @@ namespace {
         if (Element::_allClickableFalse) {
             root->recursiveDoElements([](const ElementPtr &elm) { elm->_clickable = true; });
         }
-        root->_scrollable = true;
+        // Keep root scrollable as reported by source tree; do not force-enable.
 #if FASTBOT_LOG_RAW_GUITREE
         BLOG("[domtree] from binary (no raw XML); parsed tree hierarchy:");
         int domTreeLineCount = 0;

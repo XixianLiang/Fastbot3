@@ -729,7 +729,7 @@ namespace fastbotx {
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4102113, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -5055,24 +5055,19 @@ namespace fastbotx {
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
     void Model::logApeStateKeySnapshot(const std::string &rawActivity, const StatePtr &state,
                                        const naming::StateKey &key, const GraphPtr &graph) {
-        std::ostringstream head;
-        head << "ape-key: activityRaw=" << rawActivity
-             << " activityKey=" << key.activity()
-             << " stateHash=" << static_cast<unsigned long>(state ? state->hash() : 0U)
-             << " stateKeyHash=" << static_cast<unsigned long>(key.hash())
-             << " graphSize=" << static_cast<unsigned long>(graph ? graph->stateSize() : 0U)
-             << " names=" << key.sortedXPaths().size();
-        BDLOG("%s", head.str().c_str());
-        std::ostringstream sample;
         const auto &xs = key.sortedXPaths();
-        const size_t k = std::min<size_t>(3, xs.size());
-        for (size_t i = 0; i < k; ++i) {
-            if (i != 0) {
-                sample << " | ";
-            }
-            sample << xs[i];
+        std::ostringstream head;
+        head << "state-key: activity=" << key.activity()
+             << ";hash=" << static_cast<unsigned long>(key.hash())
+             << ";naming=" << key.namingFingerprint()
+             << ";widgets=" << xs.size();
+        BDLOG("%s", head.str().c_str());
+        for (size_t i = 0; i < xs.size(); ++i) {
+            BDLOG("  %zu xpath=%s", static_cast<unsigned long>(i), xs[i].c_str());
         }
-        BDLOG("ape-key: sample=%s", sample.str().c_str());
+        (void)rawActivity;
+        (void)state;
+        (void)graph;
     }
 
 #endif

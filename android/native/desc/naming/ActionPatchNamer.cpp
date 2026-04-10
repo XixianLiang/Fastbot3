@@ -103,14 +103,13 @@ namespace {
         return ScrollType::ALL;
     }
 
-    ScrollType normalizeScrollTypeForToken(ScrollType st, bool includeScrollType, uint8_t /*includeBoolPropsMask*/) {
-        if (!includeScrollType) {
-            return ScrollType::NONE;
-        }
+    ScrollType normalizeScrollTypeForToken(ScrollType st, bool /*includeScrollType*/,
+                                           uint8_t /*includeBoolPropsMask*/) {
+        // APE Java derives scroll actions from node scroll type, but does not serialize scroll-type into XPath.
         return st;
     }
 
-    uint32_t buildDerivedActionKnownKinds(uint8_t includeBoolPropsMask, bool includeScrollType) {
+    uint32_t buildDerivedActionKnownKinds(uint8_t includeBoolPropsMask, bool /*includeScrollType*/) {
         uint32_t known = 0;
         // CLICK is derivable as long as either clickable or checkable participates in the token,
         // consistent with buildDerivedActionMask(clickable || checkable).
@@ -120,14 +119,14 @@ namespace {
         if ((includeBoolPropsMask & (1u << 3)) != 0) {
             known |= kDerivedKindLongClick;
         }
-        if (includeScrollType || (includeBoolPropsMask & (1u << 4)) != 0) {
+        if ((includeBoolPropsMask & (1u << 4)) != 0) {
             known |= kDerivedKindScroll;
         }
         return known;
     }
 
     uint32_t buildDerivedActionMask(int patch, ScrollType scrollType, uint8_t includeBoolPropsMask,
-                                    bool includeScrollType) {
+                                    bool /*includeScrollType*/) {
         uint32_t mask = 0;
         const bool clickable = ((patch >> 1) & 0x1) != 0;
         const bool checkable = ((patch >> 2) & 0x1) != 0;
@@ -141,18 +140,7 @@ namespace {
         }
 
         const bool tokenHasScrollable = (includeBoolPropsMask & (1u << 4)) != 0;
-        if (!includeScrollType && !tokenHasScrollable) {
-            return mask;
-        }
-        if (!includeScrollType && tokenHasScrollable) {
-            const bool scrollable = ((patch >> 4) & 0x1) != 0;
-            if (!scrollable) {
-                return mask;
-            }
-            mask |= actionTypeBit(ActionType::SCROLL_TOP_DOWN);
-            mask |= actionTypeBit(ActionType::SCROLL_BOTTOM_UP);
-            mask |= actionTypeBit(ActionType::SCROLL_LEFT_RIGHT);
-            mask |= actionTypeBit(ActionType::SCROLL_RIGHT_LEFT);
+        if (!tokenHasScrollable) {
             return mask;
         }
 
@@ -252,7 +240,8 @@ void setActionPatchProfile(const std::string &value) {
     const std::string lower = toLowerCopy(trimmed);
     if (lower.empty() || lower == "default" || lower == "full" || lower == "ape" || lower == "all") {
         g_cfg.include_bool_props_mask = 0x1Fu;
-        g_cfg.include_scroll_type = true;
+        // APE Java ActionPatchName.toXPath() does not include scroll-type.
+        g_cfg.include_scroll_type = false;
         return;
     }
     if (lower == "no_scroll_type" || lower == "noscrolltype" || lower == "no_scroll") {
@@ -263,21 +252,21 @@ void setActionPatchProfile(const std::string &value) {
     if (lower == "no_enabled" || lower == "interaction") {
         // All flags except `enabled` (bit 0).
         g_cfg.include_bool_props_mask = 0x1Eu;
-        g_cfg.include_scroll_type = true;
+        g_cfg.include_scroll_type = false;
         return;
     }
     if (lower.rfind("0x", 0) == 0 || lower.rfind("0X", 0) == 0) {
         char *end = nullptr;
         unsigned long m = std::strtoul(lower.c_str(), &end, 0);
         g_cfg.include_bool_props_mask = static_cast<uint8_t>(m & 0xFFu);
-        g_cfg.include_scroll_type = true;
+        g_cfg.include_scroll_type = false;
         if (end && std::strstr(end, "noscroll") != nullptr) {
             g_cfg.include_scroll_type = false;
         }
         return;
     }
     g_cfg.include_bool_props_mask = 0x1Fu;
-    g_cfg.include_scroll_type = true;
+    g_cfg.include_scroll_type = false;
 }
 
 const std::string &getActionPatchProfile() {
@@ -372,6 +361,7 @@ NamePtr ActionPatchNamer::namingWithXPathKey(gui_tree::GUITreeNode &node, const 
     const ScrollType st =
         normalizeScrollTypeForToken(actionPatchScrollTypeForNode(node), cfg.include_scroll_type,
                                     cfg.include_bool_props_mask);
+    // `xpathKey` must be base-key only (no ActionPatch suffix). We append the suffix exactly once here.
     std::string full = appendActionPatchXPathSuffix(std::string(xpathKey), p, st, cfg.include_bool_props_mask,
                                                     cfg.include_scroll_type);
     return std::make_shared<ActionPatchName>(shared_from_this(), nullptr, p, st, cfg.include_bool_props_mask,
@@ -386,12 +376,8 @@ std::string ActionPatchNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const
             k = n->toXPath();
         }
     }
-    const ActionPatchTokenConfig cfg = getActionPatchTokenConfig();
-    const ScrollType st =
-        normalizeScrollTypeForToken(actionPatchScrollTypeForNode(node), cfg.include_scroll_type,
-                                    cfg.include_bool_props_mask);
-    return appendActionPatchXPathSuffix(std::move(k), actionPatchBitsForNode(node), st, cfg.include_bool_props_mask,
-                                        cfg.include_scroll_type);
+    // IMPORTANT: Key must not include ActionPatch predicates, otherwise rebuild will append twice.
+    return k;
 }
 
 bool ActionPatchNamer::refinesTo(const Namer &other) const {
