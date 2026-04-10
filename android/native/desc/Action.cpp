@@ -35,6 +35,14 @@ namespace fastbotx {
             : Node(), PriorityNode(), _actionType(actionType), _qValue(0) {
     }
 
+    Action::Action(const Action &other)
+            : Node(), PriorityNode(), _actionType(other._actionType), _qValue(other._qValue) {
+        this->_hashcode = other._hashcode;
+        this->_priority = other._priority;
+        this->_visitedCount.store(other.getVisitedCount());
+        this->_id = other.getIdi();
+    }
+
     /// Static throttle value for action execution (default: 100ms)
     int Action::_throttle = 100;
 

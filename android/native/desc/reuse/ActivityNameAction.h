@@ -27,6 +27,17 @@ namespace fastbotx {
         /**
          * @brief Constructor creates ActivityNameAction with activity name
          * 
+         * @param state Owner state (optional, may be nullptr)
+         * @param activity Activity name string pointer
+         * @param widget Target widget (nullptr for actions without targets)
+         * @param act Action type
+         */
+        ActivityNameAction(const std::shared_ptr<State> &state, stringPtr activity,
+                           const WidgetPtr &widget, ActionType act);
+
+        /**
+         * @brief Backward-compatible constructor without state
+         * 
          * @param activity Activity name string pointer
          * @param widget Target widget (nullptr for actions without targets)
          * @param act Action type

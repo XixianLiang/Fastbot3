@@ -50,6 +50,9 @@ namespace fastbotx {
          */
         explicit Action(ActionType actionType);
 
+        /** LLMDroid-compat copy constructor */
+        Action(const Action &other);
+
         std::string toString() const override;
 
         /** Short human-readable line for logs / LLMDroid graph walk (default: {@link #toString}). */

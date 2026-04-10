@@ -15,6 +15,9 @@ const ElementPtr StateStructure::getFirst() {
         this->_stack.pop();
     }
     // Depth-first traversal: add all child nodes to the stack
+    if (!this->_rootElement) {
+        return nullptr;
+    }
     for (ElementPtr child : this->_rootElement->getChildren()) {
         this->_stack.push(child);
     }
@@ -92,7 +95,6 @@ std::string StateStructure::generateStateDescription(int id) {
 
 void StateStructure::generateElementDescription(const ElementPtr target, int &actionId, int depth,
                                                 int &count) {
-    (void)actionId;
     if (!target || depth >= 25 || count >= 100) {
         return;
     }
@@ -104,8 +106,16 @@ void StateStructure::generateElementDescription(const ElementPtr target, int &ac
     if (!target->getResourceID().empty()) {
         line << " id=" << target->getResourceID();
     }
-    if (!target->getText().empty()) {
-        line << " text=\"" << target->getText() << "\"";
+    const std::string textual = !target->getText().empty()
+        ? target->getText()
+        : target->getContentDesc();
+    if (!textual.empty()) {
+        line << " text=\"" << textual << "\"";
+    }
+    line << " sid=" << target->getStableElementId();
+    const std::string actionList = generateActionList(target);
+    if (!actionList.empty()) {
+        line << actionList;
     }
     _stateDescription.append(line.str()).append("\n");
     for (const auto &child : target->getChildren()) {
@@ -114,7 +124,30 @@ void StateStructure::generateElementDescription(const ElementPtr target, int &ac
 }
 
 std::string StateStructure::generateActionList(const ElementPtr target) {
-    (void)target;
-    return "\n";
+    if (!target) {
+        return "";
+    }
+    std::vector<std::string> actions;
+    if (target->getClickable() || target->getCheckable()) {
+        actions.emplace_back("click");
+    }
+    if (target->getLongClickable()) {
+        actions.emplace_back("long_click");
+    }
+    if (target->getScrollable()) {
+        actions.emplace_back("scroll");
+    }
+    if (actions.empty()) {
+        return "";
+    }
+    std::ostringstream oss;
+    oss << " which can ";
+    for (size_t i = 0; i < actions.size(); ++i) {
+        if (i > 0) {
+            oss << " or ";
+        }
+        oss << actions[i];
+    }
+    return oss.str();
 }
 } // namespace fastbotx

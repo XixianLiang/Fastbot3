@@ -44,6 +44,7 @@ namespace fastbotx {
     Widget::Widget(std::shared_ptr<Widget> parent, const ElementPtr &element) {
         // Move parent to avoid copying shared_ptr
         this->_parent = std::move(parent);
+        this->_element = element;
         
         // Performance optimization: Cache Preference instance to avoid repeated inst() calls
         // Preference::inst() is thread-safe singleton, but caching avoids repeated function calls
@@ -188,6 +189,7 @@ namespace fastbotx {
         this->_index = element->getIndex();
         this->_enabled = element->getEnable();
         this->_text = element->getText();
+        this->_info = this->_text;
         
         // Performance optimization: Use const reference to avoid string copy
         // Only copy if ContentDesc is actually used (non-empty)
@@ -280,6 +282,10 @@ namespace fastbotx {
 
         this->_hashcode = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^
                           (((127U * hashcode3 << 1) ^ (256U * hashcode4 << 3)) >> 1);
+
+        // LLMDroid compatibility hash: widget semantic hash + spatial bounds hash.
+        const uintptr_t boundsHash = this->_bounds ? this->_bounds->hash2() : 0;
+        this->_myHashcode = this->_hashcode ^ boundsHash;
     }
 
     bool Widget::isEditable() const {
@@ -316,9 +322,44 @@ namespace fastbotx {
         return this->toXPath();
     }
 
-    std::string Widget::toHTML(const std::vector<ElementPtr> &, bool, int) const {
+    std::string Widget::getDescriptionInfo() const {
+        if (!_text.empty()) return _text;
+        if (!_contextDesc.empty()) return _contextDesc;
+        if (!_resourceID.empty()) return _resourceID;
+        return _clazz;
+    }
+
+    std::string Widget::toHTML(const std::vector<ElementPtr> &, bool, int actionId) const {
         std::ostringstream oss;
-        oss << _clazz << "|" << _resourceID << "|" << _text << "|h=" << hash();
+        const std::string desc = getDescriptionInfo();
+        if (_isEditable) {
+            // Keep LLMDroid-friendly format for controls_html while preserving deterministic fields.
+            if (actionId >= 0) {
+                oss << "id=" << actionId << "\t";
+            }
+            oss << "type=input"
+                << "\tclass=" << _clazz
+                << "\tresource-id=" << _resourceID
+                << "\ttext=" << _text
+                << "\tcontent-desc=" << _contextDesc
+                << "\tdesc=" << desc
+                << "\tfunction=" << _functionLabel
+                << "\thash=" << hash()
+                << "\n";
+            return oss.str();
+        }
+        if (actionId >= 0) {
+            oss << "id=" << actionId << "\t";
+        }
+        oss << "type=button"
+            << "\tclass=" << _clazz
+            << "\tresource-id=" << _resourceID
+            << "\ttext=" << _text
+            << "\tcontent-desc=" << _contextDesc
+            << "\tdesc=" << desc
+            << "\tfunction=" << _functionLabel
+            << "\thash=" << hash()
+            << "\n";
         return oss.str();
     }
 

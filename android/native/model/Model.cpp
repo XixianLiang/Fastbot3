@@ -729,7 +729,7 @@ namespace fastbotx {
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4102113, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4102309, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -817,6 +817,12 @@ namespace fastbotx {
         this->_graph->addListener(agent);
         
         return agent;
+    }
+
+    AbstractAgentPtr Model::addAgent(const std::string &deviceIDString, AlgorithmType agentType,
+                                     bool useCodeCoverage, DeviceType deviceType) {
+        (void) useCodeCoverage;
+        return addAgent(deviceIDString, agentType, deviceType);
     }
 
     /**

@@ -44,6 +44,9 @@ namespace std {
 
 namespace fastbotx {
 
+    /// UTF-8 safe substring (index and len are in code points, not bytes).
+    std::string safe_utf8_substr(const std::string &str, size_t start, size_t len);
+
 
     class PriorityNode {
     public:
@@ -343,6 +346,7 @@ namespace fastbotx {
         Point center() const;
 
         uintptr_t hash() const override;
+        uintptr_t hash2() const;
 
         std::string toString() const;
 

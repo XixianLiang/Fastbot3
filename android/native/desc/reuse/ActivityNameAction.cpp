@@ -35,12 +35,14 @@ namespace fastbotx {
      * @param widget Target widget (nullptr for actions without targets)
      * @param act Action type
      */
-    ActivityNameAction::ActivityNameAction(stringPtr activity, const WidgetPtr &widget,
-                                           ActionType act)
-            : ActivityStateAction(nullptr, widget, act), _activity(std::move(activity)) {
+    ActivityNameAction::ActivityNameAction(const std::shared_ptr<State> &state, stringPtr activity,
+                                           const WidgetPtr &widget, ActionType act)
+            : ActivityStateAction(state, widget, act), _activity(std::move(activity)) {
         // Compute hash components
         // Performance optimization: Use fast string hash instead of std::hash
-        uintptr_t activityHashCode = fastbotx::fastStringHash(*(_activity.get()));
+        uintptr_t activityHashCode = (_activity && _activity.get())
+                                     ? fastbotx::fastStringHash(*(_activity.get()))
+                                     : fastbotx::fastStringHash("");
         uintptr_t actionHashCode = std::hash<int>{}(static_cast<int>(this->getActionType()));
         uintptr_t targetHash = (widget != nullptr) ? widget->hash() : 0x1;
 
@@ -49,6 +51,10 @@ namespace fastbotx {
         this->_hashcode = 0x9e3779b9 + (activityHashCode << 2) ^
                           (((actionHashCode << 6) ^ (targetHash << 1)) << 1);
     }
+
+    ActivityNameAction::ActivityNameAction(stringPtr activity, const WidgetPtr &widget,
+                                           ActionType act)
+            : ActivityNameAction(nullptr, std::move(activity), widget, act) {}
 
     void ActivityNameAction::applyApeDynamicRlIdentity(uintptr_t activityCanonicalHash,
                                                        uintptr_t abstractTargetHash) {

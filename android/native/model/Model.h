@@ -284,6 +284,7 @@ namespace gui_tree {
          * 
          * @return Const reference to the graph object
          */
+        GraphPtr getGraph() { return this->_graph; }
         const GraphPtr &getGraph() const { return this->_graph; }
 
         /**
@@ -298,6 +299,15 @@ namespace gui_tree {
          * @return Shared pointer to the newly created agent
          */
         AbstractAgentPtr addAgent(const std::string &deviceIDString, AlgorithmType agentType,
+                                  DeviceType deviceType = DeviceType::Normal);
+        /**
+         * @brief LLMDroid compatibility overload.
+         *
+         * The current architecture controls code coverage dynamically via Java/JNI side.
+         * Keep this signature for source compatibility but ignore useCodeCoverage.
+         */
+        AbstractAgentPtr addAgent(const std::string &deviceIDString, AlgorithmType agentType,
+                                  bool useCodeCoverage,
                                   DeviceType deviceType = DeviceType::Normal);
 
         /**

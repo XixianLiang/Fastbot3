@@ -12,6 +12,43 @@
 #include <algorithm>
 
 namespace fastbotx {
+    std::string safe_utf8_substr(const std::string &str, size_t start, size_t len) {
+        if (str.empty() || len == 0) {
+            return "";
+        }
+
+        const size_t n = str.size();
+        size_t cpIndex = 0;
+        size_t bytePos = 0;
+
+        auto stepUtf8 = [&](size_t pos) -> size_t {
+            unsigned char c = static_cast<unsigned char>(str[pos]);
+            if ((c & 0x80U) == 0) return 1;       // 0xxxxxxx
+            if ((c & 0xE0U) == 0xC0U) return 2;   // 110xxxxx
+            if ((c & 0xF0U) == 0xE0U) return 3;   // 1110xxxx
+            if ((c & 0xF8U) == 0xF0U) return 4;   // 11110xxx
+            return 1; // invalid lead byte, degrade gracefully
+        };
+
+        while (bytePos < n && cpIndex < start) {
+            size_t step = stepUtf8(bytePos);
+            bytePos += std::min(step, n - bytePos);
+            ++cpIndex;
+        }
+
+        if (bytePos >= n) {
+            return "";
+        }
+
+        size_t begin = bytePos;
+        size_t taken = 0;
+        while (bytePos < n && taken < len) {
+            size_t step = stepUtf8(bytePos);
+            bytePos += std::min(step, n - bytePos);
+            ++taken;
+        }
+        return str.substr(begin, bytePos - begin);
+    }
 
     /// The mapping table for converting string to ActionType
     const std::string actName[ActTypeSize] = {
@@ -106,6 +143,18 @@ namespace fastbotx {
     uintptr_t Rect::hash() const {
         return (31U * std::hash<int>{}(top) << 1 ^ std::hash<int>{}(bottom) << 2) ^
                ((std::hash<int>{}(left) << 1 ^ 127U * std::hash<int>{}(right) << 2) >> 1);
+    }
+
+    uintptr_t Rect::hash2() const {
+        const uintptr_t maskedTop = static_cast<uintptr_t>(static_cast<uint16_t>(top));
+        const uintptr_t maskedBottom = static_cast<uintptr_t>(static_cast<uint16_t>(bottom));
+        const uintptr_t maskedLeft = static_cast<uintptr_t>(static_cast<uint16_t>(left));
+        const uintptr_t maskedRight = static_cast<uintptr_t>(static_cast<uint16_t>(right));
+        uintptr_t hashedTop = maskedTop << 48;
+        uintptr_t hashedBottom = maskedBottom << 32;
+        uintptr_t hashedLeft = maskedLeft << 16;
+        uintptr_t hashedRight = maskedRight;
+        return hashedTop | hashedBottom | hashedLeft | hashedRight;
     }
 
     std::string Rect::toString() const {

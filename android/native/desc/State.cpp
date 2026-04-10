@@ -11,6 +11,7 @@
 #include  "State.h"
 #include "../utils.hpp"
 #include "ActionFilter.h"
+#include "Preference.h"
 #include <regex>
 #include <map>
 #include <algorithm>
@@ -375,9 +376,15 @@ namespace fastbotx {
 
 
     void State::clearDetails() {
-        for (auto const &widget: this->_widgets) {
-            if (widget != nullptr) {
-                widget->clearDetails();
+        // LLMDroid relies on widget textual details for GPT context; keep them when enabled.
+        auto pref = Preference::inst();
+        const bool keepWidgetDetailsForLlmdroid =
+            (pref != nullptr) && pref->isLlmdroidEnabled();
+        if (!keepWidgetDetailsForLlmdroid) {
+            for (auto const &widget: this->_widgets) {
+                if (widget != nullptr) {
+                    widget->clearDetails();
+                }
             }
         }
         this->_mergedWidgets.clear();
@@ -565,6 +572,7 @@ namespace fastbotx {
         int index = action->getVisitedCount() % total;
         BLOG("resolve a merged widget %d/%d for action %s", index, total, action->getId().c_str());
         action->setTarget(targetWidgets->second[index]);
+        action->setWhichWidget(index);
         return action;
     }
 

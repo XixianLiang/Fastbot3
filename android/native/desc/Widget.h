@@ -64,6 +64,13 @@ namespace fastbotx {
 
         bool isEditable() const;
 
+        // LLMDroid compatibility accessors (non-APE path)
+        std::string getClass() const { return this->_clazz; }
+
+        std::string getTextualInfo() const { return this->_info; }
+
+        std::string getDescriptionInfo() const;
+
         /** Get widget class name (e.g. "android.widget.TextView"). Empty if details cleared. */
         const std::string &getClassname() const { return this->_clazz; }
 
@@ -96,6 +103,13 @@ namespace fastbotx {
 
         void setFunctionLabel(std::string label) { _functionLabel = std::move(label); }
 
+        // LLMDroid compatibility aliases.
+        void setFunction(const std::string &function) { _functionLabel = function; }
+
+        std::string getFunction() const { return _functionLabel; }
+
+        uintptr_t getMyHashcode() const { return _myHashcode; }
+
         virtual void clearDetails();
 
         void fillDetails(const std::shared_ptr<Widget> &copy);
@@ -111,6 +125,7 @@ namespace fastbotx {
         void initFormElement(const ElementPtr &element);
 
         uintptr_t _hashcode{};
+        uintptr_t _myHashcode{};
         /// Component hashes for hashWithMask (dynamic state abstraction)
         uintptr_t _hashClazz{};
         uintptr_t _hashResourceID{};
@@ -127,6 +142,7 @@ namespace fastbotx {
         bool _enabled{};
         bool _isEditable{};
         int _operateMask{OperateType::None};
+        ElementPtr _element;
     private:
         std::string toXPath() const;
 
@@ -134,6 +150,7 @@ namespace fastbotx {
         std::string _contextDesc;
         std::set<ActionType> _actions;
         std::string _functionLabel;
+        std::string _info;
     };
 
 

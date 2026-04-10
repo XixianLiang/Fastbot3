@@ -10,11 +10,11 @@ ValuableWidget::ValuableWidget(WidgetPtr widget) {
     fillDetails(widget);
 
     // get top value of bounds
-    RectPtr rect = widget->getBounds();
+    RectPtr rect = widget ? widget->getBounds() : nullptr;
     _top = rect ? rect->top : 0;
 
-    // computeHash
-    _hashcode = widget->getBounds()->hash();
+    // Bounds-based identity hash (LLMDroid-compatible semantics)
+    computeHash(rect);
 }
 
 void ValuableWidget::fillDetails(WidgetPtr widget) {
@@ -32,14 +32,12 @@ void ValuableWidget::fillDetails(WidgetPtr widget) {
 }
 
 void ValuableWidget::computeHash(RectPtr rect) {
-    // Generate a hash based on the widget's bound
-    // uintptr_t' length: 8bytes 64bits
-    // top,bottom,left,right each occupy 16bit
-    uintptr_t hashcode1 = (uintptr_t)(rect->top) << 48;
-    uintptr_t hashcode2 = (uintptr_t)(rect->bottom) << 32;
-    uintptr_t hashcode3 = (uintptr_t)(rect->left) << 16;
-    uintptr_t hashcode4 = (uintptr_t)(rect->right);
-    this->_hashcode = hashcode1 | hashcode2 | hashcode3 | hashcode4;
+    if (!rect) {
+        this->_hashcode = 0;
+        return;
+    }
+    // 64-bit packed bounds hash (same semantics as Rect::hash2()).
+    this->_hashcode = rect->hash2();
 }
 
 std::string ValuableWidget::toDescription() {

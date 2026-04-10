@@ -251,6 +251,8 @@ namespace fastbotx {
          */
         bool hasNoDetail() const { return this->_hasNoDetail; }
 
+        size_t getWidgetSize() const { return this->_widgets.size(); }
+
         FuncGetID(State);
 
     protected:

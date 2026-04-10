@@ -9,6 +9,7 @@
 
 #include <string>
 #include <ctime>
+#include <atomic>
 #include "../Base.h"
 
 
@@ -80,14 +81,14 @@ namespace fastbotx {
          * 
          * @return true if visit count > 0, false otherwise
          */
-        bool isVisited() const { return _visitedCount > 0; }
+        bool isVisited() const { return _visitedCount.load() > 0; }
 
         /**
          * @brief Get the total number of times this node has been visited
          * 
          * @return The visit count
          */
-        int getVisitedCount() const { return this->_visitedCount; }
+        int getVisitedCount() const { return this->_visitedCount.load(); }
 
         /**
          * @brief Convert node to string representation (implements Serializable)
@@ -122,7 +123,7 @@ namespace fastbotx {
 
     protected:
         /// Counter for tracking how many times this node has been visited
-        int _visitedCount;
+        std::atomic<int> _visitedCount;
         
         /// Unique numeric identifier for this node instance
         int _id;
