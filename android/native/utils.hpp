@@ -17,7 +17,16 @@
 
 #include <android/log.h>
 
-#define LOGD(fmt, ...) __android_log_print(ANDROID_LOG_DEBUG,TAG ,fmt, ##__VA_ARGS__)
+/*
+ * By default, map LOGD/BDLOG to ANDROID_LOG_INFO with a "[D] " prefix so diagnostics show under
+ * plain `adb logcat` (typical default filter is INFO+). Define FASTBOT_NATIVE_STRICT_LOGCAT_LEVELS
+ * before including this header (or pass -DFASTBOT_NATIVE_STRICT_LOGCAT_LEVELS) to keep true DEBUG.
+ */
+#if defined(FASTBOT_NATIVE_STRICT_LOGCAT_LEVELS)
+#define LOGD(fmt, ...) __android_log_print(ANDROID_LOG_DEBUG, TAG, fmt, ##__VA_ARGS__)
+#else
+#define LOGD(fmt, ...) __android_log_print(ANDROID_LOG_INFO, TAG, "[D] " fmt, ##__VA_ARGS__)
+#endif
 #define LOGI(fmt, ...) __android_log_print(ANDROID_LOG_INFO,TAG ,fmt, ##__VA_ARGS__)
 #define LOGW(fmt, ...) __android_log_print(ANDROID_LOG_WARN,TAG ,fmt, ##__VA_ARGS__)
 #define LOGE(fmt, ...) __android_log_print(ANDROID_LOG_ERROR,TAG ,fmt, ##__VA_ARGS__)

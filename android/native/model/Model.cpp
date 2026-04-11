@@ -21,6 +21,7 @@
 #include <cassert>
 #include <thread>
 #endif
+#include <atomic>
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 #include "../desc/gui_tree/GUITreeFactory.h"
 #include "../desc/gui_tree/GUITree.h"
@@ -729,7 +730,7 @@ namespace fastbotx {
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4102309, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4112233, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -2347,6 +2348,30 @@ namespace fastbotx {
     }
 #endif
 
+namespace {
+/**
+ * StateNamingManager::updateNaming(Refine) requires new naming to be a direct refinement child of `cur`.
+ * actionRefinementCandidatesWithOptions may return a multi-hop refinement; walk up to the node whose
+ * parent is `cur` so structural update and state-key edges match the manager contract.
+ */
+naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, naming::NamingPtr next) {
+    if (!cur || !next) {
+        return next;
+    }
+    if (next->getParent() == cur) {
+        return next;
+    }
+    naming::NamingPtr x = next;
+    while (x && x->getParent() && x->getParent() != cur) {
+        x = x->getParent();
+    }
+    if (x && x->getParent() == cur) {
+        return x;
+    }
+    return next;
+}
+} // namespace
+
     bool Model::refineActivityApeNaming(const std::string &activity) {
         return refineActivityApeNaming(activity, nullptr, -1);
     }
@@ -3011,13 +3036,36 @@ namespace fastbotx {
             if (lex != 0) return lex < 0;
             return a.naming->fingerprintString() < b.naming->fingerprintString();
         });
-        naming::NamingPtr next = accepted.front().naming;
+        naming::NamingPtr next = apeRefineTargetAsDirectChild(cur, accepted.front().naming);
         BLOG("ape naming: refine-candidates activity=%s total=%zu accepted=%zu bestScore=%d bestFineGain=%d "
              "replay=%s distinctTgt=%d srcChanged=%d partitionCost=%d",
              activity.c_str(), candidates.size(), accepted.size(), accepted.front().score,
              accepted.front().finenessGain, accepted.front().replayUsed ? "yes" : "no",
              accepted.front().replayDistinctTargets, accepted.front().replaySourceChanged,
              accepted.front().apePartitionStateCost);
+        {
+            static std::atomic<uint64_t> g_refine_pick_seq{0};
+            const uint64_t pickN = ++g_refine_pick_seq;
+            if (pickN <= 16 || (pickN % 512) == 0) {
+                const naming::NamingPtr nextPar = next ? next->getParent() : nullptr;
+                int top3Direct = 0;
+                const size_t lim = std::min<size_t>(accepted.size(), 3);
+                for (size_t i = 0; i < lim; ++i) {
+                    const naming::NamingPtr c = accepted[i].naming;
+                    const naming::NamingPtr p = c ? c->getParent() : nullptr;
+                    if (p.get() == cur.get()) {
+                        top3Direct++;
+                    }
+                }
+                BDLOG(
+                    "ape naming: chain picked Refine act=%s cur=%p next=%p next_par=%p par_eq_cur=%d "
+                    "raw_cands=%zu accepted=%zu top3_direct_child_of_cur=%d curFin=%d nextFin=%d",
+                    actKey.c_str(), static_cast<const void *>(cur.get()),
+                    static_cast<const void *>(next.get()), static_cast<const void *>(nextPar.get()),
+                    (nextPar.get() == cur.get()) ? 1 : 0, candidates.size(), accepted.size(), top3Direct,
+                    cur ? cur->getFineness() : -1, next ? next->getFineness() : -1);
+            }
+        }
         ApeNamingAbstractionContext &ctx = _apeNamingContext[actKey];
         ctx.previousNamingBeforeRefine = cur;
         ctx.previousNamingFingerprintBeforeRefine = cur->fingerprintString();
@@ -3409,6 +3457,40 @@ namespace fastbotx {
         }
 #endif
         ctx.triggerTargetKeyHashes = std::move(xmlSpaceTriggerTargetKeyHashes);
+        {
+            const naming::NamingPtr nextPar = next ? next->getParent() : nullptr;
+            if (next && nextPar.get() != cur.get()) {
+                auto apeSnipFp = [](const naming::NamingPtr &p) -> std::string {
+                    if (!p) {
+                        return std::string("-");
+                    }
+                    const std::string &s = p->fingerprintString();
+                    return s.size() > 140 ? s.substr(0, 140) + std::string("...") : s;
+                };
+                const std::string sCur = apeSnipFp(cur);
+                const std::string sNext = apeSnipFp(next);
+                const std::string sPar = apeSnipFp(nextPar);
+                int curStrictAncNext = 0;
+                if (cur && next) {
+                    for (naming::NamingPtr x = next->getParent(); x; x = x->getParent()) {
+                        if (x == cur) {
+                            curStrictAncNext = 1;
+                            break;
+                        }
+                    }
+                }
+                BDLOG(
+                    "ape naming: refine pre_update NOT direct child: act=%s cur=%p next=%p next_parent=%p "
+                    "srcKeyH=%lu actH=%lu trigExact=%d curFin=%d nextFin=%d cur_strict_anc_next=%d "
+                    "cur_fp=%s next_fp=%s par_fp=%s",
+                    actKey.c_str(), static_cast<const void *>(cur.get()),
+                    static_cast<const void *>(next.get()), static_cast<const void *>(nextPar.get()),
+                    static_cast<unsigned long>(dominantSourceKeyHash),
+                    static_cast<unsigned long>(dominantActionHash), ctx.triggerSourceKeyExact ? 1 : 0,
+                    cur ? cur->getFineness() : -1, next ? next->getFineness() : -1, curStrictAncNext,
+                    sCur.c_str(), sNext.c_str(), sPar.c_str());
+            }
+        }
         if (ctx.triggerSourceKeyExact) {
             _apeStateNamingManager->updateNamingWithStateKey(
                 actKey, naming::NamingUpdateKind::Refine, cur, next, ctx.triggerSourceKey);
@@ -4394,6 +4476,18 @@ namespace fastbotx {
             }
 #endif
             apeBlacklistFinerNamingOnRollback(activity, cur, ctx, affectedStateHashesForBlacklist);
+            {
+                static std::atomic<uint64_t> g_coarsen_chain{0};
+                const uint64_t cn = ++g_coarsen_chain;
+                if (cn <= 10 || (cn % 128) == 0) {
+                    BDLOG(
+                        "ape naming: chain coarsen rollback Abstract update act=%s cur=%p prev=%p "
+                        "trigExact=%d trigSrcH=%lu",
+                        actKey.c_str(), static_cast<const void *>(cur.get()),
+                        static_cast<const void *>(prev.get()), ctx.triggerSourceKeyExact ? 1 : 0,
+                        static_cast<unsigned long>(ctx.triggerSourceKeyHash));
+                }
+            }
             if (ctx.triggerSourceKeyExact) {
                 _apeStateNamingManager->updateNamingWithStateKey(
                     actKey, naming::NamingUpdateKind::Abstract, cur, prev, ctx.triggerSourceKey);
@@ -4889,6 +4983,13 @@ namespace fastbotx {
                      total, edgeStats.exact_hit, exactRate,
                      edgeStats.hash_only_hit, fallbackRate, edgeStats.miss, missRate);
             }
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+            // Review 1.1–1.2: evaluateNaming / default ActionType XPath / rebuild failures (logs inside consume*).
+            (void)naming::NamingFactory::consumeNamingEvaluateDiagStats();
+            // Review 1.3–1.4: StateNamingManager silent rejects + treeToNaming / fixed-point (logs inside consume*).
+            (void)naming::StateNamingManager::consumeUpdateRejectDiagStats();
+            (void)naming::StateNamingManager::consumeTreeWalkDiagStats();
+#endif
         }
         const ApeCorrectnessCounters counters = _ape_correctness_counters;
         const uint64_t stateKeyBuildTotal = counters.statekey_build_ok + counters.statekey_build_fail;

@@ -19,8 +19,27 @@
 #include <cmath>
 #include <sstream>
 #include <cinttypes>
+#include <atomic>
 
 namespace fastbotx {
+namespace {
+
+    std::string stateActivityLabel(const State &s) {
+        const stringPtr ap = s.getActivityString();
+        return (ap && ap.get()) ? *ap : std::string("?");
+    }
+
+    size_t countWidgetsWithHash(const WidgetPtrVec &v, uintptr_t h) {
+        size_t c = 0;
+        for (const auto &w : v) {
+            if (w && w->hash() == h) {
+                ++c;
+            }
+        }
+        return c;
+    }
+
+} // namespace
 
     State::State()
             : Node(), _hasNoDetail(false) {
@@ -391,13 +410,51 @@ namespace fastbotx {
         _hasNoDetail = true;
     }
 
-    void State::fillDetails(const std::shared_ptr<State> &copy) {
+    void State::fillDetails(const std::shared_ptr<State> &copy, const char *debugFrom) {
         if (copy == nullptr) {
-            BLOGE("fillDetails: copy state is nullptr");
+            BLOGE("fillDetails: copy state is nullptr (from=%s)", debugFrom ? debugFrom : "?");
             return;
         }
-        
-        for (const auto &widgetPtr: this->_widgets) {
+
+        const std::string actCanon = stateActivityLabel(*this);
+        const std::string actFresh = stateActivityLabel(*copy);
+        const uintptr_t stCanon = this->hash();
+        const uintptr_t stFresh = copy->hash();
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        const int apeCanon = this->usesDynamicAbstractionIdentityHash() ? 1 : 0;
+        const int apeFresh = copy->usesDynamicAbstractionIdentityHash() ? 1 : 0;
+#else
+        const int apeCanon = 0;
+        const int apeFresh = 0;
+#endif
+        const char *fromTag = debugFrom ? debugFrom : "?";
+        if (debugFrom) {
+            static std::atomic<uint64_t> g_fd_enter{0};
+            const uint64_t en = ++g_fd_enter;
+            if (en <= 24 || (en % 400) == 0) {
+                BDLOG(
+                    "state chain: fillDetails enter from=%s canonId=%d freshId=%d st=%" PRIuPTR "/%" PRIuPTR
+                    " stEq=%d nw=%zu/%zu noDet=%d/%d",
+                    debugFrom, getIdi(), copy->getIdi(), static_cast<uintptr_t>(stCanon),
+                    static_cast<uintptr_t>(stFresh), stCanon == stFresh ? 1 : 0, this->_widgets.size(),
+                    copy->_widgets.size(), hasNoDetail() ? 1 : 0, copy->hasNoDetail() ? 1 : 0);
+            }
+        }
+
+        // Same state hash (e.g. APE) but UI widget count changed: per-widget hash refill cannot align.
+        if (hasNoDetail() && this->_widgets.size() != copy->_widgets.size()) {
+            const size_t nwWas = this->_widgets.size();
+            this->_widgets = copy->_widgets;
+            this->_mergedWidgets = copy->_mergedWidgets;
+            _hasNoDetail = false;
+            BDLOG(
+                "fillDetails: widget list resync from fresh (count mismatch) from=%s nw_was=%zu nw_fresh=%zu",
+                fromTag, nwWas, copy->_widgets.size());
+            return;
+        }
+
+        for (size_t wi = 0; wi < this->_widgets.size(); ++wi) {
+            const auto &widgetPtr = this->_widgets[wi];
             if (widgetPtr == nullptr) {
                 BLOGE("fillDetails: found nullptr widget, skipping");
                 continue;
@@ -412,14 +469,39 @@ namespace fastbotx {
             if (widgetIterator != copy->_widgets.end() && *widgetIterator != nullptr) {
                 widgetPtr->fillDetails(*widgetIterator);
             } else {
-                LOGE("ERROR can not refill widget");
+                const uintptr_t wh = widgetPtr->hash();
+                const uintptr_t myh = widgetPtr->getMyHashcode();
+                const size_t nmatch = countWidgetsWithHash(copy->_widgets, wh);
+                LOGE(
+                    "ERROR can not refill widget: from=%s canonId=%d freshId=%d act canon=%s fresh=%s "
+                    "sameAct=%d st=%" PRIuPTR "/%" PRIuPTR " stEq=%d apeId=%d/%d noDet=%d/%d "
+                    "nw=%zu/%zu merged=%zu/%zu wi=%zu wHash=%" PRIuPTR " myHash=%" PRIuPTR
+                    " freshCountSameWHash=%zu",
+                    fromTag, getIdi(), copy->getIdi(), actCanon.c_str(), actFresh.c_str(),
+                    actCanon == actFresh ? 1 : 0, static_cast<uintptr_t>(stCanon),
+                    static_cast<uintptr_t>(stFresh), stCanon == stFresh ? 1 : 0, apeCanon, apeFresh,
+                    hasNoDetail() ? 1 : 0, copy->hasNoDetail() ? 1 : 0, this->_widgets.size(),
+                    copy->_widgets.size(), this->_mergedWidgets.size(), copy->_mergedWidgets.size(),
+                    static_cast<unsigned long>(wi), static_cast<uintptr_t>(wh),
+                    static_cast<uintptr_t>(myh), static_cast<unsigned long>(nmatch));
+                const long long nwDelta = static_cast<long long>(copy->_widgets.size()) -
+                    static_cast<long long>(this->_widgets.size());
+                BDLOG(
+                    "fillDetails miss extra: from=%s wi=%zu nw_delta=%lld fresh_nonempty=%d",
+                    fromTag, wi, static_cast<long long>(nwDelta),
+                    copy->_widgets.empty() ? 0 : 1);
             }
         }
         for (const auto &miter: this->_mergedWidgets) {
             auto mkw = copy->_mergedWidgets.find(miter.first);
-            if (mkw == copy->_mergedWidgets.end())
+            if (mkw == copy->_mergedWidgets.end()) {
+                BDLOG(
+                    "fillDetails[merged]: fresh missing merge bucket key=%" PRIuPTR " act=%s/%s",
+                    static_cast<uintptr_t>(miter.first), actCanon.c_str(), actFresh.c_str());
                 continue;
-            for (const auto &widgetPtr: miter.second) {
+            }
+            for (size_t mj = 0; mj < miter.second.size(); ++mj) {
+                const auto &widgetPtr = miter.second[mj];
                 if (widgetPtr == nullptr) {
                     continue;
                 }
@@ -432,9 +514,17 @@ namespace fastbotx {
                                                    });
                 if (widgetIterator != (*mkw).second.end() && *widgetIterator != nullptr) {
                     widgetPtr->fillDetails(*widgetIterator);
+                } else {
+                    const uintptr_t wh = widgetPtr->hash();
+                    const size_t nmatch = countWidgetsWithHash((*mkw).second, wh);
+                    BDLOG(
+                        "fillDetails[merged] miss: mergeKey=%" PRIuPTR " idx=%zu wHash=%" PRIuPTR
+                        " bucketFresh=%zu sameHashInFresh=%zu act=%s/%s",
+                        static_cast<uintptr_t>(miter.first), static_cast<unsigned long>(mj),
+                        static_cast<uintptr_t>(wh), (*mkw).second.size(),
+                        static_cast<unsigned long>(nmatch), actCanon.c_str(), actFresh.c_str());
                 }
             }
-
         }
         _hasNoDetail = false;
     }

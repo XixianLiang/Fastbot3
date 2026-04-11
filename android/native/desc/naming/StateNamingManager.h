@@ -28,6 +28,8 @@
 #include "Naming.h"
 #include "StateKey.h"
 
+#include <cstdint>
+
 #include <map>
 #include <memory>
 #include <string>
@@ -41,6 +43,51 @@ namespace gui_tree {
 namespace naming {
 
     enum class NamingUpdateKind : unsigned char { Refine, Abstract };
+
+    /** Review item 1.3: updateNaming* rejected or skipped (structural / state-key guards). */
+    struct StateNamingUpdateRejectDiagStats {
+        uint64_t update_reject_null_new{0};
+        uint64_t update_refine_not_direct_child{0};
+        uint64_t update_refine_infer_edge_failed{0};
+        uint64_t update_abstract_sibling_no_parent{0};
+        uint64_t update_abstract_sibling_naming_to_edge_failed{0};
+        uint64_t update_abstract_sibling_infer_edge_failed{0};
+        uint64_t update_abstract_relation_rejected{0};
+        uint64_t statekey_not_applied_after_update{0};
+        uint64_t statekey_abstract_leaf_blocked{0};
+        uint64_t statehash_not_applied_after_update{0};
+        uint64_t statehash_abstract_leaf_blocked{0};
+        uint64_t statekey_skipped_null_arg{0};
+        uint64_t statehash_skipped_null_arg{0};
+
+        bool any() const {
+            return update_reject_null_new || update_refine_not_direct_child ||
+                   update_refine_infer_edge_failed || update_abstract_sibling_no_parent ||
+                   update_abstract_sibling_naming_to_edge_failed ||
+                   update_abstract_sibling_infer_edge_failed || update_abstract_relation_rejected ||
+                   statekey_not_applied_after_update || statekey_abstract_leaf_blocked ||
+                   statehash_not_applied_after_update || statehash_abstract_leaf_blocked ||
+                   statekey_skipped_null_arg || statehash_skipped_null_arg;
+        }
+    };
+
+    /** Review item 1.4: treeToNaming(dom) walk + getNamingFixedPoint failures. */
+    struct StateNamingTreeWalkDiagStats {
+        uint64_t tree_to_naming_dom_entries{0};
+        uint64_t tree_to_naming_rebuild_failed{0};
+        uint64_t tree_to_naming_zero_state_hash{0};
+        uint64_t tree_to_naming_no_successor{0};
+        uint64_t tree_to_naming_cycle_break{0};
+        uint64_t tree_to_naming_total_hops{0};
+        uint64_t fixed_point_null_after_tree_to_naming{0};
+        uint64_t fixed_point_batch_refine_failed{0};
+
+        bool any() const {
+            return tree_to_naming_rebuild_failed || tree_to_naming_zero_state_hash ||
+                   tree_to_naming_no_successor || tree_to_naming_cycle_break ||
+                   fixed_point_null_after_tree_to_naming || fixed_point_batch_refine_failed;
+        }
+    };
 
     class StateNamingManager {
     public:
@@ -95,6 +142,10 @@ namespace naming {
 
         /** Return and reset lookup window stats for exact-vs-fallback hit-rate analysis. */
         EdgeLookupStats consumeEdgeLookupStats();
+
+        /** Global (process-wide) counters; not tied to manager instance. */
+        static StateNamingUpdateRejectDiagStats consumeUpdateRejectDiagStats();
+        static StateNamingTreeWalkDiagStats consumeTreeWalkDiagStats();
 
     private:
         struct StateEdgeEntry {

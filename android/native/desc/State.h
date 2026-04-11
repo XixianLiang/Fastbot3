@@ -236,13 +236,14 @@ namespace fastbotx {
 
         /**
          * @brief Fill details from another state
-         * 
+         *
          * Copies detailed information from another state to this one.
          * Used when a state without details is matched to one with details.
-         * 
+         *
          * @param copy State to copy details from
+         * @param debugFrom Optional caller label for logs (e.g. Graph::addState); nullptr if unknown.
          */
-        virtual void fillDetails(const std::shared_ptr<State> &copy);
+        virtual void fillDetails(const std::shared_ptr<State> &copy, const char *debugFrom = nullptr);
 
         /**
          * @brief Check if state has no detailed information

@@ -14,9 +14,11 @@
 #include "../events/Preference.h"
 #include "../utils.hpp"
 #include <algorithm>
+#include <atomic>
 #include <deque>
 #include <limits>
 #include <queue>
+#include <cinttypes>
 #include <sstream>
 #include <unordered_set>
 #include <vector>
@@ -75,7 +77,20 @@ namespace fastbotx {
         } else {
             // State already exists, fill details if needed
             if ((*ifStateExists)->hasNoDetail()) {
-                (*ifStateExists)->fillDetails(state);
+                {
+                    static std::atomic<uint64_t> g_fill_add{0};
+                    const uint64_t h = ++g_fill_add;
+                    if (h <= 20 || (h % 400) == 0) {
+                        BDLOG(
+                            "graph chain: addState->fillDetails canon_id=%d fresh_id=%d canon_h=%" PRIuPTR
+                            " fresh_h=%" PRIuPTR " nw_canon=%zu nw_fresh=%zu",
+                            (*ifStateExists)->getIdi(), state->getIdi(),
+                            static_cast<uintptr_t>((*ifStateExists)->hash()),
+                            static_cast<uintptr_t>(state->hash()), (*ifStateExists)->getWidgetSize(),
+                            state->getWidgetSize());
+                    }
+                }
+                (*ifStateExists)->fillDetails(state, "Graph::addState");
             }
             // Use the existing state instead of the new one
             state = *ifStateExists;
@@ -120,7 +135,20 @@ namespace fastbotx {
             return;
         }
         if (freshlyBuilt && canonical->hasNoDetail() && !freshlyBuilt->hasNoDetail()) {
-            canonical->fillDetails(freshlyBuilt);
+            {
+                static std::atomic<uint64_t> g_fill_rec{0};
+                const uint64_t h = ++g_fill_rec;
+                if (h <= 20 || (h % 400) == 0) {
+                    BDLOG(
+                        "graph chain: recordStateVisit->fillDetails canon_id=%d fresh_id=%d canon_h=%" PRIuPTR
+                        " fresh_h=%" PRIuPTR " nw_canon=%zu nw_fresh=%zu",
+                        canonical->getIdi(), freshlyBuilt->getIdi(),
+                        static_cast<uintptr_t>(canonical->hash()),
+                        static_cast<uintptr_t>(freshlyBuilt->hash()), canonical->getWidgetSize(),
+                        freshlyBuilt->getWidgetSize());
+                }
+            }
+            canonical->fillDetails(freshlyBuilt, "Graph::recordStateVisit");
         }
         auto activity = canonical->getActivityString();
         static const std::string kEmptyActivityStr;

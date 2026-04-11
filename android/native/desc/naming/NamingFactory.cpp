@@ -24,8 +24,10 @@
 #include "NamingRuntime.h"
 #include "StateKey.h"
 #include "../gui_tree/GUITree.h"
+#include "../../utils.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -34,6 +36,37 @@ namespace fastbotx {
 namespace naming {
 namespace {
     ApeBaseNamingMode g_default_root_naming_mode = ApeBaseNamingMode::ActionType;
+
+    std::atomic<uint64_t> g_eval_fail_node_without_namelet{0};
+    std::atomic<uint64_t> g_eval_fail_actiontype_orphan{0};
+    std::atomic<uint64_t> g_eval_fail_select_namelet_output{0};
+    std::atomic<uint64_t> g_select_namelet_empty{0};
+    std::atomic<uint64_t> g_select_namelet_single_non_base{0};
+    std::atomic<uint64_t> g_rebuild_resolve_nondet{0};
+    std::atomic<uint64_t> g_rebuild_evaluate_sentinel_null{0};
+
+    bool isActionTypeDefaultRootShaped(const NamingPtr &naming) {
+        if (!naming) {
+            return false;
+        }
+        const auto &v = naming->getNamelets();
+        if (v.size() != 2 || !v[0] || !v[1]) {
+            return false;
+        }
+        static const char *k0 =
+            "//*[@clickable='true' or @long-clickable='true' or @checkable='true' or @scrollable='true']";
+        static const char *k1 =
+            "//*[@clickable='false' and @long-clickable='false' and @checkable='false' and "
+            "@scrollable='false']";
+        return v[0]->isBase() && v[1]->isBase() && v[0]->getExprString() == k0 &&
+               v[1]->getExprString() == k1;
+    }
+
+    void logEvalDiagSample(const char *tag, uint64_t count) {
+        if (count == 1 || count <= 3 || (count % 128) == 0) {
+            BLOG("naming eval diag [%s] count=%llu", tag, static_cast<unsigned long long>(count));
+        }
+    }
 
     void syncNodesAfterRebuild(const gui_tree::GUITree &tree,
                                const std::unordered_map<gui_tree::GUITreeNode *, NameletPtr> &node_to_namelet) {
@@ -62,10 +95,17 @@ namespace {
 
     NameletPtr selectNameletForNode(const std::vector<NameletPtr> &candidates) {
         if (candidates.empty()) {
+            const uint64_t c = ++g_select_namelet_empty;
+            logEvalDiagSample("select_namelet_empty_candidates", c);
             return nullptr;
         }
         if (candidates.size() == 1) {
-            return (candidates[0] && candidates[0]->isBase()) ? candidates[0] : nullptr;
+            if (candidates[0] && candidates[0]->isBase()) {
+                return candidates[0];
+            }
+            const uint64_t c = ++g_select_namelet_single_non_base;
+            logEvalDiagSample("select_namelet_single_non_base", c);
+            return nullptr;
         }
 
         // Only copy when we actually need to sort/iterate multiple candidates.
@@ -314,6 +354,12 @@ namespace {
         collect(tree.getRootNode());
         for (gui_tree::GUITreeNode *n : all_nodes) {
             if (node_to_namelets.find(n) == node_to_namelets.end()) {
+                const uint64_t c = ++g_eval_fail_node_without_namelet;
+                logEvalDiagSample("fail_node_without_namelet", c);
+                if (isActionTypeDefaultRootShaped(naming)) {
+                    const uint64_t ac = ++g_eval_fail_actiontype_orphan;
+                    logEvalDiagSample("fail_actiontype_default_orphan_node", ac);
+                }
                 // Force rebuildTree() to fail via resolveNonDeterminism size guard.
                 out.names.push_back(nullptr);
                 return out;
@@ -351,6 +397,8 @@ namespace {
             auto itSel = node_to_selected.find(raw);
             NameletPtr selected = (itSel != node_to_selected.end()) ? itSel->second : nullptr;
             if (!selected || !selected->getNamerPtr()) {
+                const uint64_t c = ++g_eval_fail_select_namelet_output;
+                logEvalDiagSample("fail_select_namelet_for_output", c);
                 // Force rebuildTree() to fail via resolveNonDeterminism size guard.
                 out.names.push_back(nullptr);
                 return out;
@@ -409,6 +457,12 @@ namespace {
         }
         Naming::NamingResult r = evaluateNaming(naming, tree, dom);
         if (resolveNonDeterminism(r)) {
+            const uint64_t c = ++g_rebuild_resolve_nondet;
+            logEvalDiagSample("rebuild_resolve_nondeterminism", c);
+            if (!r.names.empty() && !r.names[0]) {
+                const uint64_t s = ++g_rebuild_evaluate_sentinel_null;
+                logEvalDiagSample("rebuild_after_evaluate_sentinel_null", s);
+            }
             return false;
         }
         std::unordered_map<gui_tree::GUITreeNode *, NameletPtr> node_to_namelet;
@@ -842,6 +896,23 @@ namespace {
                 cur = candidates[0];
             }
         }
+        {
+            static std::atomic<uint64_t> g_arc_chain{0};
+            const uint64_t t = ++g_arc_chain;
+            if (!out.empty() && (t <= 14 || (t % 320) == 0)) {
+                const size_t nshow = std::min<size_t>(out.size(), 4);
+                for (size_t i = 0; i < nshow; ++i) {
+                    const NamingPtr c = out[i];
+                    const NamingPtr p = c ? c->getParent() : nullptr;
+                    BDLOG(
+                        "naming chain: actionRefineCands out[%zu/%zu] cand=%p parent=%p base_in=%p "
+                        "parent_eq_base=%d",
+                        i, out.size(), static_cast<const void *>(c.get()),
+                        static_cast<const void *>(p.get()), static_cast<const void *>(naming.get()),
+                        (p.get() == naming.get()) ? 1 : 0);
+                }
+            }
+        }
         return out;
     }
 
@@ -950,7 +1021,48 @@ namespace {
                 cur = candidates[0];
             }
         }
+        {
+            static std::atomic<uint64_t> g_wx_chain{0};
+            const uint64_t t = ++g_wx_chain;
+            if (!out.empty() && (t <= 12 || (t % 320) == 0)) {
+                const size_t nshow = std::min<size_t>(out.size(), 3);
+                for (size_t i = 0; i < nshow; ++i) {
+                    const NamingPtr c = out[i];
+                    const NamingPtr p = c ? c->getParent() : nullptr;
+                    BDLOG(
+                        "naming chain: widgetXPathRefineCands out[%zu/%zu] cand=%p parent=%p base_in=%p "
+                        "parent_eq_base=%d xpath_len=%zu",
+                        i, out.size(), static_cast<const void *>(c.get()),
+                        static_cast<const void *>(p.get()), static_cast<const void *>(naming.get()),
+                        (p.get() == naming.get()) ? 1 : 0, widget_xpath_expr.size());
+                }
+            }
+        }
         return out;
+    }
+
+    NamingEvaluateDiagStats NamingFactory::consumeNamingEvaluateDiagStats() {
+        NamingEvaluateDiagStats s;
+        s.fail_node_without_namelet = g_eval_fail_node_without_namelet.exchange(0);
+        s.fail_actiontype_default_orphan_node = g_eval_fail_actiontype_orphan.exchange(0);
+        s.fail_select_namelet_for_output = g_eval_fail_select_namelet_output.exchange(0);
+        s.select_namelet_empty_candidates = g_select_namelet_empty.exchange(0);
+        s.select_namelet_single_non_base = g_select_namelet_single_non_base.exchange(0);
+        s.rebuild_resolve_nondeterminism = g_rebuild_resolve_nondet.exchange(0);
+        s.rebuild_after_evaluate_sentinel_null = g_rebuild_evaluate_sentinel_null.exchange(0);
+        if (s.any()) {
+            BLOG("naming evaluate diag (window): no_namelet=%llu actiontype_orphan=%llu "
+                 "select_out=%llu sel_empty=%llu sel_single_nonbase=%llu "
+                 "rebuild_nondet=%llu rebuild_sentinel_null=%llu",
+                 static_cast<unsigned long long>(s.fail_node_without_namelet),
+                 static_cast<unsigned long long>(s.fail_actiontype_default_orphan_node),
+                 static_cast<unsigned long long>(s.fail_select_namelet_for_output),
+                 static_cast<unsigned long long>(s.select_namelet_empty_candidates),
+                 static_cast<unsigned long long>(s.select_namelet_single_non_base),
+                 static_cast<unsigned long long>(s.rebuild_resolve_nondeterminism),
+                 static_cast<unsigned long long>(s.rebuild_after_evaluate_sentinel_null));
+        }
+        return s;
     }
 
 } // namespace naming

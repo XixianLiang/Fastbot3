@@ -27,6 +27,8 @@
 #include "NamerLattice.h"
 #include "../xpath/XPathNodeMapper.h"
 
+#include <cstdint>
+
 #include <functional>
 #include <memory>
 #include <set>
@@ -44,6 +46,28 @@ namespace naming {
         ParentIndex = 3,
         Boosted = 4,
         Stoat = 5,
+    };
+
+    /** Counters for review items 1.1–1.2: default ActionType XPath gaps + evaluateNaming failures. */
+    struct NamingEvaluateDiagStats {
+        uint64_t fail_node_without_namelet{0};
+        /** Subset of the above when naming matches ActionType default-root shape (two partition XPaths). */
+        uint64_t fail_actiontype_default_orphan_node{0};
+        /** Non-ignored node lacks selected namelet / namer in output phase. */
+        uint64_t fail_select_namelet_for_output{0};
+        uint64_t select_namelet_empty_candidates{0};
+        uint64_t select_namelet_single_non_base{0};
+        /** rebuildTree: resolveNonDeterminism returned true. */
+        uint64_t rebuild_resolve_nondeterminism{0};
+        /** Subset: evaluateNaming aborted early (single nullptr sentinel in names). */
+        uint64_t rebuild_after_evaluate_sentinel_null{0};
+
+        bool any() const {
+            return fail_node_without_namelet || fail_actiontype_default_orphan_node ||
+                   fail_select_namelet_for_output || select_namelet_empty_candidates ||
+                   select_namelet_single_non_base || rebuild_resolve_nondeterminism ||
+                   rebuild_after_evaluate_sentinel_null;
+        }
     };
 
     class NamingFactory {
@@ -132,6 +156,9 @@ namespace naming {
          * evaluateNaming normally produces a consistent result; this guards rebuildTree.
          */
         static bool resolveNonDeterminism(Naming::NamingResult &result);
+
+        /** Atomically read and zero naming-evaluate / rebuild diagnostics (see NamingEvaluateDiagStats). */
+        static NamingEvaluateDiagStats consumeNamingEvaluateDiagStats();
     };
 
 } // namespace naming
