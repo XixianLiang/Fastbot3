@@ -784,40 +784,85 @@ namespace fastbotx {
         int modelActions = 0;
         int inReuseModel = 0;
         int visitedActions = 0;
-        
+        int exclFbmOnly = 0;       // in persisted reuse map, not yet visited this episode
+        int exclVisitedOnly = 0;   // visited this episode, hash not in map (rare vs pool ordering)
+        int exclFbmAndVisited = 0; // both
+
+        size_t reuseMapSize = 0;
+        {
+            std::lock_guard<std::mutex> reuseGuard(this->_reuseModelLock);
+            reuseMapSize = this->_reuseModel.size();
+        }
+
+        const char *activityTag = "?";
+        if (this->_newState) {
+            const stringPtr &ap = this->_newState->getActivityString();
+            if (ap && ap.get()) {
+                activityTag = ap->c_str();
+            }
+        }
+
         for (const auto &action: this->_newState->getActions()) {
             totalActions++;
-            
+
             if (!action->isModelAct()) {
-                continue;  // Skip non-model actions
+                continue; // Skip non-model actions
             }
-            
+
             modelActions++;
             uintptr_t actionHash = action->hash();
             bool inModel = this->isActionInReuseModel(actionHash);
             bool visited = action->getVisitedCount() > 0;
-            
+
             if (inModel) {
                 inReuseModel++;
             }
             if (visited) {
                 visitedActions++;
             }
-            
+
             // Match condition: model action, not in reuse model, and not visited
             bool matched = !inModel && !visited;
-            
+
             if (matched) {
                 actionsNotInModel.emplace_back(action);
+            } else if (inModel && visited) {
+                exclFbmAndVisited++;
+            } else if (inModel) {
+                exclFbmOnly++;
+            } else if (visited) {
+                exclVisitedOnly++;
             }
+
+            // Per-action evidence: whether this hash exists in loaded .fbm reuse map (argument for pool shrink).
+            BDLOG("Double SARSA: strategy1 scan act=%s hash=%" PRIu64 " inFbm=%d visited=%d poolEligible=%d prio=%d",
+                  action->toString().c_str(),
+                  static_cast<uint64_t>(actionHash),
+                  inModel ? 1 : 0,
+                  visited ? 1 : 0,
+                  matched ? 1 : 0,
+                  action->getPriority());
         }
-        
+
+        BDLOG("Double SARSA: strategy1 summary activity=%s reuseMapSize=%zu totalActions=%d modelActions=%d "
+              "markedInFbm=%d markedVisited=%d poolEligible=%d excl_fbmOnly=%d excl_visitedOnly=%d excl_fbmAndVisited=%d",
+              activityTag,
+              reuseMapSize,
+              totalActions,
+              modelActions,
+              inReuseModel,
+              visitedActions,
+              static_cast<int>(actionsNotInModel.size()),
+              exclFbmOnly,
+              exclVisitedOnly,
+              exclFbmAndVisited);
+
         if (actionsNotInModel.empty()) {
-            BDLOG("Double SARSA: Cannot find unexecuted action not in reuse model - total actions=%d, model actions=%d, in reuse model=%d, visited=%d (this is normal, will try next strategy)", 
-                   totalActions, modelActions, inReuseModel, visitedActions);
+            BDLOG("Double SARSA: Cannot find unexecuted action not in reuse model - total actions=%d, model actions=%d, in reuse model=%d, visited=%d (this is normal, will try next strategy)",
+                  totalActions, modelActions, inReuseModel, visitedActions);
             return nullptr;
         }
-        
+
         // Build cumulative weight array
         std::vector<int> cumulativeWeights;
         int totalWeight = 0;
@@ -825,10 +870,22 @@ namespace fastbotx {
             totalWeight += action->getPriority();
             cumulativeWeights.push_back(totalWeight);
         }
-        
+
         if (totalWeight <= 0) {
             BDLOGE("Double SARSA: total weights is 0");
             return nullptr;
+        }
+
+        BDLOG("Double SARSA: strategy1 pool size=%zu totalWeight=%d (pool=not-in-fbm && !visited; reuseMapSize=%zu)",
+              actionsNotInModel.size(),
+              totalWeight,
+              reuseMapSize);
+
+        // When |actionsNotInModel|==1, selection is deterministic (not RNG). Usually means every other
+        // action hash on this state is already in the persisted reuse model (.fbm).
+        if (actionsNotInModel.size() == 1U) {
+            BLOG("Double SARSA: only 1 action not in reuse model (pool size=1, totalWeight=%d) -> %s",
+                 totalWeight, actionsNotInModel[0]->toString().c_str());
         }
         
         // Use binary search to select action

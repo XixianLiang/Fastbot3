@@ -735,6 +735,10 @@ namespace gui_tree {
         /// selection for predefined tasks (e.g. login flows).
         std::shared_ptr<LLMTaskAgent> _llmTaskAgent;
 
+        /// Last model action returned per device; visit() on the next getOperateOpt after moveForward
+        /// (counts only after a new observation, and keeps visitedCount aligned with resolveAt).
+        std::unordered_map<std::string, ActionPtr> _pendingModelActionVisitByDevice;
+
         /// Coverage tracking: visited activities and step count (performance optimization)
         std::unordered_set<std::string> _visitedActivities;
         int _coverageStepCount{0};

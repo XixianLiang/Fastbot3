@@ -730,7 +730,7 @@ namespace fastbotx {
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4112233, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4122012, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -1005,11 +1005,34 @@ namespace fastbotx {
         actionCost = 0.0;
         ActionPtr action = customAction; // Use custom action if provided
 
+        const bool shouldSkipActionsFromModel =
+            this->_preference ? this->_preference->skipAllActionsFromModel() : false;
+        const char *activityLabel = "?";
+        unsigned long long stateHashU = 0;
+        size_t stateActionCount = 0;
+        if (state) {
+            stateHashU = static_cast<unsigned long long>(state->hash());
+            stateActionCount = state->getActions().size();
+            if (state->getActivityString() && state->getActivityString().get()) {
+                activityLabel = state->getActivityString()->c_str();
+            }
+        }
+        const int agentAlgo = agent ? static_cast<int>(agent->getAlgorithmType()) : -1;
+        const int blockTimes = agent ? agent->getCurrentStateBlockTimes() : 0;
+        BDLOG("selectAction: enter activity=%s stateHash=%llu graphStateId=%s stateActions=%zu "
+              "agentAlgo=%d customXPath=%s listenSkipModel=%s blockTimes=%d",
+              activityLabel,
+              stateHashU,
+              state ? state->getId().c_str() : "-",
+              stateActionCount,
+              agentAlgo,
+              customAction ? "yes" : "no",
+              shouldSkipActionsFromModel ? "yes" : "no",
+              blockTimes);
+
         // Log state information for debugging
         logStatePerLine(state);
 
-        // Check if preference indicates we should skip model actions (listen mode)
-        bool shouldSkipActionsFromModel = this->_preference ? this->_preference->skipAllActionsFromModel() : false;
         if (shouldSkipActionsFromModel) {
             LOGI("listen mode skip get action from model");
         }
@@ -1022,32 +1045,53 @@ namespace fastbotx {
                 agent->getCurrentStateBlockTimes() > BLOCK_STATE_TIME_RESTART) {
                 // Force restart action when stuck in blocked state
                 action = Action::RESTART;
-                BLOG("Ran into a block state %s", state ? state->getId().c_str() : "");
+                BLOG("Ran into a block state %s blockTimes=%d restartThreshold=%d",
+                     state ? state->getId().c_str() : "",
+                     agent->getCurrentStateBlockTimes(),
+                     BLOCK_STATE_TIME_RESTART);
             } else {
                 // Ask agent to resolve a new action (this is the main RL model entry point)
+                BDLOG("selectAction: calling agent->resolveNewAction() algo=%d", agentAlgo);
                 auto resolvedAction = agent->resolveNewAction();
                 action = std::dynamic_pointer_cast<Action>(resolvedAction);
-                
+
+                BDLOG("selectAction: resolveNewAction raw ptr=%s",
+                      action ? action->toString().c_str() : "(null)");
+
                 // Update agent's strategy based on the new action
                 agent->updateStrategy();
-                
+
                 if (nullptr == action) {
                     BDLOGE("get null action!!!!");
                     return nullptr; // Handle null action gracefully
                 }
             }
-            
+
             // Calculate action generation time cost
             double endGeneratingActionTimestamp = currentStamp();
             actionCost = endGeneratingActionTimestamp - startGeneratingActionTimestamp;
-            
-            // moveForward is now called at the start of the next getOperateOpt (before addState),
-            // so (fromState, actionTaken, nextState) is correct for AIG/updateKnowledge.
-            if (state && action->isModelAct()) {
-                action->visit(this->_graph->getTimestamp());
-            }
+        } else if (customAction) {
+            BDLOG("selectAction: branch customXPath — skipping agent resolve/updateStrategy");
+        } else if (shouldSkipActionsFromModel) {
+            BDLOG("selectAction: branch listenSkipModel — agent not consulted (action may stay null)");
         }
-        
+
+        const char *how;
+        if (customAction) {
+            how = "custom_xpath";
+        } else if (shouldSkipActionsFromModel) {
+            how = "listen_skip_model";
+        } else if (action && action->getActionType() == ActionType::RESTART) {
+            how = "block_restart";
+        } else {
+            how = "agent";
+        }
+        BDLOG("selectAction: exit how=%s action=%s isModelAct=%d costMs=%.3f",
+              how,
+              action ? action->toString().c_str() : "(null)",
+              (action && action->isModelAct()) ? 1 : 0,
+              actionCost);
+
         return action;
     }
 
@@ -1350,6 +1394,19 @@ namespace fastbotx {
             state->visit(this->_graph->getTimestamp());
 #endif
         }
+        // Count the previous step's model action only after we observe the next state (moveForward above).
+        // Covers RL, xpath custom, and LLM-selected actions; keeps resolveAt's visitedCount % N aligned.
+        if (state && agent) {
+            const std::string devKey = deviceID.empty() ? ModelConstants::DefaultDeviceID : deviceID;
+            auto pit = _pendingModelActionVisitByDevice.find(devKey);
+            if (pit != _pendingModelActionVisitByDevice.end()) {
+                ActionPtr pend = pit->second;
+                if (pend && pend->isModelAct()) {
+                    pend->visit(this->_graph->getTimestamp());
+                }
+                _pendingModelActionVisitByDevice.erase(pit);
+            }
+        }
         double buildStateEndTimestamp = currentStamp();
         bool fromLlm = (_llmTaskAgent && _llmTaskAgent->inSession());
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
@@ -1457,6 +1514,10 @@ namespace fastbotx {
             }
         }
 #endif
+        if (action && action->isModelAct()) {
+            const std::string devKey = deviceID.empty() ? ModelConstants::DefaultDeviceID : deviceID;
+            _pendingModelActionVisitByDevice[devKey] = action;
+        }
         return opt;
     }
 
@@ -1595,6 +1656,9 @@ namespace fastbotx {
         const std::string actKey = aSlot.sourceActivity;
         if (refineActivityApeNaming(aSlot.sourceActivity, &rp, nonDetPairs)) {
             _apeEventRefineSuccessCount++;
+            BDLOG("ape naming: event refine ok activity=%s srcKey=%lu act=%lu targets=%zu",
+                  aSlot.sourceActivity.c_str(), (unsigned long)rp.sourceKeyHash,
+                  (unsigned long)rp.actionHash, nowPairTargetCount);
             if (coarsenActivityApeNamingIfNeeded(aSlot.sourceActivity)) {
                 _apeEventCoarsenRollbackCount++;
             }
@@ -1611,6 +1675,13 @@ namespace fastbotx {
                      aSlot.sourceActivity.c_str(), (unsigned long)rp.actionHash, inserted ? 1 : 0,
                      blk.size(), nowPairTargetCount, nonDetPairs);
             }
+        } else {
+            BDLOG("ape naming: event refine failed activity=%s srcKey=%lu act=%lu targets=%zu "
+                  "(no ND blacklist: actZero=%d targetsBelowNdMin=%d)",
+                  aSlot.sourceActivity.c_str(), (unsigned long)rp.sourceKeyHash,
+                  (unsigned long)rp.actionHash, nowPairTargetCount,
+                  (rp.actionHash == 0) ? 1 : 0,
+                  (nowPairTargetCount < static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) ? 1 : 0);
         }
     }
 
@@ -2492,6 +2563,7 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
         if (!cur) {
             cur = naming::NamingFactory::defaultRootNaming();
             if (!cur) {
+                BDLOG("ape naming: skip refine activity=%s reason=no default root naming", activity.c_str());
                 return false;
             }
             _apeStateNamingManager->updateNaming(actKey, naming::NamingUpdateKind::Refine, cur);
@@ -2608,6 +2680,18 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
                 candidates =
                     naming::NamingFactory::actionRefinementCandidatesWithOptions(cur, lat, strictBranchOpts);
             }
+        }
+        {
+            const std::string curFpGather = cur ? cur->fingerprintString() : std::string("-");
+            BDLOG(
+                "ape naming: refine gather-cands activity=%s pair=%p useBatchNonDet=%d nonDetPairs=%d "
+                "states=%zu minStates=%d srcKey=%lu act=%lu domTargets=%zu curFin=%d rule=%s pred=%s sel=%s "
+                "maxSteps=%d actionRefinementFirst=%d candCount=%zu cur_fp=%s",
+                activity.c_str(), static_cast<const void *>(pair), useBatchNonDet ? 1 : 0, nonDetPairs,
+                activityStateCount, minStates, (unsigned long)dominantSourceKeyHash,
+                (unsigned long)dominantActionHash, dominantPairTargets, cur ? cur->getFineness() : -1,
+                ruleProfile.c_str(), predicateMode.c_str(), selectionMode.c_str(), userOpts.max_steps,
+                actionRefinementFirst ? 1 : 0, candidates.size(), curFpGather.c_str());
         }
         struct CandidateEval {
             naming::NamingPtr naming;
@@ -3560,6 +3644,13 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
         pruneStaleApeStatesForActivity(actKey, ctx.previousNamingFingerprintBeforeRefine,
                                        affectedTrees.empty() ? nullptr : &affectedTrees);
         BLOG("ape naming: refine activity=%s", activity.c_str());
+        {
+            const std::string nextFpOk = next ? next->fingerprintString() : std::string("-");
+            BDLOG("ape naming: refine success activity=%s nextFin=%d focusOldKeys=%zu affectedTrees=%zu "
+                  "repKeys=%zu next_fp=%s",
+                  activity.c_str(), next ? next->getFineness() : -1, focusOldKeyHashes.size(),
+                  affectedTrees.size(), repKeyHashes.size(), nextFpOk.c_str());
+        }
         return true;
     }
 
@@ -4237,6 +4328,7 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
         const std::string actKey = naming::StateKey::canonicalActivityString(activity);
         auto it = _apeNamingContext.find(actKey);
         if (it == _apeNamingContext.end()) {
+            BDLOG("ape naming: coarsen skip activity=%s reason=no_ape_naming_context", activity.c_str());
             return false;
         }
         ApeNamingAbstractionContext &ctx = it->second;
@@ -4244,6 +4336,9 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
         naming::NamingPtr cur = mgr2.getNaming(actKey);
         naming::NamingPtr prev = ctx.previousNamingBeforeRefine;
         if (!cur || !prev) {
+            BDLOG("ape naming: coarsen skip activity=%s reason=missing_naming cur=%p prev=%p",
+                  activity.c_str(), static_cast<const void *>(cur.get()),
+                  static_cast<const void *>(prev.get()));
             return false;
         }
         size_t affectedStateObservations = 0;
@@ -4779,11 +4874,22 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
             return true;
         }
         _apeRebuildStatsByActivity[actKey].consecutiveRollbacks = 0;
+        BDLOG(
+            "ape naming: coarsen keep refinement activity=%s rollback=0 triggerSource=%lu "
+            "overSplit=%d overAffected=%d overTargets=%d overFilteredAffected=%d overFilteredTargets=%d "
+            "unresolvedTriggerPair=%d affectedObs=%zu totalNewKeys=%zu filteredAffected=%zu filteredTargets=%zu "
+            "triggerTargets=%zu postFanout=%zu targetThreshold=%d fineness=%d",
+            activity.c_str(), (unsigned long)triggerSource, overSplit ? 1 : 0, overAffected ? 1 : 0,
+            overTargets ? 1 : 0, overFilteredAffected ? 1 : 0, overFilteredTargets ? 1 : 0,
+            unresolvedTriggerPair ? 1 : 0, affectedStateObservations, totalNewKeys.size(), filteredAffected,
+            filteredTargets, ctx.triggerTargetCountAtRefine, postRefineMaxFanoutForAction, targetThreshold,
+            fineness);
         return false;
     }
 
     bool Model::runApeNamingAbstractionBatch() {
         if (Preference::inst() && Preference::inst()->useStaticReuseAbstraction()) {
+            BDLOG("ape naming: batch skip reason=static_reuse_abstraction");
             return false;
         }
         const size_t eventRefineBefore = _apeEventRefineSuccessCount;
@@ -4812,6 +4918,8 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
             const bool mutatedPrefetch =
                 (_apeBatchRefineSuccessCount > batchRefineBefore ||
                  _apeBatchCoarsenRollbackCount > batchRollbackBefore);
+            BDLOG("ape naming: batch prefetch-only path (periodic refinement off) mutated=%d",
+                  mutatedPrefetch ? 1 : 0);
             if (mutatedPrefetch) {
                 notifyAgentsOfApeNamingChange();
             }
@@ -5014,6 +5122,9 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
         }
         _ape_correctness_counters = ApeCorrectnessCounters{};
         const bool batchMutated = (batchRefineDelta > 0 || batchRollbackDelta > 0);
+        BDLOG("ape naming: batch done batchMutated=%d eventD(ref=%zu,rb=%zu) batchD(ref=%zu,rb=%zu)",
+              batchMutated ? 1 : 0, eventRefineDelta, eventRollbackDelta, batchRefineDelta,
+              batchRollbackDelta);
         if (batchMutated) {
             notifyAgentsOfApeNamingChange();
         }
@@ -5022,9 +5133,14 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
 
     void Model::runRefinementAndCoarseningIfScheduled() {
         if (Preference::inst() && Preference::inst()->useStaticReuseAbstraction()) {
+            BDLOG("state abstraction: skip scheduled ape batch reason=static_reuse_abstraction");
             return;
         }
-        if (_stepCountSinceLastCheck < static_cast<size_t>(RefinementCheckInterval)) return;
+        if (_stepCountSinceLastCheck < static_cast<size_t>(RefinementCheckInterval)) {
+            BDLOG("state abstraction: skip scheduled ape batch reason=interval stepsSince=%zu need=%d",
+                  _stepCountSinceLastCheck, (int)RefinementCheckInterval);
+            return;
+        }
         BLOG("state abstraction: ape-only batch at step %zu (interval=%d)",
              _stepCountSinceLastCheck, (int)RefinementCheckInterval);
         (void)runApeNamingAbstractionBatch();

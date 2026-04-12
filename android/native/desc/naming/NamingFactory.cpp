@@ -621,6 +621,14 @@ namespace {
         }
         // Prefer structural rollback in the refinement lattice (APE batchAbstract semantics).
         if (auto parent = naming->getParent()) {
+            static std::atomic<uint64_t> g_refine_parent_seq{0};
+            const uint64_t n = ++g_refine_parent_seq;
+            if (n <= 24 || (n % 768) == 0) {
+                const std::string fp = naming->fingerprintString();
+                BDLOG("naming refineNaming: structural parent rollback naming=%p parent=%p fp=%s",
+                      static_cast<const void *>(naming.get()), static_cast<const void *>(parent.get()),
+                      fp.c_str());
+            }
             return parent;
         }
         const auto &namelets = naming->getNamelets();
@@ -639,6 +647,15 @@ namespace {
             }
             NamerPtr finer = refs[0];
             if (NamingPtr childNaming = makeLatticeRefinementChild(naming, i, namelets, finer)) {
+                static std::atomic<uint64_t> g_refine_child_seq{0};
+                const uint64_t n = ++g_refine_child_seq;
+                if (n <= 24 || (n % 768) == 0) {
+                    const std::string fromFp = naming->fingerprintString();
+                    const std::string toFp = childNaming ? childNaming->fingerprintString() : std::string("-");
+                    const unsigned finerMask = finer ? finer->typeDimensionMask() : 0u;
+                    BDLOG("naming refineNaming: lattice step idx=%zu naming=%p child_fp=%s finerMask=%u from_fp=%s",
+                          i, static_cast<const void *>(naming.get()), toFp.c_str(), finerMask, fromFp.c_str());
+                }
                 return childNaming;
             }
         }
