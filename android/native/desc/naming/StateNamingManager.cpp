@@ -297,16 +297,15 @@ namespace {
                 const uint64_t c = ++g_u_refine_not_direct_child;
                 logStateNamingSample("update_refine_not_direct_child", c);
                 logRefineNotDirectChildDetail(c, activity_key, old_n, new_n);
-                return;
             }
             NamingEdge edge = inferRefineEdge(old_n, new_n);
-            if (!edge.from || !edge.to) {
+            if (edge.from && edge.to) {
+                old_n->addRefinementChild(edge, new_n);
+            } else {
                 const uint64_t c = ++g_u_refine_infer_edge_failed;
                 logStateNamingSample("update_refine_infer_edge_failed", c);
                 logRefineInferEdgeFailedDetail(c, activity_key, old_n, new_n);
-                return;
             }
-            old_n->addRefinementChild(edge, new_n);
             const int newFinForLog = new_n->getFineness();
             const void *const newPtrForLog = static_cast<const void *>(new_n.get());
             activity_mgr_->setNaming(activity_key, std::move(new_n));
@@ -330,21 +329,21 @@ namespace {
             if (!parent) {
                 const uint64_t c = ++g_u_abstract_sibling_no_parent;
                 logStateNamingSample("update_abstract_sibling_no_parent", c);
+                activity_mgr_->setNaming(activity_key, std::move(new_n));
                 return;
             }
             NamingEdge oldEdge{}, newEdge{};
             if (!namingToEdge(parent, old_n, &oldEdge)) {
                 const uint64_t c = ++g_u_abstract_sibling_naming_to_edge_failed;
                 logStateNamingSample("update_abstract_sibling_naming_to_edge_failed", c);
-                return;
             }
             newEdge = inferRefineEdge(parent, new_n);
-            if (!newEdge.from || !newEdge.to) {
+            if (newEdge.from && newEdge.to) {
+                parent->addRefinementChild(newEdge, new_n);
+            } else {
                 const uint64_t c = ++g_u_abstract_sibling_infer_edge_failed;
                 logStateNamingSample("update_abstract_sibling_infer_edge_failed", c);
-                return;
             }
-            parent->addRefinementChild(newEdge, new_n);
             activity_mgr_->setNaming(activity_key, std::move(new_n));
             return;
         }
@@ -352,7 +351,6 @@ namespace {
         if (!isAncestorNaming(new_n, old_n) && old_n->getParent() != new_n) {
             const uint64_t c = ++g_u_abstract_relation_rejected;
             logStateNamingSample("update_abstract_relation_rejected", c);
-            return;
         }
         activity_mgr_->setNaming(activity_key, std::move(new_n));
     }
@@ -443,30 +441,19 @@ namespace {
         }
         if (kind == NamingUpdateKind::Abstract) {
             if (new_n->getParent() == old_n->getParent()) {
-                auto isLeafByStateEdges = [this](const NamingPtr &n) {
-                    if (!n) return false;
-                    auto it = naming_to_edge_.find(n);
-                    return it == naming_to_edge_.end() || it->second.empty();
-                };
-                if (!isLeafByStateEdges(old_n) || !isLeafByStateEdges(new_n)) {
-                    const uint64_t c = ++g_sk_abstract_leaf_blocked;
-                    logStateNamingSample("statekey_abstract_leaf_blocked", c);
-                    return;
-                }
                 NamingPtr parent = new_n->getParent();
-                if (!parent) {
-                    return;
-                }
-                upsertExactStateEdge(parent, state_key, new_n);
-                {
-                    const uint64_t u = ++g_chain_wsk_state_edge_ok;
-                    if (namingChainTraceLog(u)) {
-                        BDLOG(
-                            "state naming chain: updateWithStateKey state edge upsert Abstract(sibling) "
-                            "act=%s sk_h=%" PRIuPTR " parent=%p tgt=%p",
-                            activity_key.c_str(), static_cast<uintptr_t>(state_key.hash()),
-                            static_cast<const void *>(parent.get()),
-                            static_cast<const void *>(new_n.get()));
+                if (parent) {
+                    upsertExactStateEdge(parent, state_key, new_n);
+                    {
+                        const uint64_t u = ++g_chain_wsk_state_edge_ok;
+                        if (namingChainTraceLog(u)) {
+                            BDLOG(
+                                "state naming chain: updateWithStateKey state edge upsert Abstract(sibling) "
+                                "act=%s sk_h=%" PRIuPTR " parent=%p tgt=%p",
+                                activity_key.c_str(), static_cast<uintptr_t>(state_key.hash()),
+                                static_cast<const void *>(parent.get()),
+                                static_cast<const void *>(new_n.get()));
+                        }
                     }
                 }
                 return;
@@ -539,26 +526,12 @@ namespace {
         }
         if (kind == NamingUpdateKind::Abstract) {
             if (new_n->getParent() == old_n->getParent()) {
-                // APE sibling replace: only leaf supports replacement.
-                auto isLeafByStateEdges = [this](const NamingPtr &n) {
-                    if (!n) {
-                        return false;
-                    }
-                    auto it = naming_to_edge_.find(n);
-                    return it == naming_to_edge_.end() || it->second.empty();
-                };
-                if (!isLeafByStateEdges(old_n) || !isLeafByStateEdges(new_n)) {
-                    const uint64_t c = ++g_sh_abstract_leaf_blocked;
-                    logStateNamingSample("statehash_abstract_leaf_blocked", c);
-                    return;
-                }
                 NamingPtr parent = new_n->getParent();
-                if (!parent) {
-                    return;
-                }
-                naming_to_edge_hash_only_[parent][state_key_hash] = new_n;
-                if (kEnableApeNamingManagerDebugAssert) {
-                    assert(getNamingByStateHash(parent, state_key_hash) == new_n);
+                if (parent) {
+                    naming_to_edge_hash_only_[parent][state_key_hash] = new_n;
+                    if (kEnableApeNamingManagerDebugAssert) {
+                        assert(getNamingByStateHash(parent, state_key_hash) == new_n);
+                    }
                 }
                 return;
             }

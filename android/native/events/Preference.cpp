@@ -1548,6 +1548,12 @@ namespace fastbotx {
 #define ApeNamingActionRefineRuleProfileSTR "max.apeNamingActionRefineRuleProfile"
 #define ApeNamingCandidateTransitionReplaySTR "max.apeNamingCandidateTransitionReplay"
 #define ApeNamingActionRefinementFirstSTR "max.apeNamingActionRefinementFirst"
+#define ApeNamingEnableReplacingNameletSTR "max.apeNamingEnableReplacingNamelet"
+#define ApeMaxStatesPerActivitySTR "max.apeMaxStatesPerActivity"
+#define ApeMaxGuitreesPerStateSTR "max.apeMaxGuitreesPerState"
+#define ApeEvolveModelSTR "max.apeEvolveModel"
+#define ApeActionRefinementThresholdSTR "max.apeActionRefinementThreshold"
+#define ApeMaxInitialNamesPerStateSTR "max.apeMaxInitialNamesPerState"
 #define ApeAlwaysIgnoreWebViewSTR "max.apeAlwaysIgnoreWebView"
 #define ApeAlwaysIgnoreWebViewActionSTR "max.apeAlwaysIgnoreWebViewAction"
 #define ApeIgnoreWebViewThresholdSTR "max.apeIgnoreWebViewThreshold"
@@ -1616,6 +1622,9 @@ namespace fastbotx {
         // Re-parse defaults: keys omitted from max.config must revert to off (same reload semantics as other toggles we set explicitly per line).
         this->_llmdroidEnabled = false;
         this->_llmdroidExploreWindowSec = 120;
+        this->_apeEvolveModel = false;
+        this->_apeActionRefinementThreshold = 1;
+        this->_apeMaxInitialNamesPerState = 256;
 
         // Pretty-print max.config without extra blank line, and indent each entry
         BLOG("max.config:");
@@ -1852,6 +1861,70 @@ namespace fastbotx {
                 BLOG("APE: actionRefinementFirst pass order=%s (%s)",
                      this->_apeNamingActionRefinementFirst ? "true" : "false",
                      ApeNamingActionRefinementFirstSTR);
+            } else if (key == ApeNamingEnableReplacingNameletSTR) {
+                this->_apeNamingEnableReplacingNamelet = (value == "true");
+                BLOG("APE: enableReplacingNamelet=%s (%s)",
+                     this->_apeNamingEnableReplacingNamelet ? "true" : "false",
+                     ApeNamingEnableReplacingNameletSTR);
+            } else if (key == ApeMaxStatesPerActivitySTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 1) {
+                        v = 1;
+                    }
+                    if (v > 100000) {
+                        v = 100000;
+                    }
+                    this->_apeMaxStatesPerActivity = v;
+                    BLOG("APE: maxStatesPerActivity=%d (%s)", v, ApeMaxStatesPerActivitySTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeMaxStatesPerActivity value: %s", value.c_str());
+                }
+            } else if (key == ApeMaxGuitreesPerStateSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 1) {
+                        v = 1;
+                    }
+                    if (v > 100000) {
+                        v = 100000;
+                    }
+                    this->_apeMaxGuitreesPerState = v;
+                    BLOG("APE: maxGuitreesPerState=%d (%s)", v, ApeMaxGuitreesPerStateSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeMaxGuitreesPerState value: %s", value.c_str());
+                }
+            } else if (key == ApeEvolveModelSTR) {
+                this->_apeEvolveModel = (value == "true");
+                BLOG("APE: evolveModel=%s (%s)", this->_apeEvolveModel ? "true" : "false", ApeEvolveModelSTR);
+            } else if (key == ApeActionRefinementThresholdSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 0) {
+                        v = 0;
+                    }
+                    if (v > 10000) {
+                        v = 10000;
+                    }
+                    this->_apeActionRefinementThreshold = v;
+                    BLOG("APE: actionRefinementThreshold=%d (%s)", v, ApeActionRefinementThresholdSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeActionRefinementThreshold value: %s", value.c_str());
+                }
+            } else if (key == ApeMaxInitialNamesPerStateSTR) {
+                try {
+                    int v = std::stoi(value);
+                    if (v < 1) {
+                        v = 1;
+                    }
+                    if (v > 100000) {
+                        v = 100000;
+                    }
+                    this->_apeMaxInitialNamesPerState = v;
+                    BLOG("APE: maxInitialNamesPerState=%d (%s)", v, ApeMaxInitialNamesPerStateSTR);
+                } catch (...) {
+                    BLOGE("invalid max.apeMaxInitialNamesPerState value: %s", value.c_str());
+                }
             } else if (key == ApeAlwaysIgnoreWebViewSTR) {
                 this->_apeAlwaysIgnoreWebView = (value == "true");
                 BLOG("APE: alwaysIgnoreWebView=%s (%s)",
@@ -2064,7 +2137,8 @@ namespace fastbotx {
         BLOG("APE config snapshot: baseNaming=%s useAncestorNamer=%s usePatchNamer=%s periodicRefine=%s "
              "fixedPointSteps=%d "
              "ruleProfile=%s predicateMode=%s selectionMode=%s candidateTransitionReplay=%s "
-             "actionRefinementFirst=%s",
+             "actionRefinementFirst=%s enableReplacingNamelet=%s maxStatesPerActivity=%d maxGuitreesPerState=%d "
+             "evolveModel=%s actionRefinementThreshold=%d maxInitialNamesPerState=%d",
              baseNamingMode,
              naming::useAncestorNamer() ? "true" : "false",
              naming::usePatchNamer() ? "true" : "false",
@@ -2074,7 +2148,13 @@ namespace fastbotx {
              _apeNamingActionRefinePredicateMode.c_str(),
              _apeNamingActionRefineSelectionMode.c_str(),
              _apeNamingCandidateTransitionReplay ? "true" : "false",
-             _apeNamingActionRefinementFirst ? "true" : "false");
+             _apeNamingActionRefinementFirst ? "true" : "false",
+             _apeNamingEnableReplacingNamelet ? "true" : "false",
+             _apeMaxStatesPerActivity,
+             _apeMaxGuitreesPerState,
+             _apeEvolveModel ? "true" : "false",
+             _apeActionRefinementThreshold,
+             _apeMaxInitialNamesPerState);
     }
 
     /**

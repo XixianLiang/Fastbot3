@@ -666,6 +666,30 @@ namespace {
         return action;
     }
 
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    size_t State::getMergedTargetGroupSize(const WidgetPtr &target) const {
+        if (!target) {
+            return 0;
+        }
+        auto it = this->_mergedWidgets.find(target->hash());
+        if (it == this->_mergedWidgets.end() || it->second.empty()) {
+            return 1;
+        }
+        return it->second.size();
+    }
+
+    const WidgetPtrVec *State::getMergedTargetsIfAny(const WidgetPtr &target) const {
+        if (!target) {
+            return nullptr;
+        }
+        auto it = this->_mergedWidgets.find(target->hash());
+        if (it == this->_mergedWidgets.end() || it->second.size() < 2) {
+            return nullptr;
+        }
+        return &it->second;
+    }
+#endif
+
     bool State::containsTarget(const WidgetPtr &widget) const {
         if (widget == nullptr) {
             return false;

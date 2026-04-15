@@ -632,45 +632,6 @@ namespace gui_tree {
             const naming::NamingPtr &toNaming,
             const std::unordered_set<uintptr_t> *focusOldKeyHashes = nullptr);
 
-        /**
-         * APE AssertSourceDivergent: ordered partitions of graph state hashes (keys into _apeStateXmlByStateHash).
-         * eval rejects naming if a StateKey::hash() under naming appears in more than one partition sweep
-         * (same semantics as NamingFactory.AssertSourceDivergent).
-         */
-        struct ApeSourcePartitionPredicate {
-            std::string activityKey;
-            std::string updatedNamingFingerprint;
-            std::vector<std::vector<uintptr_t>> partitions;
-        };
-        bool evalApeSourcePartitionPredicates(const std::string &activity,
-                                              const naming::NamingPtr &naming) const;
-        void pushApeSourcePartitionPredicate(const std::string &activity,
-                                            const naming::NamingPtr &updatedNaming,
-                                            std::vector<std::vector<uintptr_t>> partitions);
-        void pruneApeSourcePartitionPredicates(const std::string &activity,
-                                               const naming::NamingPtr &namingPrev,
-                                               const naming::NamingPtr &namingCur,
-                                               const std::unordered_set<uintptr_t> &affectedStateHashes);
-
-        /**
-         * APE AssertActionDivergent / AssertActionDivergent2: partitions of (graph state hash, preorder index)
-         * into cached XML; after rebuildTree(naming), action widget Name::toXPath() must not repeat across
-         * partitions (first occurrence per partition only, same as Java HashSet temp/actions logic).
-         */
-        struct ApeActionPartitionPredicate {
-            std::string activityKey;
-            std::string updatedNamingFingerprint;
-            std::vector<std::vector<std::pair<uintptr_t, size_t>>> partitions;
-        };
-        bool evalApeActionPartitionPredicates(const std::string &activity,
-                                             const naming::NamingPtr &naming) const;
-        void pushApeActionPartitionPredicate(const std::string &activity,
-                                            const naming::NamingPtr &updatedNaming,
-                                            std::vector<std::vector<std::pair<uintptr_t, size_t>>> partitions);
-        void pruneApeActionPartitionPredicates(const std::string &activity,
-                                              const naming::NamingPtr &namingPrev,
-                                              const naming::NamingPtr &namingCur,
-                                              const std::unordered_set<uintptr_t> &affectedStateHashes);
         /// Drop APE transition log + pair-agg rows for @p actKeyCanonical (Java rebuild clears stale hash space).
         void apeClearTransitionAggregationForActivity(const std::string &actKeyCanonical);
         void notifyAgentsOfApeNamingChange();
@@ -698,23 +659,14 @@ namespace gui_tree {
         void apeBlacklistFinerNamingOnRollback(
             const std::string &activity, const naming::NamingPtr &finerNaming,
             const ApeNamingAbstractionContext &ctx, const std::unordered_set<uintptr_t> &affectedStateHashesForBlacklist);
-        /// Java AssertStatesFewerThan (STATE_ABSTRACTION): distinct StateKeys under naming across trees <= threshold.
-        struct ApeStatesFewerThanPredicate {
-            std::string activityKey;
-            std::string updatedNamingFingerprint;
-            int threshold{8};
-            std::vector<uintptr_t> stateHashes;
-        };
-        bool evalApeStatesFewerThanPredicates(const std::string &activity,
-                                              const naming::NamingPtr &naming) const;
-        void pushApeStatesFewerThanPredicate(const std::string &activity, const naming::NamingPtr &updatedNaming,
-                                            int threshold, std::vector<uintptr_t> stateHashes);
-        void pruneApeStatesFewerThanPredicates(const std::string &activity, const naming::NamingPtr &namingPrev,
-                                                const naming::NamingPtr &namingCur,
-                                                const std::unordered_set<uintptr_t> &affectedStateHashes);
         void apeCapGuiTreeNamingBlacklist();
         /// Cap coarsening / pair / ND-action blacklists (long-run stability; Java rebuild drops stale data).
         void apeCapApeNamingCoarsenAndRefineBlacklists();
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        /// APE Config.evolveModel: over-abstracted action refinement before selectAction (merged-widget analogue).
+        bool tryApeOverAbstractedActionRefinement(const StatePtr &state, const std::string &activity,
+                                                  const std::string &xml);
+#endif
 #endif
         
         /// Smart pointer to the graph object managing all states and actions
@@ -860,13 +812,8 @@ namespace gui_tree {
                                                   const naming::NamingPtr &cur, const WidgetPtr &targetWidget,
                                                   std::string *outExpr, naming::NameletPtr *outParent) const;
 #endif
-        /// APE NamingFactory.predicates queue (AssertSourceDivergent analogue).
-        std::vector<ApeSourcePartitionPredicate> _apeSourcePartitionPredicates;
-        /// AssertActionDivergent analogue (multi-source same APE key, distinct XML/layout).
-        std::vector<ApeActionPartitionPredicate> _apeActionPartitionPredicates;
         /// Graph state hash -> Naming fingerprints forbidden after batchAbstract-style rollback.
         std::unordered_map<uintptr_t, std::unordered_set<std::string>> _apeGuiTreeNamingBlacklist;
-        std::vector<ApeStatesFewerThanPredicate> _apeStatesFewerThanPredicates;
 #endif
 
     };

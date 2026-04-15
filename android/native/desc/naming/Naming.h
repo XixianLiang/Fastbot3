@@ -18,7 +18,7 @@
  */
 /*
  * APE Naming: ordered Namelets + refinement child map.
- * extend/replaceLast/doExtend — later (NamingFactory phase).
+ * extend / replaceLast — lattice ops; factory helpers on NamingFactory.
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMING_H_
 #define FASTBOTX_DESC_NAMING_NAMING_H_
@@ -33,6 +33,10 @@
 #include <vector>
 
 namespace fastbotx {
+namespace gui_tree {
+    class GUITree;
+    class XPathNodeMapper;
+}
 namespace naming {
 
     static bool nameletLess(const std::shared_ptr<Namelet> &a, const std::shared_ptr<Namelet> &b) {
@@ -69,6 +73,10 @@ namespace naming {
             void updateNames();
         };
 
+        /** APE Naming.namingInternal equivalent on a concrete tree+dom. */
+        NamingResult namingInternal(gui_tree::GUITree &tree,
+                                    const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) const;
+
         explicit Naming(std::vector<std::shared_ptr<Namelet>> namelets);
 
         /** Child Naming in the refinement lattice (Java: children map). */
@@ -81,7 +89,15 @@ namespace naming {
 
         const std::vector<std::shared_ptr<Namelet>> &getNamelets() const { return namelets_; }
 
-        /** True when this naming is a leaf in the refinement lattice (Java hasChild). */
+        /** Last namelet in this naming sequence (Java Naming.getLastNamelet). */
+        std::shared_ptr<Namelet> getLastNamelet() const;
+
+        /**
+         * Java Naming.isReplaceable: must be REFINE and equal to the last namelet.
+         */
+        bool isReplaceable(const std::shared_ptr<Namelet> &namelet) const;
+
+        /** True when this naming has no refinement lattice children (Java Naming.hasChild / NamingManager.isLeaf). */
         bool hasChild() const { return children_.empty(); }
 
         int getFineness() const { return fineness_; }

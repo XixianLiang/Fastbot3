@@ -28,6 +28,8 @@
 
 #include <algorithm>
 #include <atomic>
+#include <deque>
+#include <limits>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -83,55 +85,6 @@ namespace {
                 }
             }
         }
-    }
-
-    bool nameletSelectLess(const NameletPtr &a, const NameletPtr &b) {
-        if (!a || !b) return a.get() < b.get();
-        if (a->getDepth() != b->getDepth()) return a->getDepth() < b->getDepth();
-        const int c = a->getExprString().compare(b->getExprString());
-        if (c != 0) return c < 0;
-        return a.get() < b.get();
-    }
-
-    NameletPtr selectNameletForNode(const std::vector<NameletPtr> &candidates) {
-        if (candidates.empty()) {
-            const uint64_t c = ++g_select_namelet_empty;
-            logEvalDiagSample("select_namelet_empty_candidates", c);
-            return nullptr;
-        }
-        if (candidates.size() == 1) {
-            if (candidates[0] && candidates[0]->isBase()) {
-                return candidates[0];
-            }
-            const uint64_t c = ++g_select_namelet_single_non_base;
-            logEvalDiagSample("select_namelet_single_non_base", c);
-            return nullptr;
-        }
-
-        // Only copy when we actually need to sort/iterate multiple candidates.
-        std::vector<NameletPtr> sorted = candidates;
-        std::sort(sorted.begin(), sorted.end(), nameletSelectLess);
-
-        // Parent-chain membership check: compare by pointer identity only.
-        std::unordered_set<const Namelet *> selectedSet;
-        selectedSet.reserve(sorted.size() * 2 + 1);
-        for (const auto &nl : sorted) {
-            selectedSet.insert(nl.get());
-        }
-        for (size_t i = sorted.size(); i > 0; --i) {
-            NameletPtr cur = sorted[i - 1];
-            NameletPtr p = cur ? cur->getParent() : nullptr;
-            while (p) {
-                if (selectedSet.find(p.get()) == selectedSet.end()) {
-                    break;
-                }
-                p = p->getParent();
-            }
-            if (!p) {
-                return cur;
-            }
-        }
-        return sorted.back();
     }
 
     NamingPtr findExistingChildNaming(const NameletPtr &parentNamelet, const std::string &expr,
@@ -199,14 +152,22 @@ namespace {
         return childNaming;
     }
 
-    struct NamingEvalGuard {
-        explicit NamingEvalGuard(const std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> *m) {
-            namingEvalSetNodeToNamer(m);
+    NamingPtr latticeRefinementChildAtNamelet_impl(const NamingPtr &base, size_t nameletIndex,
+                                                    const NamerPtr &finer) {
+        if (!base || !finer || nameletIndex >= base->getNamelets().size()) {
+            return nullptr;
         }
-        ~NamingEvalGuard() { namingEvalClear(); }
-        NamingEvalGuard(const NamingEvalGuard &) = delete;
-        NamingEvalGuard &operator=(const NamingEvalGuard &) = delete;
-    };
+        return makeLatticeRefinementChild(base, nameletIndex, base->getNamelets(), finer);
+    }
+
+    NamingPtr extendUnderNamelet_impl(const NamingPtr &base, size_t parentNameletIndex,
+                                      const std::string &widgetXPathExpr, const NamerPtr &finer) {
+        if (!base || !finer || widgetXPathExpr.empty() || parentNameletIndex >= base->getNamelets().size()) {
+            return nullptr;
+        }
+        return makeWidgetLatticeRefinementChild(base, parentNameletIndex, base->getNamelets(), finer,
+                                                widgetXPathExpr);
+    }
 
     NamingPtr actionRefinementSearch(const NamingPtr &naming, const NamerLattice &lattice,
                                      int max_steps,
@@ -277,30 +238,59 @@ namespace {
         return best;
     }
 
-    inline bool rectIntersects(const Rect &a, const Rect &b) {
-        // Treat empty rect as non-intersecting (APE GUITreeNode.isEmpty()).
-        if (a.isEmpty() || b.isEmpty()) {
-            return false;
-        }
-        // [left, right) x [top, bottom) intersection.
-        return !(a.right <= b.left || a.left >= b.right || a.bottom <= b.top || a.top >= b.bottom);
-    }
-
-    inline bool apeShouldIgnoreNodeInStateKey(const gui_tree::GUITreeNode &node, const Rect &rootBounds) {
-        // Mirror APE Java Naming.addNamedNode filters:
-        // - ignoreEmpty: GUITreeNode.isEmpty() (bounds degenerate)
-        // - ignoreOutOfBounds: GUITreeNode.isOutOfRoot() (no intersection with root bounds)
-        const Rect &b = node.getBounds();
-        if (b.isEmpty()) {
-            return true;
-        }
-        if (!rootBounds.isEmpty() && !rectIntersects(rootBounds, b)) {
-            return true;
-        }
-        return false;
-    }
-
 } // namespace
+
+    NamingPtr NamingFactory::latticeRefinementChildAtNamelet(const NamingPtr &base, size_t nameletIndex,
+                                                             const NamerPtr &finer) {
+        return latticeRefinementChildAtNamelet_impl(base, nameletIndex, finer);
+    }
+
+    NamingPtr NamingFactory::extendUnderNamelet(const NamingPtr &base, size_t parentNameletIndex,
+                                                const std::string &widgetXPathExpr, const NamerPtr &finer) {
+        return extendUnderNamelet_impl(base, parentNameletIndex, widgetXPathExpr, finer);
+    }
+
+    NamingPtr NamingFactory::replaceLast(const NamingPtr &naming, const NameletPtr &replaced, const NamerPtr &finer) {
+        if (!naming || !replaced || !finer) {
+            return nullptr;
+        }
+        if (!naming->isReplaceable(replaced)) {
+            return nullptr;
+        }
+        NamingPtr parentNaming = naming->getParent();
+        if (!parentNaming) {
+            return nullptr;
+        }
+        NameletPtr pOf = replaced->getParent();
+        if (!pOf) {
+            return nullptr;
+        }
+        const auto &pv = parentNaming->getNamelets();
+        size_t idx = std::numeric_limits<size_t>::max();
+        for (size_t i = 0; i < pv.size(); ++i) {
+            if (pv[i] == pOf) {
+                idx = i;
+                break;
+            }
+        }
+        if (idx >= pv.size()) {
+            for (size_t i = 0; i < pv.size(); ++i) {
+                const NameletPtr &a = pv[i];
+                if (!a) {
+                    continue;
+                }
+                if (a->getExprString() == pOf->getExprString() &&
+                    compareNamer(a->getNamer(), pOf->getNamer()) == 0) {
+                    idx = i;
+                    break;
+                }
+            }
+        }
+        if (idx >= pv.size()) {
+            return nullptr;
+        }
+        return extendUnderNamelet(parentNaming, idx, replaced->getExprString(), finer);
+    }
 
     void NamingFactory::setDefaultRootNamingMode(ApeBaseNamingMode mode) {
         g_default_root_naming_mode = mode;
@@ -313,140 +303,18 @@ namespace {
     Naming::NamingResult NamingFactory::evaluateNaming(const NamingPtr &naming, gui_tree::GUITree &tree,
                                                        const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) {
         Naming::NamingResult out;
-        if (!naming || !dom) {
+        if (!naming) {
             return out;
         }
-
-        std::unordered_map<std::string, size_t> key_to_idx;
-        std::unordered_map<gui_tree::GUITreeNode *, std::vector<NameletPtr>> node_to_namelets;
-        std::unordered_map<gui_tree::GUITreeNode *, gui_tree::GUITreeNodePtr> node_ref;
-        std::vector<gui_tree::GUITreeNode *> node_order;
-        node_order.reserve(256);
-
-        for (const auto &nl : naming->getNamelets()) {
-            if (!nl) {
-                continue;
-            }
-            std::vector<gui_tree::GUITreeNodePtr> matched = dom->nodesForXPath(nl->getExprString());
-            for (const auto &nptr : matched) {
-                if (!nptr) {
-                    continue;
-                }
-                gui_tree::GUITreeNode *raw = nptr.get();
-                if (node_ref.find(raw) == node_ref.end()) {
-                    node_ref.emplace(raw, nptr);
-                    node_order.push_back(raw);
-                }
-                node_to_namelets[raw].push_back(nl);
+        out = naming->namingInternal(tree, dom);
+        if (!out.names.empty() && !out.names[0]) {
+            const uint64_t c = ++g_eval_fail_node_without_namelet;
+            logEvalDiagSample("fail_node_without_namelet", c);
+            if (isActionTypeDefaultRootShaped(naming)) {
+                const uint64_t ac = ++g_eval_fail_actiontype_orphan;
+                logEvalDiagSample("fail_actiontype_default_orphan_node", ac);
             }
         }
-
-        // APE-compatible guard: every GUI tree node must have at least one matched namelet.
-        std::vector<gui_tree::GUITreeNode *> all_nodes;
-        all_nodes.reserve(node_order.size() > 0 ? node_order.size() : 64);
-        std::function<void(gui_tree::GUITreeNode *)> collect = [&](gui_tree::GUITreeNode *n) {
-            if (!n) return;
-            all_nodes.push_back(n);
-            for (const auto &ch : n->getChildren()) {
-                collect(ch.get());
-            }
-        };
-        collect(tree.getRootNode());
-        for (gui_tree::GUITreeNode *n : all_nodes) {
-            if (node_to_namelets.find(n) == node_to_namelets.end()) {
-                const uint64_t c = ++g_eval_fail_node_without_namelet;
-                logEvalDiagSample("fail_node_without_namelet", c);
-                if (isActionTypeDefaultRootShaped(naming)) {
-                    const uint64_t ac = ++g_eval_fail_actiontype_orphan;
-                    logEvalDiagSample("fail_actiontype_default_orphan_node", ac);
-                }
-                // Force rebuildTree() to fail via resolveNonDeterminism size guard.
-                out.names.push_back(nullptr);
-                return out;
-            }
-        }
-
-        std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> node_to_namer;
-        std::unordered_map<gui_tree::GUITreeNode *, NameletPtr> node_to_selected;
-        node_to_namer.reserve(all_nodes.size());
-        node_to_selected.reserve(all_nodes.size());
-        for (gui_tree::GUITreeNode *n : all_nodes) {
-            auto itNl = node_to_namelets.find(n);
-            if (itNl == node_to_namelets.end()) {
-                continue;
-            }
-            NameletPtr sel = selectNameletForNode(itNl->second);
-            node_to_selected[n] = sel;
-            if (sel && sel->getNamerPtr()) {
-                node_to_namer[n] = &sel->getNamer();
-            }
-        }
-        NamingEvalGuard namingEvalGuard(&node_to_namer);
-        const Rect rootBounds = tree.getRootNode() ? tree.getRootNode()->getBounds() : Rect();
-
-        for (gui_tree::GUITreeNode *raw : node_order) {
-            auto itNode = node_ref.find(raw);
-            if (itNode == node_ref.end()) {
-                continue;
-            }
-            gui_tree::GUITreeNodePtr nptr = itNode->second;
-            if (nptr && apeShouldIgnoreNodeInStateKey(*nptr, rootBounds)) {
-                // APE: ignoreEmpty / ignoreOutOfBounds nodes do not participate in StateKey widgets.
-                continue;
-            }
-            auto itSel = node_to_selected.find(raw);
-            NameletPtr selected = (itSel != node_to_selected.end()) ? itSel->second : nullptr;
-            if (!selected || !selected->getNamerPtr()) {
-                const uint64_t c = ++g_eval_fail_select_namelet_output;
-                logEvalDiagSample("fail_select_namelet_for_output", c);
-                // Force rebuildTree() to fail via resolveNonDeterminism size guard.
-                out.names.push_back(nullptr);
-                return out;
-            }
-
-            Namer &namer = selected->getNamer();
-            // Contract: when non-empty, xpathKeyForNode(node) must equal naming(node)->toXPath().
-            // So we can reuse the precomputed key to avoid calling name->toXPath() again.
-            std::string kPrecheck = namer.xpathKeyForNode(*nptr);
-            if (!kPrecheck.empty()) {
-                auto itHit = key_to_idx.find(kPrecheck);
-                if (itHit != key_to_idx.end()) {
-                    const size_t idx = itHit->second;
-                    out.node_groups[idx].push_back(nptr);
-                    out.namelet_groups[idx].push_back(selected);
-                    continue;
-                }
-            }
-
-            NamePtr name = kPrecheck.empty() ? namer.naming(*nptr) : namer.namingWithXPathKey(*nptr, kPrecheck);
-            if (!name) {
-                continue;
-            }
-
-            std::string k;
-            if (!kPrecheck.empty()) {
-                k = std::move(kPrecheck);
-            } else {
-                k = name->toXPath();
-            }
-
-            auto itDup = key_to_idx.find(k);
-            if (itDup != key_to_idx.end()) {
-                const size_t idx = itDup->second;
-                out.node_groups[idx].push_back(nptr);
-                out.namelet_groups[idx].push_back(selected);
-                continue;
-            }
-
-            const size_t idx = out.names.size();
-            key_to_idx[k] = idx;
-            out.names.push_back(std::move(name));
-            out.node_groups.emplace_back();
-            out.namelet_groups.emplace_back();
-            out.node_groups[idx].push_back(nptr);
-            out.namelet_groups[idx].push_back(selected);
-        }
-
         return out;
     }
 
@@ -487,17 +355,6 @@ namespace {
         const NamerFactory &factory = NamerFactory::current();
         auto getNamer = [&](uint32_t mask) -> NamerPtr { return factory.getByMask(mask); };
         const uint32_t typeMask = 1u << static_cast<unsigned>(NamerType::TYPE);
-
-        auto createTypeOnlyBaseNaming = [&]() -> NamingPtr {
-            const NamerPtr typeNamer = getNamer(typeMask);
-            if (!typeNamer) {
-                return nullptr;
-            }
-            std::vector<NameletPtr> v;
-            v.reserve(1);
-            v.push_back(std::make_shared<Namelet>(Namelet::Type::BASE, "//*", typeNamer));
-            return std::make_shared<Naming>(std::move(v));
-        };
 
         auto createActionTypeBaseNaming = [&]() -> NamingPtr {
             const NamerPtr typeNamer = getNamer(typeMask);
@@ -599,8 +456,10 @@ namespace {
         };
 
         switch (g_default_root_naming_mode) {
+        // APE createBaseNaming() has no TypeOnly mode; keep ActionType behavior for compatibility.
         case ApeBaseNamingMode::TypeOnly:
-            return createTypeOnlyBaseNaming();
+        case ApeBaseNamingMode::ActionType:
+            return createActionTypeBaseNaming();
         case ApeBaseNamingMode::ResourceID:
             return createResourceIDBaseNaming();
         case ApeBaseNamingMode::ParentIndex:
@@ -609,9 +468,8 @@ namespace {
             return createBoostedBaseNaming();
         case ApeBaseNamingMode::Stoat:
             return createStoatBaseNaming();
-        case ApeBaseNamingMode::ActionType:
         default:
-            return createActionTypeBaseNaming();
+            return createBoostedBaseNaming();
         }
     }
 
@@ -619,18 +477,10 @@ namespace {
         if (!naming || naming->getNamelets().empty()) {
             return nullptr;
         }
-        // Prefer structural rollback in the refinement lattice (APE batchAbstract semantics).
-        if (auto parent = naming->getParent()) {
-            static std::atomic<uint64_t> g_refine_parent_seq{0};
-            const uint64_t n = ++g_refine_parent_seq;
-            if (n <= 24 || (n % 768) == 0) {
-                const std::string fp = naming->fingerprintString();
-                BDLOG("naming refineNaming: structural parent rollback naming=%p parent=%p fp=%s",
-                      static_cast<const void *>(naming.get()), static_cast<const void *>(parent.get()),
-                      fp.c_str());
-            }
-            return parent;
-        }
+        // Only walk downward on the namer lattice. Returning the structural parent here is
+        // coarser (abstract direction) and polluted actionRefinementCandidatesWithOptions: the
+        // multi-hop gather would re-insert the activity's current naming with finenessGain==0,
+        // which Model then sorted ahead of real refinements.
         const auto &namelets = naming->getNamelets();
         for (size_t i = 0; i < namelets.size(); ++i) {
             const auto &nl = namelets[i];

@@ -201,6 +201,17 @@ namespace fastbotx {
          * Keep only actions whose index has keepMask[i]!=0, always preserving BACK.
          */
         void filterActionsByKeepMask(const std::vector<uint8_t> &keepMask);
+
+        /**
+         * APE evolveModel: number of concrete targets merged under the same abstract widget hash as @p target.
+         * Returns 1 when there is no merge entry (single target).
+         */
+        size_t getMergedTargetGroupSize(const WidgetPtr &target) const;
+
+        /**
+         * When merge exists with at least two concretes, returns the merged vector; otherwise nullptr.
+         */
+        const WidgetPtrVec *getMergedTargetsIfAny(const WidgetPtr &target) const;
 #endif
 
         /**

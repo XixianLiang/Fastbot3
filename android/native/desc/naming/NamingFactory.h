@@ -96,6 +96,27 @@ namespace naming {
         static void setDefaultRootNamingMode(ApeBaseNamingMode mode);
         static ApeBaseNamingMode getDefaultRootNamingMode();
 
+        /**
+         * Java NamingFactory lattice extend step: append one REFINE namelet under namelet {@code nameletIndex}
+         * with namer {@code finer} (same XPath as that namelet). Used by APE-style refine enumeration.
+         */
+        static NamingPtr latticeRefinementChildAtNamelet(const NamingPtr &base, size_t nameletIndex,
+                                                         const NamerPtr &finer);
+
+        /**
+         * Java Naming.extend(parentNamelet, newNamelet): append a REFINE namelet with
+         * {@code widgetXPathExpr} and {@code finer} under the existing lattice namelet at
+         * {@code parentNameletIndex} (APE stateRefinement / actionRefinement).
+         */
+        static NamingPtr extendUnderNamelet(const NamingPtr &base, size_t parentNameletIndex,
+                                            const std::string &widgetXPathExpr, const NamerPtr &finer);
+
+        /**
+         * Java Naming.replaceLast(replaced, namelet): parentNaming.extend(replaced.getParent(), newNamelet)
+         * with same XPath expr as {@code replaced} and finer namer.
+         */
+        static NamingPtr replaceLast(const NamingPtr &naming, const NameletPtr &replaced, const NamerPtr &finer);
+
         /** First applicable immediate refinement on the bitmask lattice (one Namelet step). */
         static NamingPtr refineNaming(const NamingPtr &naming, const NamerLattice &lattice);
 

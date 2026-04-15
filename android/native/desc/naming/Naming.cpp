@@ -19,8 +19,16 @@
 
 #include "Naming.h"
 #include "BitmaskNamer.h"
+#include "NamingRuntime.h"
 #include "NamerType.h"
+#include "../gui_tree/GUITree.h"
+#include "../xpath/XPathNodeMapper.h"
 
+#include <algorithm>
+#include <deque>
+#include <set>
+#include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <string>
 
@@ -63,6 +71,53 @@ namespace {
         }
         return out;
     }
+
+    bool nameletSelectLess(const NameletPtr &a, const NameletPtr &b) {
+        if (!a || !b) return a.get() < b.get();
+        if (a->getDepth() != b->getDepth()) return a->getDepth() < b->getDepth();
+        const int c = a->getExprString().compare(b->getExprString());
+        if (c != 0) return c < 0;
+        return a.get() < b.get();
+    }
+
+    NameletPtr selectNameletForNode(const std::vector<NameletPtr> &candidates) {
+        if (candidates.empty()) {
+            return nullptr;
+        }
+        if (candidates.size() == 1) {
+            return (candidates[0] && candidates[0]->isBase()) ? candidates[0] : nullptr;
+        }
+        std::vector<NameletPtr> sorted = candidates;
+        std::sort(sorted.begin(), sorted.end(), nameletSelectLess);
+        std::unordered_set<const Namelet *> selectedSet;
+        selectedSet.reserve(sorted.size() * 2 + 1);
+        for (const auto &nl : sorted) {
+            selectedSet.insert(nl.get());
+        }
+        for (size_t i = sorted.size(); i > 0; --i) {
+            NameletPtr cur = sorted[i - 1];
+            NameletPtr p = cur ? cur->getParent() : nullptr;
+            while (p) {
+                if (selectedSet.find(p.get()) == selectedSet.end()) {
+                    break;
+                }
+                p = p->getParent();
+            }
+            if (!p) {
+                return cur;
+            }
+        }
+        return sorted.back();
+    }
+
+    struct NamingEvalGuard {
+        explicit NamingEvalGuard(const std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> *m) {
+            namingEvalSetNodeToNamer(m);
+        }
+        ~NamingEvalGuard() { namingEvalClear(); }
+        NamingEvalGuard(const NamingEvalGuard &) = delete;
+        NamingEvalGuard &operator=(const NamingEvalGuard &) = delete;
+    };
 
 }
 
@@ -130,6 +185,122 @@ namespace {
     }
 
     const std::string &Naming::fingerprintString() const { return fingerprint_cached_; }
+
+    std::shared_ptr<Namelet> Naming::getLastNamelet() const {
+        if (namelets_.empty()) {
+            return nullptr;
+        }
+        return namelets_.back();
+    }
+
+    bool Naming::isReplaceable(const std::shared_ptr<Namelet> &namelet) const {
+        if (!namelet || namelets_.empty()) {
+            return false;
+        }
+        if (!namelet->isRefine()) {
+            return false;
+        }
+        return namelets_.back() == namelet;
+    }
+
+    Naming::NamingResult Naming::namingInternal(
+        gui_tree::GUITree &tree, const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) const {
+        NamingResult out;
+        if (!dom) {
+            return out;
+        }
+        std::unordered_map<gui_tree::GUITreeNode *, std::vector<NameletPtr>> node_to_namelets;
+        std::unordered_map<gui_tree::GUITreeNode *, gui_tree::GUITreeNodePtr> node_ref;
+        node_to_namelets.reserve(256);
+        node_ref.reserve(256);
+
+        for (const auto &nl : namelets_) {
+            if (!nl) continue;
+            std::vector<gui_tree::GUITreeNodePtr> matched = dom->nodesForXPath(nl->getExprString());
+            for (const auto &nptr : matched) {
+                if (!nptr) continue;
+                gui_tree::GUITreeNode *raw = nptr.get();
+                node_ref.emplace(raw, nptr);
+                node_to_namelets[raw].push_back(nl);
+            }
+        }
+
+        std::vector<gui_tree::GUITreeNode *> bfs_nodes;
+        bfs_nodes.reserve(256);
+        std::deque<gui_tree::GUITreeNode *> q;
+        if (tree.getRootNode()) q.push_back(tree.getRootNode());
+        while (!q.empty()) {
+            gui_tree::GUITreeNode *cur = q.front();
+            q.pop_front();
+            if (!cur) continue;
+            bfs_nodes.push_back(cur);
+            for (const auto &ch : cur->getChildren()) {
+                if (ch) q.push_back(ch.get());
+            }
+        }
+
+        std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> node_to_namer;
+        std::unordered_map<gui_tree::GUITreeNode *, NameletPtr> node_to_selected;
+        node_to_namer.reserve(bfs_nodes.size());
+        node_to_selected.reserve(bfs_nodes.size());
+        for (gui_tree::GUITreeNode *n : bfs_nodes) {
+            auto itNl = node_to_namelets.find(n);
+            if (itNl == node_to_namelets.end()) {
+                out.names.push_back(nullptr);
+                return out;
+            }
+            NameletPtr sel = selectNameletForNode(itNl->second);
+            node_to_selected[n] = sel;
+            if (sel && sel->getNamerPtr()) {
+                node_to_namer[n] = &sel->getNamer();
+            }
+        }
+        NamingEvalGuard namingEvalGuard(&node_to_namer);
+
+        struct Group {
+            NamePtr name;
+            std::vector<gui_tree::GUITreeNodePtr> nodes;
+            std::vector<NameletPtr> namelets;
+        };
+        std::unordered_map<std::string, Group> groups;
+        groups.reserve(bfs_nodes.empty() ? 64 : bfs_nodes.size());
+        for (gui_tree::GUITreeNode *raw : bfs_nodes) {
+            auto itNode = node_ref.find(raw);
+            if (itNode == node_ref.end()) {
+                out.names.push_back(nullptr);
+                return out;
+            }
+            gui_tree::GUITreeNodePtr nptr = itNode->second;
+            auto itSel = node_to_selected.find(raw);
+            NameletPtr selected = (itSel != node_to_selected.end()) ? itSel->second : nullptr;
+            if (!selected || !selected->getNamerPtr()) {
+                out.names.push_back(nullptr);
+                return out;
+            }
+            NamePtr name = selected->getNamer().naming(*nptr);
+            if (!name) {
+                out.names.push_back(nullptr);
+                return out;
+            }
+            const std::string key = name->toXPath();
+            Group &g = groups[key];
+            if (!g.name) g.name = std::move(name);
+            g.nodes.push_back(nptr);
+            g.namelets.push_back(selected);
+        }
+        std::vector<std::string> sorted_keys;
+        sorted_keys.reserve(groups.size());
+        for (const auto &kv : groups) sorted_keys.push_back(kv.first);
+        std::sort(sorted_keys.begin(), sorted_keys.end());
+        for (const auto &k : sorted_keys) {
+            auto it = groups.find(k);
+            if (it == groups.end() || !it->second.name) continue;
+            out.names.push_back(it->second.name);
+            out.node_groups.push_back(std::move(it->second.nodes));
+            out.namelet_groups.push_back(std::move(it->second.namelets));
+        }
+        return out;
+    }
 
 } // namespace naming
 } // namespace fastbotx

@@ -279,6 +279,44 @@ namespace fastbotx {
          */
         bool useApeNamingActionRefinementFirst() const { return _apeNamingActionRefinementFirst; }
 
+        /**
+         * Mirrors APE Config.enableReplacingNamelet: try Naming.replaceLast on the lattice leaf before extend.
+         * max.config: max.apeNamingEnableReplacingNamelet=true|false
+         */
+        bool useApeNamingEnableReplacingNamelet() const { return _apeNamingEnableReplacingNamelet; }
+
+        /**
+         * Mirrors APE Config.maxStatesPerActivity — NamingFactory.refine pre-check on activity state count.
+         * max.config: max.apeMaxStatesPerActivity=N
+         */
+        int getApeMaxStatesPerActivity() const { return _apeMaxStatesPerActivity; }
+
+        /**
+         * Mirrors APE Config.maxGUITreesPerState — Java refine second gate uses the same metric as the first
+         * (activity state count); kept for config parity with ape.properties.
+         * max.config: max.apeMaxGuitreesPerState=N
+         */
+        int getApeMaxGuitreesPerState() const { return _apeMaxGuitreesPerState; }
+
+        /**
+         * Mirrors APE Config.evolveModel: after a new state + XML, run over-abstracted action refinement
+         * (merged-widget analogue of resolvedNodes.length > threshold) before selectAction.
+         * Default false. max.config: max.apeEvolveModel=true|false
+         */
+        bool useApeEvolveModel() const { return _apeEvolveModel; }
+
+        /**
+         * Merged-widget count must exceed this to trigger evolveModel action refinement (Java: actionRefinmentThreshold).
+         * max.config: max.apeActionRefinementThreshold=N (default 1 → need at least 2 concretes)
+         */
+        int getApeActionRefinementThreshold() const { return _apeActionRefinementThreshold; }
+
+        /**
+         * Upper bound on StateKey sorted XPath count after rebuild (Java maxInitialNamesPerStateThreshold analogue).
+         * max.config: max.apeMaxInitialNamesPerState=N (clamped, default 256)
+         */
+        int getApeMaxInitialNamesPerState() const { return _apeMaxInitialNamesPerState; }
+
         bool isForceUseTextModel() const { return this->_forceUseTextModel; }
 
         int getForceMaxBlockStateTimes() const { return this->_forceMaxBlockStateTimes; }
@@ -444,6 +482,16 @@ namespace fastbotx {
         bool _apeNamingCandidateTransitionReplay{true};
         /// Default true, same as Java Config.actionRefinementFirst.
         bool _apeNamingActionRefinementFirst{true};
+        /// Default false, same as Java Config.enableReplacingNamelet.
+        bool _apeNamingEnableReplacingNamelet{false};
+        /// Default 10 / 20, same as Java Config.maxStatesPerActivity / maxGUITreesPerState.
+        int _apeMaxStatesPerActivity{10};
+        int _apeMaxGuitreesPerState{20};
+        /// Default off; Java Config.evolveModel drives preEvolveModel / actionRefinement on over-abstracted actions.
+        bool _apeEvolveModel{false};
+        /// Default 1: merged group size must be > 1 (i.e. ≥2 widgets) to trigger evolve refinement.
+        int _apeActionRefinementThreshold{1};
+        int _apeMaxInitialNamesPerState{256};
         // APE-aligned L-input normalization switches (WebView + clickable patch).
         bool _apeAlwaysIgnoreWebView{false};
         bool _apeAlwaysIgnoreWebViewAction{false};
