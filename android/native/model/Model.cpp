@@ -3402,54 +3402,132 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             return c;
         };
         const int nonDetPairs = countNonDetPairsByActivity(aSlot.sourceActivity);
-        if (nonDetPairs <= 0 || nowPairTargetCount < static_cast<size_t>(minTargets)) {
+        std::vector<uintptr_t> partnerTargets;
+        partnerTargets.reserve(nowPairTargetCount);
+        if (itPairAfter != _apePairAgg.end()) {
+            itPairAfter->second.targetCounts.forEach([&](uintptr_t h, int /*count*/) {
+                if (h != aSlot.targetKeyHash) {
+                    partnerTargets.push_back(h);
+                }
+            });
+        }
+        std::sort(partnerTargets.begin(), partnerTargets.end());
+        if (partnerTargets.empty()) {
+            BDLOG("ape naming: skip ND partner loop activity=%s reason=no_peer_targets srcKey=%lu act=%lu "
+                  "nstTarget=%lu distinctTargets=%zu",
+                  aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
+                  (unsigned long)pairKey.actionHash, (unsigned long)aSlot.targetKeyHash,
+                  nowPairTargetCount);
             return;
         }
-        ApeRefinePair rp;
-        rp.nstTransitionSeq = aSlot.transitionSeq;
-        rp.sourceKeyHash = pairKey.sourceKeyHash;
-        rp.hasSourceStateKey = aSlot.hasSourceStateKey;
-        rp.sourceStateKey = aSlot.sourceStateKey;
-        rp.actionHash = pairKey.actionHash;
-        rp.actionIdentity = aSlot.actionIdentity;
-        rp.targetCount = nowPairTargetCount;
-        BDLOG("ape naming: event refine-attempt activity=%s srcKey=%lu act=%lu targets=%zu nonDetPairs=%d",
-              aSlot.sourceActivity.c_str(), (unsigned long)rp.sourceKeyHash,
-              (unsigned long)rp.actionHash, rp.targetCount, nonDetPairs);
-        const std::string actKey = aSlot.sourceActivity;
-        if (refineActivityApeNaming(aSlot.sourceActivity, &rp, nonDetPairs)) {
-            _apeEventRefineSuccessCount++;
-            BDLOG("ape naming: event refine ok activity=%s srcKey=%lu act=%lu targets=%zu",
-                  aSlot.sourceActivity.c_str(), (unsigned long)rp.sourceKeyHash,
-                  (unsigned long)rp.actionHash, nowPairTargetCount);
-            if (coarsenActivityApeNamingIfNeeded(aSlot.sourceActivity)) {
-                _apeEventCoarsenRollbackCount++;
+
+        BDLOG("ape naming: event refine-attempt (APE resolveNonDeterminism partner loop) activity=%s "
+              "srcKey=%lu act=%lu nstTarget=%lu peerTargets=%zu nonDetPairs=%d",
+              aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
+              (unsigned long)pairKey.actionHash, (unsigned long)aSlot.targetKeyHash,
+              partnerTargets.size(), nonDetPairs);
+        ApeRefineFailReason failReason = ApeRefineFailReason::Other;
+        auto failReasonStr = [&](ApeRefineFailReason r) -> const char * {
+            switch (r) {
+            case ApeRefineFailReason::None:
+                return "none";
+            case ApeRefineFailReason::ActionBlacklisted:
+                return "action_blacklisted";
+            case ApeRefineFailReason::NoDefaultRootNaming:
+                return "no_default_root_naming";
+            case ApeRefineFailReason::MaxStatesPerActivity:
+                return "max_states_per_activity";
+            case ApeRefineFailReason::MaxGuitreesPerState:
+                return "max_guitrees_per_state";
+            case ApeRefineFailReason::PairTargetsInsufficient:
+                return "pair_targets_insufficient";
+            case ApeRefineFailReason::UnsupportedRefineRelation:
+                return "unsupported_refine_relation";
+            case ApeRefineFailReason::NoAcceptedCandidates:
+                return "no_accepted_candidates";
+            case ApeRefineFailReason::BranchPairsUnavailable:
+                return "branch_pairs_unavailable";
+            case ApeRefineFailReason::Other:
+            default: 
+                return "other";
             }
-            notifyAgentsOfApeNamingChange();
-        } else if (rp.actionHash != 0 && nowPairTargetCount >= static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) {
-            auto &blk = _apeRefineActionBlacklist[actKey];
-            const bool inserted = blk.insert(rp.actionHash).second;
+        };
+
+        bool namingChanged = false;
+        for (uintptr_t peerTarget : partnerTargets) {
+            ApeRefinePair rpPair;
+            rpPair.sourceKeyHash = pairKey.sourceKeyHash;
+            rpPair.nstTransitionSeq = aSlot.transitionSeq;
+            rpPair.hasSourceStateKey = aSlot.hasSourceStateKey;
+            rpPair.sourceStateKey = aSlot.sourceStateKey;
+            rpPair.actionHash = pairKey.actionHash;
+            rpPair.actionIdentity = aSlot.actionIdentity;
+            rpPair.targetKeyHashes.clear();
+            rpPair.targetKeyHashes.insert(peerTarget);
+            rpPair.targetKeyHashes.insert(aSlot.targetKeyHash);
+            rpPair.targetCount = 2;
+            failReason = ApeRefineFailReason::Other;
+            BDLOG("ape naming: ND refine try partner activity=%s srcKey=%lu act=%lu peerTarget=%lu nstTarget=%lu",
+                  aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
+                  (unsigned long)pairKey.actionHash, (unsigned long)peerTarget,
+                  (unsigned long)aSlot.targetKeyHash);
+            if (refineActivityApeNaming(aSlot.sourceActivity, &rpPair, nonDetPairs, &failReason)) {
+                _apeEventRefineSuccessCount++;
+                BDLOG("ape naming: event refine ok activity=%s srcKey=%lu act=%lu peerTarget=%lu nstTarget=%lu",
+                      aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
+                      (unsigned long)pairKey.actionHash, (unsigned long)peerTarget,
+                      (unsigned long)aSlot.targetKeyHash);
+                namingChanged = true;
+                break;
+            }
+        }
+        if (!namingChanged && failReason != ApeRefineFailReason::ActionBlacklisted &&
+            pairKey.actionHash != 0) {
+            size_t outStateTransitionsForAction = nowPairTargetCount;
+            if (itPairAfter != _apePairAgg.end()) {
+                outStateTransitionsForAction = itPairAfter->second.targetCounts.size();
+            }
+            const bool branchDataMissing =
+                (failReason == ApeRefineFailReason::BranchPairsUnavailable);
+            const bool ndBlacklistEligible =
+                !branchDataMissing &&
+                outStateTransitionsForAction >= static_cast<size_t>(kApeNDActionBlacklistMinOutEdges);
+            const bool inserted =
+                (ndBlacklistEligible && aSlot.actionIdentity != 0) &&
+                _apeRefineActionIdentityBlacklist.insert(aSlot.actionIdentity).second;
             apeCapApeNamingCoarsenAndRefineBlacklists();
-            BLOG("ape naming: NDActionBlacklist add (APE: out>=%d after failed resolve) activity=%s act=%lu targets=%zu",
-                 kApeNDActionBlacklistMinOutEdges, aSlot.sourceActivity.c_str(),
-                 (unsigned long)rp.actionHash, nowPairTargetCount);
-            if (shouldLogApeDiagSample(std::string("nd_blacklist_event_add#") + actKey, 25)) {
-                BLOG("ape naming: diag NDActionBlacklist[event] activity=%s act=%lu inserted=%d size=%zu targets=%zu nonDetPairs=%d",
-                     aSlot.sourceActivity.c_str(), (unsigned long)rp.actionHash, inserted ? 1 : 0,
-                     blk.size(), nowPairTargetCount, nonDetPairs);
+            if (inserted) {
+                BLOG("ape naming: NDActionBlacklist add (APE: out>=%d after failed resolve) activity=%s src=%lu act=%lu actId=%lu outTransitions=%zu failReason=%s",
+                     kApeNDActionBlacklistMinOutEdges, aSlot.sourceActivity.c_str(),
+                     (unsigned long)pairKey.sourceKeyHash, (unsigned long)pairKey.actionHash,
+                     (unsigned long)aSlot.actionIdentity, outStateTransitionsForAction,
+                     failReasonStr(failReason));
             }
-        } else {
-            BDLOG("ape naming: event refine failed activity=%s srcKey=%lu act=%lu targets=%zu "
-                  "(no ND blacklist: actZero=%d targetsBelowNdMin=%d)",
-                  aSlot.sourceActivity.c_str(), (unsigned long)rp.sourceKeyHash,
-                  (unsigned long)rp.actionHash, nowPairTargetCount,
-                  (rp.actionHash == 0) ? 1 : 0,
-                  (nowPairTargetCount < static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) ? 1 : 0);
+            BDLOG("ape naming: event refine failed activity=%s srcKey=%lu act=%lu targets=%zu reason=%s "
+                  "(ndBlacklistEligible=%d ndBlacklistInserted=%d actZero=%d outTransitions=%zu "
+                  "outBelowNdBlacklistMin=%d branchDataMissing=%d)",
+                  aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
+                  (unsigned long)pairKey.actionHash, nowPairTargetCount,
+                  failReasonStr(failReason), ndBlacklistEligible ? 1 : 0, inserted ? 1 : 0,
+                  (pairKey.actionHash == 0) ? 1 : 0, outStateTransitionsForAction,
+                  (outStateTransitionsForAction <
+                   static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) ? 1 : 0,
+                  branchDataMissing ? 1 : 0);
+        } else if (!namingChanged) {
+            BDLOG("ape naming: event refine failed activity=%s srcKey=%lu act=%lu targets=%zu reason=%s "
+                  "(ndBlacklistEligible=0 actZero=%d)",
+                  aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
+                  (unsigned long)pairKey.actionHash, nowPairTargetCount,
+                  failReasonStr(failReason), (pairKey.actionHash == 0) ? 1 : 0);
+        }
+
+        if (namingChanged) {
+            notifyAgentsOfApeNamingChange();
         }
     }
 
     void Model::apePairAggRemove(const ApeTransitionEntry &e) {
-        if (!e.valid || e.sourceKeyHash == e.targetKeyHash) {
+        if (!e.valid) {
             return;
         }
         ApePairKey pk{e.sourceKeyHash, e.actionHash};
@@ -3466,7 +3544,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
     }
 
     void Model::apePairAggAdd(const ApeTransitionEntry &e) {
-        if (!e.valid || e.sourceKeyHash == e.targetKeyHash) {
+        if (!e.valid) {
             return;
         }
         ApePairKey pk{e.sourceKeyHash, e.actionHash};
@@ -3479,7 +3557,8 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
     }
 
-    void Model::apeEvidencePoolAdd(const ApePairKey &pairKey, const ApeTransitionEntry &e) {
+    void Model::apeEvidencePoolAdd(const ApePairKey &pairKey, const ApeTransitionEntry &e,
+                                   const std::string *sourceXmlSnapshot) {
         if (!e.valid || pairKey.sourceKeyHash == 0 || pairKey.actionHash == 0) {
             return;
         }
@@ -3487,6 +3566,18 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
 
         ApeEvidenceSample s;
         s.sourceStateHash = e.sourceStateHash;
+        if (sourceXmlSnapshot && !sourceXmlSnapshot->empty()) {
+            s.sourceXml = *sourceXmlSnapshot;
+        } else {
+            auto itXml = _apeStateXmlByStateHash.find(e.sourceStateHash);
+            if (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty()) {
+                s.sourceXml = itXml->second;
+                BDLOG("ape evidence: fallback_source_xml activity=%s srcState=%zu seq=%llu pair=(%zu,%zu)",
+                      e.sourceActivity.c_str(), e.sourceStateHash,
+                      static_cast<unsigned long long>(e.transitionSeq),
+                      pairKey.sourceKeyHash, pairKey.actionHash);
+            }
+        }
         s.targetStateHash = e.targetStateHash;
         s.targetKeyHash = e.targetKeyHash;
         s.actionType = e.actionType;
@@ -3499,6 +3590,8 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         if (epoch == 0) {
             epoch = ++_apeEvidenceEpoch;
         }
+        s.sourceTransitionSeq = e.transitionSeq;
+        s.sourceTreeHash = s.sourceXml.empty() ? 0 : fastStringHash(s.sourceXml);
 
         auto it = _apeEvidencePools.find(pairKey);
         if (it == _apeEvidencePools.end()) {
@@ -3563,6 +3656,11 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 slot.valid = false;
             }
         }
+        for (auto &slot : _apeTreeTransitionLog) {
+            if (slot.valid && slot.sourceActivity == actKeyCanonical) {
+                slot.valid = false;
+            }
+        }
         for (auto it = _apePairAgg.begin(); it != _apePairAgg.end();) {
             if (it->second.sourceActivity == actKeyCanonical) {
                 it = _apePairAgg.erase(it);
@@ -3590,6 +3688,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         ApeMiniHistoryTransition t;
         t.sourceStateHash = e.sourceStateHash;
         t.targetStateHash = e.targetStateHash;
+        t.actionHash = e.actionHash;
         t.actionType = e.actionType;
         t.hasTargetBounds = e.hasTargetBounds;
         t.targetBounds = e.targetBounds;
@@ -3599,7 +3698,8 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         h.pushTransition(t);
     }
 
-    void Model::apeInsertTransitionEntryNoRefine(const ApeTransitionEntry &e) {
+    void Model::apeInsertTransitionEntryNoRefine(const ApeTransitionEntry &e,
+                                                 const TreeTransitionEntry *treeMeta) {
         if (!e.valid || _apeTransitionLog.empty()) {
             return;
         }
@@ -3609,8 +3709,37 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
         slot = e;
         apePairAggAdd(slot);
-        apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot);
+        const std::string *slotSrcXmlSnapshot = slot.sourceXmlSnapshot.empty()
+            ? nullptr
+            : &slot.sourceXmlSnapshot;
+        apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot,
+                           slotSrcXmlSnapshot);
+        TreeTransitionEntry treeSlot;
+        treeSlot.transitionSeq = slot.transitionSeq;
+        treeSlot.sourceStateHash = slot.sourceStateHash;
+        treeSlot.targetStateHash = slot.targetStateHash;
+        treeSlot.actionHash = slot.actionHash;
+        treeSlot.actionType = slot.actionType;
+        if (treeMeta) {
+            treeSlot.resolvedNodeStableIds = treeMeta->resolvedNodeStableIds;
+        }
+        treeSlot.hasTargetBounds = slot.hasTargetBounds;
+        treeSlot.targetBounds = slot.targetBounds;
+        treeSlot.hasTargetFullPath = slot.hasTargetFullPath;
+        treeSlot.targetFullPathHash = slot.targetFullPathHash;
+        treeSlot.sourceActivity = slot.sourceActivity;
+        treeSlot.valid = true;
+        apeInsertTreeTransitionNoRefine(treeSlot);
         _apeTransitionLogWriteIndex = (_apeTransitionLogWriteIndex + 1) % _apeTransitionLog.size();
+    }
+
+    void Model::apeInsertTreeTransitionNoRefine(const TreeTransitionEntry &e) {
+        if (!e.valid || _apeTreeTransitionLog.empty()) {
+            return;
+        }
+        _apeTreeTransitionLog[_apeTreeTransitionLogWriteIndex] = e;
+        _apeTreeTransitionLogWriteIndex =
+            (_apeTreeTransitionLogWriteIndex + 1) % _apeTreeTransitionLog.size();
     }
 
     bool Model::apeLocalRebuildFromHistoryIfNeeded(const std::string &activityKeyCanonical,
@@ -3659,18 +3788,38 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         if (!_graph || activityKeyCanonical.empty()) {
             return false;
         }
-        if (!_preference || !_preference->useApeNamingCandidateTransitionReplay()) {
-            return false;
-        }
-        const bool wantApeRlIdentity = !_preference->useStaticReuseAbstraction();
+        const bool wantApeRlIdentity = (_preference == nullptr) ||
+                                       !_preference->useStaticReuseAbstraction();
         if (!wantApeRlIdentity) {
             return false;
         }
-        auto itH = _apeMiniHistoryByActivity.find(activityKeyCanonical);
-        if (itH == _apeMiniHistoryByActivity.end()) {
+
+        // Snapshot stale-state-driven XML/transition history before clearing states.
+        naming::NamingPtr curNaming = _apeStateNamingManager
+            ? _apeStateNamingManager->activityManager().getNaming(activityKeyCanonical)
+            : nullptr;
+        const std::string currentFp = curNaming ? curNaming->fingerprintString() : std::string();
+        if (currentFp.empty()) {
             return false;
         }
-        const ApeMiniHistory &hist = itH->second;
+
+        std::unordered_set<uintptr_t> staleStateHashes;
+        staleStateHashes.reserve(128);
+        for (const auto &kv : _ape_state_keys_by_hash) {
+            const uintptr_t sh = kv.first;
+            for (const auto &k : kv.second) {
+                if (k.activity() != activityKeyCanonical) {
+                    continue;
+                }
+                if (k.namingFingerprint() != currentFp) {
+                    staleStateHashes.insert(sh);
+                }
+                break;
+            }
+        }
+        if (staleStateHashes.empty()) {
+            return false;
+        }
 
         // Snapshot minimal XML history before clearing states.
         std::unordered_map<uintptr_t, std::string> xmlByOldStateHash;
@@ -3688,48 +3837,83 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             }
             xmlByOldStateHash.emplace(sh, itX->second);
         };
-        for (uintptr_t sh : hist.stateHashes) {
+        std::vector<TreeTransitionEntry> transitionsToReplay;
+        transitionsToReplay.reserve(128);
+        for (uintptr_t sh : staleStateHashes) {
             snapXml(sh);
         }
-        for (const auto &t : hist.transitions) {
-            if (!t.valid) {
+        for (const auto &e : _apeTreeTransitionLog) {
+            if (!e.valid || e.sourceActivity != activityKeyCanonical) {
                 continue;
             }
-            snapXml(t.sourceStateHash);
-            snapXml(t.targetStateHash);
+            if (staleStateHashes.count(e.sourceStateHash) == 0 &&
+                staleStateHashes.count(e.targetStateHash) == 0) {
+                continue;
+            }
+            transitionsToReplay.push_back(e);
+            snapXml(e.sourceStateHash);
+            snapXml(e.targetStateHash);
         }
         if (xmlByOldStateHash.empty()) {
             return false;
         }
 
-        std::vector<std::string> xmlList;
-        xmlList.reserve(32);
-        std::unordered_set<uintptr_t> seenXmlHash;
-        seenXmlHash.reserve(64);
-        for (const auto &kv : xmlByOldStateHash) {
-            const std::string &xml = kv.second;
-            const uintptr_t xh = fastStringHash(xml);
-            if (seenXmlHash.insert(xh).second) {
-                xmlList.push_back(xml);
-                if (xmlList.size() >= 24) {
-                    break;
-                }
-            }
+        // Remove all states for this activity.
+        AbstractAgentPtr agent = getOrCreateAgent(ModelConstants::DefaultDeviceID);
+        if (!agent) {
+            return false;
         }
-        if (xmlList.empty()) {
+        stringPtr activityPtr = getOrCreateActivityPtr(activityKeyCanonical);
+
+        struct PreparedRebuildState {
+            uintptr_t oldStateHash{0};
+            std::string xml;
+            ElementPtr elemSnapshot;
+            StatePtr built;
+            bool haveApeKey{false};
+            naming::StateKey apeKey = naming::StateKey::fromParts("", nullptr, {});
+        };
+
+        std::vector<PreparedRebuildState> preparedStates;
+        preparedStates.reserve(xmlByOldStateHash.size());
+        for (const auto &kv : xmlByOldStateHash) {
+            const uintptr_t oldStateHash = kv.first;
+            const std::string &xml = kv.second;
+
+            ElementPtr elem = Element::createFromXml(xml);
+            if (!elem) {
+                continue;
+            }
+            StatePtr built = buildStateOnly(elem, agent, activityPtr);
+            if (!built) {
+                continue;
+            }
+
+            PreparedRebuildState ps;
+            ps.oldStateHash = oldStateHash;
+            ps.xml = xml;
+            ps.elemSnapshot = elem;
+            ps.built = built;
+            ps.apeKey = naming::StateKey::fromParts(activityKeyCanonical, nullptr, {});
+            ps.haveApeKey = buildApeStateKeyFromElementTree(
+                elem, activityKeyCanonical, &ps.apeKey, nullptr, built);
+            if (ps.haveApeKey) {
+                ps.built->applyDynamicAbstractionIdentityHash(ps.apeKey.hash());
+            }
+            preparedStates.push_back(std::move(ps));
+        }
+        if (preparedStates.empty()) {
             return false;
         }
 
-        // Remove all states for this activity.
+        // Two-phase commit: prepare rebuilt states first, then replace stale states atomically.
         std::unordered_set<uintptr_t> toRemove;
-        toRemove.reserve(128);
-        for (const auto &kv : _ape_state_keys_by_hash) {
-            const uintptr_t sh = kv.first;
-            for (const auto &k : kv.second) {
-                if (k.activity() == activityKeyCanonical) {
-                    toRemove.insert(sh);
-                    break;
-                }
+        toRemove = staleStateHashes;
+        std::unordered_map<uintptr_t, StatePtr> existingStateByHash;
+        existingStateByHash.reserve(256);
+        for (const auto &s : _graph->getStates()) {
+            if (s) {
+                existingStateByHash[s->hash()] = s;
             }
         }
         for (const auto &s : _graph->getStates()) {
@@ -3743,75 +3927,94 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             }
         }
         _graph->removeStatesByHash(toRemove);
+        // Graph apeNaming index: already cleared in Graph::removeStatesByHash per removed StatePtr.
         for (uintptr_t sh : toRemove) {
             _ape_state_keys_by_hash.erase(sh);
             _apeGuiTreeNamingBlacklist.erase(sh);
+            _apeStateElementByStateHash.erase(sh);
             _apeStateXmlByStateHash.erase(sh);
         }
-        apeClearTransitionAggregationForActivity(activityKeyCanonical);
+        for (auto &slot : _apeTransitionLog) {
+            if (!slot.valid) {
+                continue;
+            }
+            if (toRemove.count(slot.sourceStateHash) == 0 &&
+                toRemove.count(slot.targetStateHash) == 0) {
+                continue;
+            }
+            _apeEvidencePools.erase(ApePairKey{slot.sourceKeyHash, slot.actionHash});
+            apePairAggRemove(slot);
+            slot.valid = false;
+        }
+        for (auto &slot : _apeTreeTransitionLog) {
+            if (!slot.valid) {
+                continue;
+            }
+            if (toRemove.count(slot.sourceStateHash) == 0 &&
+                toRemove.count(slot.targetStateHash) == 0) {
+                continue;
+            }
+            slot.valid = false;
+        }
+        
 
         // Reset history to track rebuilt state hashes.
         _apeMiniHistoryByActivity[activityKeyCanonical] = ApeMiniHistory{};
         ApeMiniHistory &newHist = _apeMiniHistoryByActivity[activityKeyCanonical];
 
-        AbstractAgentPtr agent = getOrCreateAgent(ModelConstants::DefaultDeviceID);
-        if (!agent) {
-            return false;
-        }
-        stringPtr activityPtr = getOrCreateActivityPtr(activityKeyCanonical);
-
-        std::unordered_map<uintptr_t, StatePtr> stateByXmlHash;
-        stateByXmlHash.reserve(xmlList.size() * 2);
-        for (const std::string &xml : xmlList) {
-            ElementPtr elem = Element::createFromXml(xml);
-            if (!elem) {
-                continue;
+        std::unordered_map<uintptr_t, StatePtr> rebuiltStateByOldHash;
+        rebuiltStateByOldHash.reserve(preparedStates.size() * 2);
+        for (const auto &ps : preparedStates) {
+            StatePtr canonical = _graph->addState(ps.built);
+            if (ps.haveApeKey) {
+                recordApeStateKey(canonical, ps.apeKey);
             }
-            StatePtr built = buildStateOnly(elem, agent, activityPtr);
-            if (!built) {
-                continue;
+            _apeStateXmlByStateHash[canonical->hash()] = ps.xml;
+            if (ps.elemSnapshot) {
+                _apeStateElementByStateHash[canonical->hash()] = ps.elemSnapshot;
             }
-            naming::StateKey apeKey = naming::StateKey::fromParts(activityKeyCanonical, nullptr, {});
-            const bool haveKey =
-                buildApeStateKeyFromElementTree(elem, activityKeyCanonical, &apeKey, nullptr, built);
-            if (haveKey) {
-                built->applyDynamicAbstractionIdentityHash(apeKey.hash());
-            }
-            StatePtr canonical = _graph->addState(built);
-            if (haveKey) {
-                recordApeStateKey(canonical, apeKey);
-            }
-            _apeStateXmlByStateHash[canonical->hash()] = xml;
             newHist.touchState(canonical->hash());
-            stateByXmlHash[fastStringHash(xml)] = canonical;
+            rebuiltStateByOldHash[ps.oldStateHash] = canonical;
         }
 
-        for (const auto &t : hist.transitions) {
+        size_t replayTotal = 0;
+        size_t replayMissingXml = 0;
+        size_t replayMissingState = 0;
+        size_t replayActionNoMatch = 0;
+        size_t replayActionHashExact = 0;
+        size_t replayInserted = 0;
+
+        for (const auto &t : transitionsToReplay) {
             if (!t.valid) {
                 continue;
             }
-            auto itSx = xmlByOldStateHash.find(t.sourceStateHash);
-            auto itTx = xmlByOldStateHash.find(t.targetStateHash);
-            if (itSx == xmlByOldStateHash.end() || itTx == xmlByOldStateHash.end()) {
+            replayTotal++;
+            auto its = rebuiltStateByOldHash.find(t.sourceStateHash);
+            auto itt = rebuiltStateByOldHash.find(t.targetStateHash);
+            if (its == rebuiltStateByOldHash.end()) {
+                auto itExisting = existingStateByHash.find(t.sourceStateHash);
+                if (itExisting != existingStateByHash.end() && toRemove.count(t.sourceStateHash) == 0) {
+                    its = rebuiltStateByOldHash.insert({t.sourceStateHash, itExisting->second}).first;
+                }
+            }
+            if (itt == rebuiltStateByOldHash.end()) {
+                auto itExisting = existingStateByHash.find(t.targetStateHash);
+                if (itExisting != existingStateByHash.end() && toRemove.count(t.targetStateHash) == 0) {
+                    itt = rebuiltStateByOldHash.insert({t.targetStateHash, itExisting->second}).first;
+                }
+            }
+            if (its == rebuiltStateByOldHash.end() || itt == rebuiltStateByOldHash.end()) {
+                replayMissingXml++;
                 continue;
             }
-            StatePtr srcState = nullptr;
-            StatePtr tgtState = nullptr;
-            {
-                const uintptr_t hs = fastStringHash(itSx->second);
-                auto it = stateByXmlHash.find(hs);
-                if (it != stateByXmlHash.end()) {
-                    srcState = it->second;
-                }
-            }
-            {
-                const uintptr_t ht = fastStringHash(itTx->second);
-                auto it = stateByXmlHash.find(ht);
-                if (it != stateByXmlHash.end()) {
-                    tgtState = it->second;
-                }
-            }
+            StatePtr srcState = its->second;
+            StatePtr tgtState = itt->second;
             if (!srcState || !tgtState) {
+                replayMissingState++;
+                continue;
+            }
+            if (t.actionHash == 0) {
+                replayActionNoMatch++;
                 continue;
             }
 
@@ -3821,67 +4024,93 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 if (!asa) {
                     continue;
                 }
-                if (asa->getActionType() != t.actionType) {
-                    continue;
+                if (asa->hash() == t.actionHash) {
+                    matchedAction = asa;
+                    break;
                 }
-                if (t.hasTargetBounds) {
-                    auto w = asa->getTarget();
-                    if (!w || !w->getBounds() || !(*w->getBounds() == t.targetBounds)) {
-                        continue;
-                    }
-                }
-                if (t.hasTargetFullPath) {
-                    auto ana = std::dynamic_pointer_cast<ActivityNameAction>(asa);
-                    if (ana && ana->getApeDynamicTargetFullPathHash() != t.targetFullPathHash) {
-                        continue;
-                    }
-                }
-                matchedAction = asa;
-                break;
             }
             if (!matchedAction) {
+                replayActionNoMatch++;
+                continue;
+            }
+            if (matchedAction->hash() == t.actionHash) {
+                replayActionHashExact++;
+            }
+
+            naming::StateKey srcKey = naming::StateKey::fromParts("", nullptr, {});
+            naming::StateKey tgtKey = naming::StateKey::fromParts("", nullptr, {});
+            auto srcAp = srcState->getActivityString();
+            auto tgtAp = tgtState->getActivityString();
+            const std::string srcAct =
+                (srcAp && srcAp.get()) ? naming::StateKey::canonicalActivityString(*srcAp) : std::string();
+            const std::string tgtAct =
+                (tgtAp && tgtAp.get()) ? naming::StateKey::canonicalActivityString(*tgtAp) : std::string();
+            if (!tryGetApeStateKey(srcState->hash(), &srcKey, srcAct) ||
+                !tryGetApeStateKey(tgtState->hash(), &tgtKey, tgtAct)) {
                 continue;
             }
 
-            naming::StateKey srcKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
-            naming::StateKey tgtKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
-            if (!tryGetApeStateKey(srcState->hash(), &srcKey) ||
-                !tryGetApeStateKey(tgtState->hash(), &tgtKey)) {
-                continue;
+            ApeTransitionEntry edge;
+            edge.sourceKeyHash = srcKey.hash();
+            edge.hasSourceStateKey = true;
+            edge.sourceStateKey = srcKey;
+            edge.actionHash = matchedAction->hash();
+            edge.actionIdentity = reinterpret_cast<uintptr_t>(matchedAction.get());
+            edge.targetKeyHash = tgtKey.hash();
+            edge.hasTargetStateKey = true;
+            edge.targetStateKey = tgtKey;
+            edge.sourceStateHash = srcState->hash();
+            edge.targetStateHash = tgtState->hash();
+            edge.transitionSeq = t.transitionSeq;
+            auto itSrcXml = xmlByOldStateHash.find(t.sourceStateHash);
+            if (itSrcXml != xmlByOldStateHash.end()) {
+                edge.sourceXmlSnapshot = itSrcXml->second;
             }
-
-            ApeTransitionEntry e;
-            e.sourceKeyHash = srcKey.hash();
-            e.hasSourceStateKey = true;
-            e.sourceStateKey = srcKey;
-            e.actionHash = matchedAction->hash();
-            e.targetKeyHash = tgtKey.hash();
-            e.hasTargetStateKey = true;
-            e.targetStateKey = tgtKey;
-            e.sourceStateHash = srcState->hash();
-            e.targetStateHash = tgtState->hash();
-            e.actionType = matchedAction->getActionType();
-            e.hasTargetBounds = t.hasTargetBounds;
-            e.targetBounds = t.targetBounds;
-            e.hasTargetFullPath = t.hasTargetFullPath;
-            e.targetFullPathHash = t.targetFullPathHash;
-            e.sourceActivity = activityKeyCanonical;
-            e.valid = true;
-            apeInsertTransitionEntryNoRefine(e);
+            edge.actionType = matchedAction->getActionType();
+            edge.hasTargetBounds = t.hasTargetBounds;
+            edge.targetBounds = t.targetBounds;
+            edge.hasTargetFullPath = t.hasTargetFullPath;
+            edge.targetFullPathHash = t.targetFullPathHash;
+            edge.sourceActivity = activityKeyCanonical;
+            edge.valid = true;
+            apeInsertTransitionEntryNoRefine(edge, &t);
+            replayInserted++;
         }
 
+        BLOG("ape naming: local rebuild done activity=%s xmlSnapshots=%zu preparedStates=%zu "
+             "removedStates=%zu replay(total=%zu inserted=%zu missingXml=%zu missingState=%zu "
+             "actionNoMatch=%zu actionHashExact=%zu)",
+             activityKeyCanonical.c_str(), xmlByOldStateHash.size(), preparedStates.size(),
+             toRemove.size(), replayTotal, replayInserted, replayMissingXml, replayMissingState,
+             replayActionNoMatch, replayActionHashExact);
         notifyAgentsOfApeNamingChange();
         return true;
 #endif
     }
 
     void Model::notifyAgentsOfApeNamingChange() {
+        ++_apeStructuralVersion;
+        if (_graph) {
+            _graph->syncApeStructuralEpoch(_apeStructuralVersion);
+        }
+        BDLOG("ape naming: structural_version=%llu graphId=%s (APE Model.version / Graph.setVersion)",
+              (unsigned long long)_apeStructuralVersion,
+              _graph ? _graph->getStructureId().c_str() : "-");
         for (const auto &kv : _deviceIDAgentMap) {
             if (kv.second) {
                 kv.second->onStateAbstractionChanged();
             }
         }
         _apeInvalidatedReuseActionHashes.clear();
+        // Validate allNewActions again after model/naming rebuild (coarsen, over-refine, ND).
+        if (_apeLastScreenStateForValidate) {
+            const StatePtr s = _apeLastScreenStateForValidate;
+            for (const auto &kv : _deviceIDAgentMap) {
+                if (kv.second) {
+                    kv.second->validateAllNewActionsLikeApe(s);
+                }
+            }
+        }
     }
 
     size_t Model::getApeStateCountByActivityAndNamingFingerprint(
@@ -3906,35 +4135,57 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         return count;
     }
 
-    void Model::pruneStaleApeStatesForActivity(const std::string &activityKeyCanonical,
-                                               const std::string &staleNamingFingerprint,
-                                               const std::unordered_set<uintptr_t> *affectedStateHashes) {
-        if (!_graph || activityKeyCanonical.empty() || staleNamingFingerprint.empty()) {
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+    void Model::apeRememberGuiTreeSnapshot(uintptr_t stateHash, const gui_tree::GUITree &tree) {
+        gui_tree::GUITreePtr copy = gui_tree::GUITree::cloneDeep(tree);
+        if (!copy || stateHash == 0) {
             return;
         }
-        std::unordered_set<uintptr_t> staleStateHashes;
-        staleStateHashes.reserve(64);
-        const bool filterActive = (affectedStateHashes && !affectedStateHashes->empty());
-        for (const auto &kv : _ape_state_keys_by_hash) {
-            const uintptr_t stateHash = kv.first;
-            if (filterActive && affectedStateHashes->count(stateHash) == 0) {
-                continue;
+
+        auto &dq = _apeGuiTreeSnapshotsByStateHash[stateHash];
+        dq.push_back(std::move(copy));
+        while (!dq.empty() && dq.size() > kMaxApeGuiTreeSnapshotsPerState) {
+            if (_apeStateNamingManager && dq.front()) {
+                _apeStateNamingManager->releaseTreeCache(*dq.front());
             }
-            const auto &bucket = kv.second;
-            bool match = false;
-            for (const auto &k : bucket) {
-                if (k.activity() == activityKeyCanonical && k.namingFingerprint() == staleNamingFingerprint) {
-                    match = true;
-                    break;
-                }
-            }
-            if (match) {
-                staleStateHashes.insert(stateHash);
+            dq.pop_front();
+        }
+    }
+
+    gui_tree::GUITreePtr Model::apeLatestGuiTreeSnapshot(uintptr_t stateHash) const {
+        auto it = _apeGuiTreeSnapshotsByStateHash.find(stateHash);
+        if (it == _apeGuiTreeSnapshotsByStateHash.end() || it->second.empty()) {
+            return nullptr;
+        }
+        return it->second.back();
+    }
+
+    gui_tree::GUITreePtr Model::apeGuiTreeSnapshotForExactCachedXml(const std::string &xml) const {
+        if (xml.empty()) {
+            return nullptr;
+        }
+        for (const auto &kv : _apeStateXmlByStateHash) {
+            if (kv.second == xml) {
+                return apeLatestGuiTreeSnapshot(kv.first);
             }
         }
-        if (staleStateHashes.empty()) {
+        return nullptr;
+    }
+#endif
+
+namespace {
+    // Shared cleanup for any per-activity state prune: drops graph states + sidecar caches for the
+    // given hash set, preserving mini-history-referenced XML for later local rebuild. Implemented as
+    // a member-style helper via explicit parameters so it can be called from both the fingerprint-
+}
+
+    void Model::pruneApeStatesByStateHashesCommon(const std::string &activityKeyCanonical,
+                                                  std::unordered_set<uintptr_t> &staleStateHashes,
+                                                  const char *reasonTag) {
+        if (staleStateHashes.empty() || !_graph) {
             return;
         }
+
         // Collect action hashes from stale states (pre-prune) so agents can invalidate
         // hash-keyed caches without globally clearing all learned experience.
         for (const auto &s : _graph->getStates()) {
@@ -3947,6 +4198,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 }
             }
         }
+
         const size_t removedFromGraph = _graph->removeStatesByHash(staleStateHashes);
         (void)removedFromGraph;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
@@ -3978,17 +4230,96 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             return false;
         };
 #endif
+
         for (uintptr_t sh : staleStateHashes) {
             _ape_state_keys_by_hash.erase(sh);
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
             if (!shouldKeepXml(sh)) {
+                _apeStateElementByStateHash.erase(sh);
                 _apeStateXmlByStateHash.erase(sh);
             }
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+            auto itSnap = _apeGuiTreeSnapshotsByStateHash.find(sh);
+            if (itSnap != _apeGuiTreeSnapshotsByStateHash.end() && _apeStateNamingManager) {
+                for (const auto &snap : itSnap->second) {
+                    if (snap) {
+                        _apeStateNamingManager->releaseTreeCache(*snap);
+                    }
+                }
+            }
+            _apeGuiTreeSnapshotsByStateHash.erase(sh);
+#endif
 #endif
             _apeGuiTreeNamingBlacklist.erase(sh);
         }
-        BLOG("ape naming: pruned %zu stale states for activity=%s fp=%s", staleStateHashes.size(),
-             activityKeyCanonical.c_str(), staleNamingFingerprint.c_str());
+        BLOG("ape naming: %s pruned=%zu activity=%s",
+             reasonTag ? reasonTag : "prune", staleStateHashes.size(), activityKeyCanonical.c_str());
+    }
+
+    void Model::pruneStaleApeStatesForActivity(const std::string &activityKeyCanonical,
+                                               const std::string &staleNamingFingerprint,
+                                               const std::unordered_set<uintptr_t> *affectedStateHashes) {
+        if (!_graph || activityKeyCanonical.empty() || staleNamingFingerprint.empty()) {
+            return;
+        }
+        (void)affectedStateHashes;
+        std::unordered_set<uintptr_t> staleStateHashes;
+        staleStateHashes.reserve(64);
+        for (const auto &kv : _ape_state_keys_by_hash) {
+            const uintptr_t stateHash = kv.first;
+            const auto &bucket = kv.second;
+            bool match = false;
+            for (const auto &k : bucket) {
+                if (k.activity() == activityKeyCanonical && k.namingFingerprint() == staleNamingFingerprint) {
+                    match = true;
+                    break;
+                }
+            }
+            if (match) {
+                staleStateHashes.insert(stateHash);
+            }
+        }
+        if (staleStateHashes.empty()) {
+            return;
+        }
+        pruneApeStatesByStateHashesCommon(activityKeyCanonical, staleStateHashes, "stale-fp-prune");
+    }
+
+    void Model::pruneDivergentApeStatesForActivity(const std::string &activityKeyCanonical) {
+        if (!_graph || activityKeyCanonical.empty() || !_apeStateNamingManager) {
+            return;
+        }
+        naming::ActivityNamingManager &mgr = _apeStateNamingManager->activityManager();
+        const naming::NamingPtr cur = mgr.getNaming(activityKeyCanonical);
+        if (!cur) {
+            return;
+        }
+        const std::string currentFp = cur->fingerprintString();
+        if (currentFp.empty()) {
+            return;
+        }
+        std::unordered_set<uintptr_t> staleStateHashes;
+        staleStateHashes.reserve(64);
+        for (const auto &kv : _ape_state_keys_by_hash) {
+            const auto &bucket = kv.second;
+            bool hasStaleEntryForActivity = false;
+            for (const auto &k : bucket) {
+                if (k.activity() != activityKeyCanonical) {
+                    continue;
+                }
+                if (k.namingFingerprint() != currentFp) {
+                    hasStaleEntryForActivity = true;
+                    break;
+                }
+            }
+            if (hasStaleEntryForActivity) {
+                staleStateHashes.insert(kv.first);
+            }
+        }
+        if (staleStateHashes.empty()) {
+            return;
+        }
+        pruneApeStatesByStateHashesCommon(activityKeyCanonical, staleStateHashes, "divergent-fp-prune");
     }
 
     bool Model::evalApeGuiTreeNamingBlacklist(const std::vector<uintptr_t> &stateHashes,
@@ -4004,6 +4335,611 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             }
         }
         return true;
+    }
+
+    #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+
+    #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        naming::NamingPtr Model::apeNamingResolvedViaTreeWalk(const std::string &activity, uintptr_t *stateHash) {
+            const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+            if (!_apeStateNamingManager) {
+                return naming::NamingFactory::defaultRootNaming();
+            }
+            naming::ActivityNamingManager &mgr = _apeStateNamingManager->activityManager();
+            if (stateHash == 0) {
+                naming::NamingPtr cur = mgr.getNaming(actKey);
+                return cur ? cur : naming::NamingFactory::defaultRootNaming();
+            }
+            auto itXml = _apeStateXmlByStateHash.find(stateHash);
+            if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
+                naming::NamingPtr cur = mgr.getNaming(actKey);
+                return cur ? cur : naming::NamingFactory::defaultRootNaming();
+            }
+            std::string pkg;
+            std::string cls;
+            naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
+            gui_tree::GUITreeBuildResult built;
+            if (gui_tree::GUITreePtr snap = apeLatestGuiTreeSnapshot(*stateHash)) {
+                built = buildGuitreePreferApeSnapshotAndDomXml(itXml->second, pkg, cls, snap);
+            } else {
+                built = buildGuitreeFromCachedXmlPreferElement(itXml->second, pkg, cls);
+            }
+            if (!built.tree) {
+                naming::NamingPtr cur = mgr.getNaming(actKey);
+                return cur ? cur : naming::NamingFactory::defaultRootNaming();
+            }
+            naming::NamingPtr resolved = _apeStateNamingManager->treeToNaming(*built.tree);
+            if (resolved) {
+                return resolved;
+            }
+            naming::NamingPtr cur = mgr.getNaming(actKey);
+            return cur ? cur : naming::NamingFactory::defaultRootNaming();
+        }
+    #else
+        naming::NamingPtr Model::apeNamingResolvedViaTreeWalk(const std::string &activity, uintptr_t /*stateHash*/) {
+            const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+            if (!_apeStateNamingManager) {
+                return naming::NamingFactory::defaultRootNaming();
+            }
+            naming::NamingPtr cur = _apeStateNamingManager->activityManager().getNaming(actKey);
+            return cur ? cur : naming::NamingFactory::defaultRootNaming();
+        }
+    #endif
+    
+    #endif
+
+
+    bool Model::evalApeActionRefinementPredicates(const std::string &activity, const naming::NamingPtr &naming,
+                                                  const std::vector<gui_tree::GUITreePtr> *affectedSourceTrees) {
+        if (!naming) {
+            return false;
+        }
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        return true;
+#else
+        std::string pkg;
+        std::string cls;
+        naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
+        std::unordered_set<const gui_tree::GUITree *> affectedTreeObjects;
+        if (affectedSourceTrees) {
+            affectedTreeObjects.reserve(affectedSourceTrees->size());
+            for (const auto &t : *affectedSourceTrees) {
+                if (t) {
+                    affectedTreeObjects.insert(t.get());
+                }
+            }
+        }
+        auto activityNamingOnly = [&]() -> naming::NamingPtr {
+            if (_apeStateNamingManager) {
+                naming::NamingPtr cur = _apeStateNamingManager->activityManager().getNaming(actKey);
+                return cur ? cur : naming;
+            }
+            return naming;
+        };
+        auto namingForApePredicateEval = [&](const gui_tree::GUITreePtr &tree) -> naming::NamingPtr {
+            if (tree && !affectedTreeObjects.empty() &&
+                affectedTreeObjects.find(tree.get()) != affectedTreeObjects.end()) {
+                return naming;
+            }
+            if (tree && _apeStateNamingManager) {
+                naming::NamingPtr t = _apeStateNamingManager->treeToNaming(*tree);
+                if (t) {
+                    return t;
+                }
+            }
+            return activityNamingOnly();
+        };
+
+        auto itStates = _apeStatesFewerThanPredicates.find(actKey);
+        if (itStates != _apeStatesFewerThanPredicates.end()) {
+            for (const ApeStatesFewerThanPredicate &pred : itStates->second) {
+                if (pred.threshold <= 0) {
+                    continue;
+                }
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+                if (pred.stateHashes.empty() && pred.sourceTrees.empty()) {
+#else
+                if (pred.stateHashes.empty()) {
+#endif
+                    continue;
+                }
+
+                std::unordered_set<uintptr_t> uniqueStates;
+                uniqueStates.reserve(pred.stateHashes.size());
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+                if (!pred.sourceTrees.empty()) {
+                    for (const auto &sourceTree : pred.sourceTrees) {
+                        gui_tree::GUITreeBuildResult built =
+                            buildGuitreeFromSnapshotObjectOrCachedXml("", pkg, cls, sourceTree);
+                        if (!built.tree || !built.dom) {
+                            continue;
+                        }
+                        const naming::NamingPtr nEval = namingForApePredicateEval(built.tree);
+                        if (!safeRebuildTree(nEval, *built.tree, built.dom)) {
+                            continue;
+                        }
+                        const uintptr_t h = naming::StateKey::hashFromGUITree(*built.tree);
+                        if (h == 0) {
+                            continue;
+                        }
+                        uniqueStates.insert(h);
+                        if (uniqueStates.size() > static_cast<size_t>(pred.threshold)) {
+                            return false;
+                        }
+                    }
+                    continue;
+                }
+#endif
+                for (uintptr_t sh : pred.stateHashes) {
+                    auto itXml = _apeStateXmlByStateHash.find(sh);
+                    if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
+                        continue;
+                    }
+                    gui_tree::GUITreeBuildResult built;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                    built = buildGuitreeFromSnapshotObjectOrCachedXml(itXml->second, pkg, cls, 
+                        apeLatestGuiTreeSnapshot(sh));
+#else
+                    built = buildGuitreeFromCachedXmlPreferElement(itXml->second, pkg, cls);
+#endif
+                    if (!built.tree || !built.dom) {
+                        continue;
+                    }
+                    const naming::NamingPtr nEval = namingForApePredicateEval(built.tree);
+                    if (!safeRebuildTree(nEval, *built.tree, built.dom)) {
+                        continue;
+                    }
+                    const uintptr_t h = naming::StateKey::hashFromGUITree(*built.tree);
+                    if (h == 0) {
+                        continue;
+                    }
+                    uniqueStates.insert(h);
+                    if (uniqueStates.size() > static_cast<size_t>(pred.threshold)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        auto itSd = _apeSourceDivergentPredicates.find(actKey);
+        if (itSd != _apeSourceDivergentPredicates.end() && !itSd->second.empty()) {
+            for (const ApeSourceDivergentPredicate &pred : itSd->second) {
+                const bool hasTrees = static_cast<bool>(pred.sourceTreeA) && static_cast<bool>(pred.sourceTreeB);
+                if (!hasTrees && (pred.xmlA.empty() || pred.xmlB.empty())) {
+                    continue;
+                }
+                gui_tree::GUITreeBuildResult builtA;
+                gui_tree::GUITreeBuildResult builtB;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                builtA = buildGuitreeFromSnapshotObjectOrCachedXml(
+                    pred.xmlA, pkg, cls, 
+                    pred.sourceTreeA ? pred.sourceTreeA : apeGuiTreeSnapshotForExactCachedXml(pred.xmlA));
+                builtB = buildGuitreeFromSnapshotObjectOrCachedXml(
+                    pred.xmlB, pkg, cls, 
+                    pred.sourceTreeB ? pred.sourceTreeB : apeGuiTreeSnapshotForExactCachedXml(pred.xmlB));
+#else
+                builtA = buildGuitreeFromCachedXmlPreferElement(pred.xmlA, pkg, cls);
+                builtB = buildGuitreeFromCachedXmlPreferElement(pred.xmlB, pkg, cls);
+#endif
+                if (!builtA.tree || !builtA.dom || !builtB.tree || !builtB.dom) {
+                    return false;
+                }
+                const naming::NamingPtr nA = namingForApePredicateEval(builtA.tree);
+                const naming::NamingPtr nB = namingForApePredicateEval(builtB.tree);
+                if (!safeRebuildTree(nA, *builtA.tree, builtA.dom) ||
+                    !safeRebuildTree(nB, *builtB.tree, builtB.dom)) {
+                    return false;
+                }
+                const uintptr_t hA = naming::StateKey::hashFromGUITree(*builtA.tree);
+                const uintptr_t hB = naming::StateKey::hashFromGUITree(*builtB.tree);
+                if (hA == 0 || hB == 0) {
+                    return false;
+                }
+                if (hA == hB) {
+                    return false;
+                }
+            }
+        }
+        auto it = _apeActionRefinementPredicates.find(actKey);
+        if (it != _apeActionRefinementPredicates.end() && !it->second.empty()) {
+            for (const ApeActionDivergentPredicate &pred : it->second) {
+                if ((!pred.sourceTree && pred.sourceXml.empty()) || pred.partitionsStableIds.empty()) {
+                    continue;
+                }
+                gui_tree::GUITreeBuildResult built;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                built = buildGuitreeFromSnapshotObjectOrCachedXml(
+                    pred.sourceXml, pkg, cls,
+                    pred.sourceTree ? pred.sourceTree : apeLatestGuiTreeSnapshot(pred.sourceStateHash));
+#else
+                built = buildGuitreeFromCachedXmlPreferElement(pred.sourceXml, pkg, cls);
+#endif
+                if (!built.tree || !built.dom) {
+                    continue;
+                }
+                const naming::NamingPtr nEval = namingForApePredicateEval(built.tree);
+                if (!safeRebuildTree(nEval, *built.tree, built.dom)) {
+                    return false;
+                }
+                std::vector<gui_tree::GUITreeNode *> po;
+                collectGUITreeNodesPreOrder(built.tree->getRootNode(), &po);
+                if (po.empty()) {
+                    continue;
+                }
+                std::unordered_set<std::string> actions;
+                for (const auto &partition : pred.partitionsStableIds) {
+                    std::unordered_set<std::string> temp;
+                    for (int idx : partition) {
+                        if (idx < 0) {
+                            continue;
+                        }
+                        const size_t uidx = static_cast<size_t>(idx);
+                        if (uidx >= po.size() || !po[uidx]) {
+                            continue;
+                        }
+                        const naming::NamePtr name = po[uidx]->getXPathName();
+                        if (!name) {
+                            continue;
+                        }
+                        const std::string xp = name->toXPath();
+                        if (xp.empty()) {
+                            continue;
+                        }
+                        if (temp.insert(xp).second) {
+                            if (!actions.insert(xp).second) {
+                                return false;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        return true;
+#endif
+    }
+
+    void Model::addApeStatesFewerThanPredicate(const std::string &activity,
+                                               const std::unordered_set<uintptr_t> &affectedStateHashes,
+                                               int threshold) {
+        if (threshold <= 0 || affectedStateHashes.empty()) {
+            return;
+        }
+        ApeStatesFewerThanPredicate pred;
+        pred.threshold = threshold;
+        pred.stateHashes.reserve(affectedStateHashes.size());
+        for (uintptr_t sh : affectedStateHashes) {
+            pred.stateHashes.push_back(sh);
+        }
+        std::sort(pred.stateHashes.begin(), pred.stateHashes.end());
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+        pred.sourceTrees.reserve(pred.stateHashes.size());
+        for (uintptr_t sh : pred.stateHashes) {
+            if (gui_tree::GUITreePtr tree = apeLatestGuiTreeSnapshot(sh)) {
+                pred.sourceTrees.push_back(tree);
+            }
+        }
+#endif
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        _apeStatesFewerThanPredicates[actKey].push_back(std::move(pred));
+    }
+
+    void Model::addApeActionRefinementPredicate(const std::string &activity,
+                                                uintptr_t sourceStateHash,
+                                                const std::string &sourceXml,
+                                                const std::vector<int> &resolvedNodeStableIds,
+                                                const naming::NamingPtr &updatedNaming) {
+        if (!updatedNaming || sourceXml.empty() || resolvedNodeStableIds.empty()) {
+            return;
+        }
+#if !defined(FASTBOT_HAS_PUGIXML) || !FASTBOT_HAS_PUGIXML
+        (void)activity;
+        (void)sourceXml;
+        (void)resolvedNodeStableIds;
+#else
+        std::string pkg;
+        std::string cls;
+        naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
+        gui_tree::GUITreeBuildResult built;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+        if (gui_tree::GUITreePtr snap = apeLatestGuiTreeSnapshot(sourceStateHash)) {
+            built = buildGuitreePreferApeSnapshotAndDomXml(sourceXml, pkg, cls, snap);
+        } else {
+            built = buildGuitreeFromCachedXmlPreferElement(sourceXml, pkg, cls);
+        }
+#else
+        built = buildGuitreeFromCachedXmlPreferElement(sourceXml, pkg, cls);
+#endif
+        if (!built.tree || !built.dom) {
+            return;
+        }
+        if (!safeRebuildTree(updatedNaming, *built.tree, built.dom)) {
+            return;
+        }
+        std::vector<gui_tree::GUITreeNode *> po;
+        collectGUITreeNodesPreOrder(built.tree->getRootNode(), &po);
+        if (po.empty()) {
+            return;
+        }
+        std::unordered_map<std::string, std::vector<int>> partitions;
+        for (int idx : resolvedNodeStableIds) {
+            if (idx < 0) {
+                continue;
+            }
+            const size_t uidx = static_cast<size_t>(idx);
+            if (uidx >= po.size() || !po[uidx]) {
+                continue;
+            }
+            const naming::NamePtr name = po[uidx]->getXPathName();
+            if (!name) {
+                continue;
+            }
+            const std::string xp = name->toXPath();
+            if (xp.empty()) {
+                continue;
+            }
+            partitions[xp].push_back(idx);
+        }
+        if (partitions.size() < 2) {
+            return;
+        }
+        ApeActionDivergentPredicate pred;
+        pred.sourceStateHash = sourceStateHash;
+        pred.sourceXml = sourceXml;
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+        pred.sourceTree = apeLatestGuiTreeSnapshot(sourceStateHash);
+#endif
+        pred.partitionsStableIds.reserve(partitions.size());
+        for (auto &kv : partitions) {
+            if (!kv.second.empty()) {
+                pred.partitionsStableIds.push_back(std::move(kv.second));
+            }
+        }
+        if (pred.partitionsStableIds.size() < 2) {
+            return;
+        }
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        _apeActionRefinementPredicates[actKey].push_back(std::move(pred));
+#endif
+    }
+
+    void Model::removeConflictingApeActionRefinementPredicates(
+        const std::string &activity, const naming::NamingPtr &naming,
+        const std::unordered_set<uintptr_t> &affectedStateHashes) {
+        if (!naming || affectedStateHashes.empty()) {
+            return;
+        }
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        auto it = _apeActionRefinementPredicates.find(actKey);
+        if (it == _apeActionRefinementPredicates.end() || it->second.empty()) {
+            return;
+        }
+        std::vector<ApeActionDivergentPredicate> kept;
+        kept.reserve(it->second.size());
+        std::string pkg;
+        std::string cls;
+        naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
+        std::vector<gui_tree::GUITreePtr> affectedTreeKeepalive;
+        std::unordered_set<const gui_tree::GUITree *> affectedTreeObjects;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+        affectedTreeKeepalive.reserve(affectedStateHashes.size());
+        affectedTreeObjects.reserve(affectedStateHashes.size());
+        for (uintptr_t sh : affectedStateHashes) {
+            if (gui_tree::GUITreePtr t = apeLatestGuiTreeSnapshot(sh)) {
+                affectedTreeKeepalive.push_back(t);
+                affectedTreeObjects.insert(t.get());
+            }
+        }
+#endif
+
+        auto namingForRollbackPredicateEval = [&](const gui_tree::GUITreePtr &tree) -> naming::NamingPtr {
+            if (tree && !affectedTreeObjects.empty() &&
+                affectedTreeObjects.find(tree.get()) != affectedTreeObjects.end()) {
+                return naming;
+            }
+            if (tree && _apeStateNamingManager) {
+                naming::NamingPtr t = _apeStateNamingManager->treeToNaming(*tree);
+                if (t) {
+                    return t;
+                }
+            }
+            if (_apeStateNamingManager) {
+                naming::NamingPtr cur = _apeStateNamingManager->activityManager().getNaming(actKey);
+                return cur ? cur : naming;
+            }
+            return naming;
+        };
+        for (const auto &pred : it->second) {
+            if (pred.sourceXml.empty() || pred.partitionsStableIds.empty()) {
+                continue;
+            }
+            gui_tree::GUITreeBuildResult built;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+            built = buildGuitreeFromSnapshotObjectOrCachedXml(
+                pred.sourceXml, pkg, cls, apeLatestGuiTreeSnapshot(pred.sourceStateHash));
+#else
+            built = buildGuitreeFromCachedXmlPreferElement(pred.sourceXml, pkg, cls);
+#endif
+            if (!built.tree || !built.dom) {
+                continue;
+            }
+            const naming::NamingPtr nPred = namingForRollbackPredicateEval(built.tree);
+            if (!safeRebuildTree(nPred, *built.tree, built.dom)) {
+                continue;
+            }
+            std::vector<gui_tree::GUITreeNode *> po;
+            collectGUITreeNodesPreOrder(built.tree->getRootNode(), &po);
+            if (po.empty()) {
+                continue;
+            }
+            bool valid = true;
+            std::unordered_set<std::string> actions;
+            for (const auto &partition : pred.partitionsStableIds) {
+                std::unordered_set<std::string> temp;
+                for (int idx : partition) {
+                    if (idx < 0) {
+                        continue;
+                    }
+                    const size_t uidx = static_cast<size_t>(idx);
+                    if (uidx >= po.size() || !po[uidx]) {
+                        continue;
+                    }
+                    const naming::NamePtr name = po[uidx]->getXPathName();
+                    if (!name) {
+                        continue;
+                    }
+                    const std::string xp = name->toXPath();
+                    if (xp.empty()) {
+                        continue;
+                    }
+                    if (temp.insert(xp).second) {
+                        if (!actions.insert(xp).second) {
+                            valid = false;
+                            break;
+                        }
+                    }
+                }
+                if (!valid) {
+                    break;
+                }
+            }
+            if (valid) {
+                kept.push_back(pred);
+            }
+        }
+        it->second.swap(kept);
+    }
+
+    void Model::removeConflictingApeStatesFewerThanPredicates(
+        const std::string &activity, const naming::NamingPtr &naming,
+        const std::unordered_set<uintptr_t> &affectedStateHashes) {
+        if (!naming || affectedStateHashes.empty()) {
+            return;
+        }
+        (void)affectedStateHashes;
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        auto it = _apeStatesFewerThanPredicates.find(actKey);
+        if (it == _apeStatesFewerThanPredicates.end() || it->second.empty()) {
+            return;
+        }
+        std::vector<ApeStatesFewerThanPredicate> kept;
+        kept.reserve(it->second.size());
+        for (const auto &pred : it->second) {
+            if (pred.threshold <= 0 || pred.stateHashes.empty()) {
+                continue;
+            }
+            std::unordered_set<uintptr_t> uniqueStates;
+            uniqueStates.reserve(pred.stateHashes.size());
+            bool valid = true;
+            for (uintptr_t sh : pred.stateHashes) {
+                auto itXml = _apeStateXmlByStateHash.find(sh);
+                if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
+                    continue;
+                }
+                uintptr_t h = 0;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                gui_tree::GUITreePtr snapFew = apeLatestGuiTreeSnapshot(sh);
+                const gui_tree::GUITreePtr *snapFewPtr = snapFew ? &snapFew : nullptr;
+                if (!apeStateHashFromXmlWithNaming(activity, itXml->second, naming, &h, 0, nullptr, snapFewPtr) ||
+                    h == 0) {
+                    continue;
+                }
+#else
+                if (!apeStateHashFromXmlWithNaming(activity, itXml->second, naming, &h) || h == 0) {
+                    continue;
+                }
+#endif
+                uniqueStates.insert(h);
+                if (uniqueStates.size() > static_cast<size_t>(pred.threshold)) {
+                    valid = false;
+                    break;
+                }
+            }
+            if (valid) {
+                kept.push_back(pred);
+            }
+        }
+        it->second.swap(kept);
+    }
+
+    void Model::addApeSourceDivergentPredicate(const std::string &activity, const std::string &xmlA,
+                                               const std::string &xmlB, uintptr_t sharedSourceStateHash) {
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        if (xmlA.empty() || xmlB.empty() || xmlA == xmlB) {
+            return;
+        }
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        ApeSourceDivergentPredicate pred;
+        pred.xmlA = xmlA;
+        pred.xmlB = xmlB;
+        pred.sharedSourceStateHash = sharedSourceStateHash;
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        pred.sourceTreeA = apeGuiTreeSnapshotForExactCachedXml(xmlA);
+        pred.sourceTreeB = apeGuiTreeSnapshotForExactCachedXml(xmlB);
+        if (!pred.sourceTreeA && sharedSourceStateHash != 0) {
+            pred.sourceTreeA = apeLatestGuiTreeSnapshot(sharedSourceStateHash);
+        }
+        if (!pred.sourceTreeB && sharedSourceStateHash != 0) {
+            pred.sourceTreeB = apeLatestGuiTreeSnapshot(sharedSourceStateHash);
+        }
+#endif
+        _apeSourceDivergentPredicates[actKey].push_back(std::move(pred));
+#else
+        (void)activity;
+        (void)xmlA;
+        (void)xmlB;
+        (void)sharedSourceStateHash;
+#endif
+    }
+
+    void Model::removeConflictingApeSourceDivergentPredicates(
+        const std::string &activity, const naming::NamingPtr &naming,
+        const std::unordered_set<uintptr_t> &affectedStateHashes) {
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        if (!naming || affectedStateHashes.empty()) {
+            return;
+        }
+        (void)affectedStateHashes;
+        const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        auto it = _apeSourceDivergentPredicates.find(actKey);
+        if (it == _apeSourceDivergentPredicates.end() || it->second.empty()) {
+            return;
+        }
+        std::vector<ApeSourceDivergentPredicate> kept;
+        kept.reserve(it->second.size());
+        for (const auto &pred : it->second) {
+            if (pred.xmlA.empty() || pred.xmlB.empty()) {
+                continue;
+            }
+            uintptr_t ha = 0;
+            uintptr_t hb = 0;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+            gui_tree::GUITreePtr snapA = apeGuiTreeSnapshotForExactCachedXml(pred.xmlA);
+            gui_tree::GUITreePtr snapB = apeGuiTreeSnapshotForExactCachedXml(pred.xmlB);
+            const gui_tree::GUITreePtr *snapAPtr = snapA ? &snapA : nullptr;
+            const gui_tree::GUITreePtr *snapBPtr = snapB ? &snapB : nullptr;
+            if (!apeStateHashFromXmlWithNaming(activity, pred.xmlA, naming, &ha, 0, nullptr, snapAPtr) ||
+                ha == 0 ||
+                !apeStateHashFromXmlWithNaming(activity, pred.xmlB, naming, &hb, 0, nullptr, snapBPtr) ||
+                hb == 0) {
+                continue;
+            }
+#else
+            if (!apeStateHashFromXmlWithNaming(activity, pred.xmlA, naming, &ha) || ha == 0 ||
+                !apeStateHashFromXmlWithNaming(activity, pred.xmlB, naming, &hb) || hb == 0) {
+                continue;
+            }
+#endif
+            if (ha != hb) {
+                kept.push_back(pred);
+            }
+        }
+        it->second.swap(kept);
+#else
+        (void)activity;
+        (void)naming;
+        (void)affectedStateHashes;
+#endif
     }
 
     void Model::apeBlacklistFinerNamingOnRollback(
@@ -4052,19 +4988,27 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         if (!targetWidget || !targetWidget->getBounds() || !cur) {
             return false;
         }
-        auto itXml = _apeStateXmlByStateHash.find(stateHash);
-        if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
-            return false;
-        }
+
         std::string pkg;
         std::string cls;
         naming::StateKey::splitActivityPackageClass(activityForSplit, &pkg, &cls);
-        gui_tree::GUITreeBuildResult built =
-            gui_tree::GUITreeFactory::buildFromXml(itXml->second, pkg, cls);
+        gui_tree::GUITreeBuildResult built;
+        auto itEl = _apeStateElementByStateHash.find(stateHash);
+        if (itEl != _apeStateElementByStateHash.end() && itEl->second) {
+            built = gui_tree::GUITreeFactory::buildFromElement(itEl->second, pkg, cls);
+        }
+        if (!built.tree || !built.dom) {
+            auto itXml = _apeStateXmlByStateHash.find(stateHash);
+            if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
+                return false;
+            }
+            built = buildGuitreePreferApeSnapshotAndDomXml(itXml->second, pkg, cls, 
+                apeLatestGuiTreeSnapshot(stateHash));
+        }
         if (!built.tree || !built.dom) {
             return false;
         }
-        if (!naming::NamingFactory::rebuildTree(cur, *built.tree, built.dom)) {
+        if (!safeRebuildTree(cur, *built.tree, built.dom)) {
             return false;
         }
         std::vector<gui_tree::GUITreeNode *> po;
@@ -4113,30 +5057,6 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         return static_cast<bool>(*outParent);
     }
 #endif
-
-namespace {
-/**
- * StateNamingManager::updateNaming(Refine) requires new naming to be a direct refinement child of `cur`.
- * actionRefinementCandidatesWithOptions may return a multi-hop refinement; walk up to the node whose
- * parent is `cur` so structural update and state-key edges match the manager contract.
- */
-naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, naming::NamingPtr next) {
-    if (!cur || !next) {
-        return next;
-    }
-    if (next->getParent() == cur) {
-        return next;
-    }
-    naming::NamingPtr x = next;
-    while (x && x->getParent() && x->getParent() != cur) {
-        x = x->getParent();
-    }
-    if (x && x->getParent() == cur) {
-        return x;
-    }
-    return next;
-}
-} // namespace
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
     bool Model::tryApeOverAbstractedActionRefinement(const StatePtr &state, const std::string &activity,
@@ -4328,7 +5248,7 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
                     if (!evalApeGuiTreeNamingBlacklist(guiTreeBlacklistCheckHashes, child)) {
                         continue;
                     }
-                    naming::NamingPtr next = apeRefineTargetAsDirectChild(cur, std::move(child));
+                    naming::NamingPtr next = std::move(child);
                     if (!next || next.get() == cur.get()) {
                         continue;
                     }
@@ -4371,7 +5291,7 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
                     if (!evalApeGuiTreeNamingBlacklist(guiTreeBlacklistCheckHashes, child)) {
                         continue;
                     }
-                    naming::NamingPtr next = apeRefineTargetAsDirectChild(cur, std::move(child));
+                    naming::NamingPtr next = std::move(child);
                     if (!next || next.get() == cur.get()) {
                         continue;
                     }
@@ -4462,11 +5382,20 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
 #endif
 
     bool Model::refineActivityApeNaming(const std::string &activity) {
-        return refineActivityApeNaming(activity, nullptr, -1);
+        return refineActivityApeNaming(activity, nullptr, -1, nullptr);
     }
 
     bool Model::refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
                                         int precomputedActivityNonDetPairCount) {
+        return refineActivityApeNaming(activity, pair, precomputedActivityNonDetPairCount, nullptr);
+    }
+
+    bool Model::refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
+                                        int precomputedActivityNonDetPairCount,
+                                        ApeRefineFailReason *outFailReason) {
+        if (outFailReason) {
+            *outFailReason = ApeRefineFailReason::Other;
+        }
         const std::string actKey = naming::StateKey::canonicalActivityString(activity);
         const int minTargets = (_preference ? _preference->getApeNamingMinNonDetTargets()
                                             : MinNonDeterminismCount);
@@ -5304,7 +6233,7 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
             }
             return a.naming->fingerprintString() < b.naming->fingerprintString();
         });
-        naming::NamingPtr next = apeRefineTargetAsDirectChild(cur, accepted.front().naming);
+        naming::NamingPtr next = accepted.front().naming;
         BLOG("ape naming: refine-candidates activity=%s total=%zu accepted=%zu pickedFineGain=%d",
              activity.c_str(), candidates.size(), accepted.size(), accepted.front().finenessGain);
         {
@@ -6203,7 +7132,7 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
                 const bool inFocus = (focusOldKeyHashes->count(srcXml) != 0 ||
                                       focusOldKeyHashes->count(tgtXml) != 0);
                 if (!inFocus) {
-                    apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot);
+                    apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot, nullptr);
                     continue;
                 }
             }
@@ -6272,7 +7201,7 @@ naming::NamingPtr apeRefineTargetAsDirectChild(const naming::NamingPtr &cur, nam
             // Re-add into aggregation under the new key space.
             apePairAggAdd(slot);
             if (slot.valid) {
-                apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot);
+                apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot, nullptr);
             }
         }
 #endif
