@@ -38,6 +38,13 @@ namespace fastbotx {
 namespace naming {
 namespace {
     ApeBaseNamingMode g_default_root_naming_mode = ApeBaseNamingMode::ActionType;
+    /** CreateActionTypeBaseNaming interactive partition (explicit true flags). */
+    static const char kActionTypeInteractiveExpr[] =
+        "//*[@clickable='true' or @long-clickable='true' or @checkable='true' or @scrollable='true']";
+    /** ActionType non-interactive partition (strict false flags). */
+    static const char kActionTypeNonInteractiveExpr[] =
+        "//*[@clickable='false' and @long-clickable='false' and @checkable='false' and "
+        "@scrollable='false']";
 
     std::atomic<uint64_t> g_eval_fail_node_without_namelet{0};
     std::atomic<uint64_t> g_eval_fail_actiontype_orphan{0};
@@ -55,13 +62,8 @@ namespace {
         if (v.size() != 2 || !v[0] || !v[1]) {
             return false;
         }
-        static const char *k0 =
-            "//*[@clickable='true' or @long-clickable='true' or @checkable='true' or @scrollable='true']";
-        static const char *k1 =
-            "//*[@clickable='false' and @long-clickable='false' and @checkable='false' and "
-            "@scrollable='false']";
-        return v[0]->isBase() && v[1]->isBase() && v[0]->getExprString() == k0 &&
-               v[1]->getExprString() == k1;
+        return v[0]->isBase() && v[1]->isBase() && v[0]->getExprString() == kActionTypeInteractiveExpr &&
+               v[1]->getExprString() == kActionTypeNonInteractiveExpr;
     }
 
     void logEvalDiagSample(const char *tag, uint64_t count) {
@@ -97,11 +99,42 @@ namespace {
             if (!ch) {
                 continue;
             }
-            if (ch->getExprString() == expr && ch->getNamerPtr() == finer) {
+            const NamerPtr chNamer = ch->getNamerPtr();
+            if (!chNamer) {
+                continue;
+            }
+            // child reuse is keyed by equivalent namer behavior, not pointer identity.
+            if (ch->getExprString() == expr && compareNamer(*chNamer, *finer) == 0) {
                 return kv.second;
             }
         }
         return nullptr;
+    }
+
+    /**
+     * Mirrors Java Naming.extend(parent, namelet).ensureRefine contract: finer must strictly refine
+     * the parent namer. Under normal callers (lattice.immediateRefinements / sortedAbove) the
+     * invariant holds by construction; this log gives us a breadcrumb if a future caller violates it.
+     */
+    void debugAssertRefinesTo(const NameletPtr &parentNamelet, const NamerPtr &finer) {
+#ifndef NDEBUG
+        if (!parentNamelet || !finer) {
+            return;
+        }
+        const NamerPtr parentNamer = parentNamelet->getNamerPtr();
+        if (!parentNamer) {
+            return;
+        }
+        if (!finer->refinesTo(*parentNamer)) {
+            BLOG("naming ensureRefine violated: finerMask=%u parentMask=%u parentExpr=%s",
+                 static_cast<unsigned>(finer->typeDimensionMask()),
+                 static_cast<unsigned>(parentNamer->typeDimensionMask()),
+                 parentNamelet->getExprString().c_str());
+        }
+#else
+        (void)parentNamelet;
+        (void)finer;
+#endif
     }
 
     /** Append a refinement child namelet (lattice edge) and register parent/child Naming links. */
@@ -115,6 +148,7 @@ namespace {
         if (!parentNamelet) {
             return nullptr;
         }
+        debugAssertRefinesTo(parentNamelet, finer);
         const std::string &expr = parentNamelet->getExprString();
         if (NamingPtr cached = findExistingChildNaming(parentNamelet, expr, finer)) {
             return cached;
@@ -139,6 +173,7 @@ namespace {
         if (!parentNamelet) {
             return nullptr;
         }
+        debugAssertRefinesTo(parentNamelet, finer);
         if (NamingPtr cached = findExistingChildNaming(parentNamelet, widgetExpr, finer)) {
             return cached;
         }
@@ -296,6 +331,10 @@ namespace {
         g_default_root_naming_mode = mode;
     }
 
+    NamingPtr NamingFactory::getBaseNaming() {
+        return defaultRootNaming();
+    }
+
     ApeBaseNamingMode NamingFactory::getDefaultRootNamingMode() {
         return g_default_root_naming_mode;
     }
@@ -364,14 +403,10 @@ namespace {
             }
             std::vector<NameletPtr> v;
             v.reserve(2);
-            v.push_back(std::make_shared<Namelet>(
-                Namelet::Type::BASE,
-                "//*[@clickable='true' or @long-clickable='true' or @checkable='true' or @scrollable='true']",
-                typeNamer));
-            v.push_back(std::make_shared<Namelet>(
-                Namelet::Type::BASE,
-                "//*[@clickable='false' and @long-clickable='false' and @checkable='false' and @scrollable='false']",
-                bottomNamer));
+            v.push_back(
+                std::make_shared<Namelet>(Namelet::Type::BASE, kActionTypeInteractiveExpr, typeNamer));
+            v.push_back(
+                std::make_shared<Namelet>(Namelet::Type::BASE, kActionTypeNonInteractiveExpr, bottomNamer));
             return std::make_shared<Naming>(std::move(v));
         };
 
@@ -456,7 +491,6 @@ namespace {
         };
 
         switch (g_default_root_naming_mode) {
-        // APE createBaseNaming() has no TypeOnly mode; keep ActionType behavior for compatibility.
         case ApeBaseNamingMode::TypeOnly:
         case ApeBaseNamingMode::ActionType:
             return createActionTypeBaseNaming();

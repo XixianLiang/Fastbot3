@@ -17,7 +17,7 @@
  * @authors Tianxiao Gu, Zhao Zhang
  */
 /*
- * APE Naming: ordered Namelets + refinement child map.
+ * Naming: ordered Namelets + refinement child map.
  * extend / replaceLast — lattice ops; factory helpers on NamingFactory.
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMING_H_
@@ -28,8 +28,10 @@
 
 #include <atomic>
 #include <map>
+#include <mutex>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 namespace fastbotx {
@@ -73,7 +75,7 @@ namespace naming {
             void updateNames();
         };
 
-        /** APE Naming.namingInternal equivalent on a concrete tree+dom. */
+        /** Naming.namingInternal equivalent on a concrete tree+dom. */
         NamingResult namingInternal(gui_tree::GUITree &tree,
                                     const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) const;
 
@@ -111,6 +113,9 @@ namespace naming {
         /** Stable fingerprint for StateKey / lattice (same serialization as StateKey::fromParts). */
         const std::string &fingerprintString() const;
 
+        /** drop cached NamingResult for this GUITree. */
+        void releaseTreeCache(const gui_tree::GUITree &tree) const;
+
         virtual ~Naming() = default;
 
     private:
@@ -125,6 +130,9 @@ namespace naming {
 
         std::map<NamingEdge, std::shared_ptr<Naming>> children_{};
         std::string fingerprint_cached_{};
+        // cache NamingResult per GUITree instance.
+        mutable std::mutex naming_cache_mu_;
+        mutable std::unordered_map<const gui_tree::GUITree *, NamingResult> tree_to_naming_result_;
     };
 
     using NamingPtr = std::shared_ptr<Naming>;

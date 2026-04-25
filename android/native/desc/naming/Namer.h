@@ -16,9 +16,6 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
-/*
- * APE Namer.
- */
 #ifndef FASTBOTX_DESC_NAMING_NAMER_H_
 #define FASTBOTX_DESC_NAMING_NAMER_H_
 
@@ -38,7 +35,7 @@ namespace naming {
         /** Which attribute dimensions this namer uses (Java: EnumSet<NamerType>). */
         virtual std::vector<NamerType> getNamerTypes() const = 0;
 
-        /** Bitmask over {@code 1u << NamerType} (APE lattice); default derives from getNamerTypes(). */
+        /** Bitmask over {@code 1u << NamerType}; default derives from getNamerTypes(). */
         virtual uint32_t typeDimensionMask() const;
 
         virtual NamePtr naming(gui_tree::GUITreeNode &node) = 0;

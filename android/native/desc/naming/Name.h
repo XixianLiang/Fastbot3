@@ -17,10 +17,6 @@
  * @authors Tianxiao Gu, Zhao Zhang
  */
 
-/*
- * APE-compatible abstract widget name
- * Concrete implementations (TypeNamer, XPath composition, etc.) are added incrementally.
- */
 #ifndef FASTBOTX_DESC_NAMING_NAME_H_
 #define FASTBOTX_DESC_NAMING_NAME_H_
 
@@ -36,10 +32,15 @@ namespace naming {
     public:
         virtual ~Name();
 
+        void setOrder(int order) { order_ = order; }
+        int getOrder() const { return order_; }
+
         virtual std::shared_ptr<Namer> getNamer() const = 0;
 
-        /** XPath fragment for this name (APE: toXPath). */
+        /** XPath fragment for this name. */
         virtual const std::string &toXPath() const = 0;
+
+        virtual std::string cacheKeyString() const { return toXPath(); }
 
         /** Local predicate fragment after `// *` (any node) for AbstractLocalName-style names. */
         virtual void appendXPathLocalProperties(std::string &sb) const { (void)sb; }
@@ -47,6 +48,9 @@ namespace naming {
         /** Lexicographic order on XPath string (APE: Comparable<Name>). */
         bool operator<(const Name &other) const;
         bool operator==(const Name &other) const;
+
+    private:
+        int order_{-1};
     };
 
     using NamePtr = std::shared_ptr<Name>;

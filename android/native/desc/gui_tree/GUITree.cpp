@@ -23,6 +23,7 @@
 #include <atomic>
 #include <algorithm>
 #include <stdexcept>
+#include <unordered_map>
 #include <utility>
 
 namespace fastbotx {
@@ -105,6 +106,89 @@ namespace gui_tree {
                                    std::vector<std::vector<GUITreeNodePtr>> node_groups) {
         current_naming_ = std::move(naming);
         rebuild(std::move(names), std::move(node_groups));
+    }
+
+    namespace {
+
+        GUITreeNodePtr cloneSubtree(const GUITreeNode *src,
+                                    std::unordered_map<const GUITreeNode *, GUITreeNodePtr> &omap,
+                                    const GUITreeNodeWeakPtr &parentWeak) {
+            if (!src) {
+                return nullptr;
+            }
+            GUITreeNodePtr n = GUITreeNode::create(parentWeak);
+            omap[src] = n;
+            n->setIndex(src->getIndex());
+            n->setDescendantCount(src->getDescendantCount());
+            n->setHeight(src->getHeight());
+            n->setResourceId(src->getResourceId());
+            n->setClassName(src->getClassName());
+            n->setPackageName(src->getPackageName());
+            n->setText(std::string(src->getText()));
+            n->setContentDesc(std::string(src->getContentDesc()));
+            n->setEnabled(src->isEnabled());
+            n->setClickable(src->isClickable());
+            n->setLongClickable(src->isLongClickable());
+            n->setCheckable(src->isCheckable());
+            n->setChecked(src->isChecked());
+            n->setFocusable(src->isFocusable());
+            n->setScrollable(src->getScrollable());
+            n->setPassword(src->isPassword());
+            n->setFocused(src->isFocused());
+            n->setBounds(src->getBounds());
+            naming::NamePtr xn = src->getXPathName();
+            if (xn) {
+                n->setXPathName(xn);
+            }
+            std::shared_ptr<naming::Namelet> nl = src->getCurrentNamelet();
+            if (nl) {
+                n->setCurrentNamelet(nl);
+            }
+            for (const auto &ch : src->getChildren()) {
+                GUITreeNodePtr c = cloneSubtree(ch.get(), omap, GUITreeNodeWeakPtr(n));
+                if (c) {
+                    n->appendChild(std::move(c));
+                }
+            }
+            return n;
+        }
+
+    } // namespace
+
+    GUITreePtr GUITree::cloneDeep(const GUITree &src) {
+        const GUITreeNode *root = src.getRootNode();
+        if (!root) {
+            return nullptr;
+        }
+        std::unordered_map<const GUITreeNode *, GUITreeNodePtr> omap;
+        GUITreeNodePtr newRoot = cloneSubtree(root, omap, GUITreeNodeWeakPtr());
+        GUITreePtr out = std::make_shared<GUITree>(
+            std::move(newRoot), src.getActivityPackageName(), src.getActivityClassName());
+        out->setTimestamp(src.getTimestamp());
+        naming::NamingPtr naming = src.getCurrentNaming();
+        std::vector<naming::NamePtr> names = src.getCurrentNames();
+        const auto &ogr = src.getCurrentNodeGroups();
+        std::vector<std::vector<GUITreeNodePtr>> ngroups;
+        ngroups.reserve(ogr.size());
+        for (const auto &g : ogr) {
+            std::vector<GUITreeNodePtr> ng;
+            ng.reserve(g.size());
+            for (const auto &node : g) {
+                if (!node) {
+                    ng.push_back(nullptr);
+                    continue;
+                }
+                auto it = omap.find(node.get());
+                if (it != omap.end()) {
+                    ng.push_back(it->second);
+                } else {
+                    ng.push_back(nullptr);
+                }
+            }
+            ngroups.push_back(std::move(ng));
+        }
+        out->setCurrentNaming(std::move(naming), std::move(names), std::move(ngroups));
+        return out;
     }
 
     void GUITree::validate() const {

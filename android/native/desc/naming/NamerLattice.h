@@ -18,7 +18,7 @@
  */
 
 /*
- * Refinement neighborhood on the NamerFactory bitmask cube (APE NamerLattice).
+ * Refinement neighborhood on the NamerFactory bitmask cube.
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMERLATTICE_H_
 #define FASTBOTX_DESC_NAMING_NAMERLATTICE_H_
@@ -48,8 +48,6 @@ namespace naming {
 
     private:
         const NamerFactory *factory_{nullptr};
-        // Lazily memoize lattice neighborhoods per bitmask.
-        // For APE this is tiny (<= 32 masks) and avoids repeated scanning/sorting.
         mutable std::unordered_map<uint32_t, std::vector<NamerPtr>> refinements_cache_;
         mutable std::unordered_map<uint32_t, std::vector<NamerPtr>> abstractions_cache_;
         mutable std::unordered_map<uint32_t, std::vector<NamerPtr>> sorted_above_cache_;

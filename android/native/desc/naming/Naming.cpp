@@ -26,6 +26,9 @@
 
 #include <algorithm>
 #include <deque>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -35,6 +38,60 @@
 namespace fastbotx {
 namespace naming {
 namespace {
+    std::string describeNodeForNamingError(const gui_tree::GUITreeNode *n) {
+        if (!n) {
+            return "node=null";
+        }
+        std::ostringstream os;
+        os << "class=" << n->getClassName()
+           << ",res=" << n->getResourceId()
+           << ",idx=" << n->getIndex()
+           << ",bounds=" << n->getBounds().toString()
+           << ",text=" << n->getText()
+           << ",content-desc=" << n->getContentDesc();
+        return os.str();
+    }
+
+    std::string describeNameletCandidates(const std::vector<NameletPtr> *candidates) {
+        if (!candidates || candidates->empty()) {
+            return "[]";
+        }
+        std::ostringstream os;
+        os << "[";
+        for (size_t i = 0; i < candidates->size(); ++i) {
+            if (i > 0) {
+                os << ";";
+            }
+            const NameletPtr &nl = (*candidates)[i];
+            if (!nl) {
+                os << "null";
+                continue;
+            }
+            os << (nl->isBase() ? "B:" : "R:") << nl->getExprString();
+        }
+        os << "]";
+        return os.str();
+    }
+
+    std::string saveXmlOnError(const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) {
+        if (!dom) {
+            return std::string();
+        }
+        const std::string xml = dom->dumpXmlString();
+        if (xml.empty()) {
+            return std::string();
+        }
+        static std::atomic<uint64_t> seq{0};
+        const uint64_t id = ++seq;
+        const std::string path = "/sdcard/fastbot_naming_error_" + std::to_string(id) + ".xml";
+        std::ofstream ofs(path.c_str(), std::ios::out | std::ios::trunc);
+        if (!ofs.is_open()) {
+            return std::string();
+        }
+        ofs << xml;
+        ofs.close();
+        return path;
+    }
 
     int bitCount(uint32_t x) {
         return __builtin_popcount(x);
@@ -82,23 +139,28 @@ namespace {
 
     NameletPtr selectNameletForNode(const std::vector<NameletPtr> &candidates) {
         if (candidates.empty()) {
-            return nullptr;
+            throw std::invalid_argument("Empty namelet candidates.");
         }
         if (candidates.size() == 1) {
-            return (candidates[0] && candidates[0]->isBase()) ? candidates[0] : nullptr;
+            if (!candidates[0] || !candidates[0]->isBase()) {
+                throw std::invalid_argument("Missing base namelet.");
+            }
+            return candidates[0];
         }
         std::vector<NameletPtr> sorted = candidates;
         std::sort(sorted.begin(), sorted.end(), nameletSelectLess);
-        std::unordered_set<const Namelet *> selectedSet;
-        selectedSet.reserve(sorted.size() * 2 + 1);
-        for (const auto &nl : sorted) {
-            selectedSet.insert(nl.get());
-        }
+        auto comparatorContains = [&](const NameletPtr &target) -> bool {
+            auto it = std::lower_bound(sorted.begin(), sorted.end(), target, nameletSelectLess);
+            if (it == sorted.end()) {
+                return false;
+            }
+            return !nameletSelectLess(target, *it) && !nameletSelectLess(*it, target);
+        };
         for (size_t i = sorted.size(); i > 0; --i) {
             NameletPtr cur = sorted[i - 1];
             NameletPtr p = cur ? cur->getParent() : nullptr;
             while (p) {
-                if (selectedSet.find(p.get()) == selectedSet.end()) {
+                if (!comparatorContains(p)) {
                     break;
                 }
                 p = p->getParent();
@@ -107,7 +169,7 @@ namespace {
                 return cur;
             }
         }
-        return sorted.back();
+        throw std::runtime_error("A node has no namelet.");
     }
 
     struct NamingEvalGuard {
@@ -186,6 +248,11 @@ namespace {
 
     const std::string &Naming::fingerprintString() const { return fingerprint_cached_; }
 
+    void Naming::releaseTreeCache(const gui_tree::GUITree &tree) const {
+        std::lock_guard<std::mutex> lk(naming_cache_mu_);
+        tree_to_naming_result_.erase(&tree);
+    }
+
     std::shared_ptr<Namelet> Naming::getLastNamelet() const {
         if (namelets_.empty()) {
             return nullptr;
@@ -205,6 +272,13 @@ namespace {
 
     Naming::NamingResult Naming::namingInternal(
         gui_tree::GUITree &tree, const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) const {
+        {
+            std::lock_guard<std::mutex> lk(naming_cache_mu_);
+            auto itCached = tree_to_naming_result_.find(&tree);
+            if (itCached != tree_to_naming_result_.end()) {
+                return itCached->second;
+            }
+        }
         NamingResult out;
         if (!dom) {
             return out;
@@ -246,8 +320,11 @@ namespace {
         for (gui_tree::GUITreeNode *n : bfs_nodes) {
             auto itNl = node_to_namelets.find(n);
             if (itNl == node_to_namelets.end()) {
-                out.names.push_back(nullptr);
-                return out;
+                const std::string dumped = saveXmlOnError(dom);
+                throw std::runtime_error(
+                    "A node has no namelets. namingFp=" + fingerprint_cached_ + ";" +
+                    describeNodeForNamingError(n) + "; bfsNodes=" + std::to_string(bfs_nodes.size()) +
+                    (dumped.empty() ? std::string() : ("; xmlDump=" + dumped)));
             }
             NameletPtr sel = selectNameletForNode(itNl->second);
             node_to_selected[n] = sel;
@@ -262,42 +339,74 @@ namespace {
             std::vector<gui_tree::GUITreeNodePtr> nodes;
             std::vector<NameletPtr> namelets;
         };
-        std::unordered_map<std::string, Group> groups;
+        struct NamePtrHash {
+            size_t operator()(const NamePtr &p) const {
+                return std::hash<const void *>()(p.get());
+            }
+        };
+        struct NamePtrEq {
+            bool operator()(const NamePtr &a, const NamePtr &b) const {
+                return a.get() == b.get();
+            }
+        };
+        std::unordered_map<NamePtr, Group, NamePtrHash, NamePtrEq> groups;
         groups.reserve(bfs_nodes.empty() ? 64 : bfs_nodes.size());
         for (gui_tree::GUITreeNode *raw : bfs_nodes) {
             auto itNode = node_ref.find(raw);
             if (itNode == node_ref.end()) {
-                out.names.push_back(nullptr);
-                return out;
+                const std::string dumped = saveXmlOnError(dom);
+                throw std::runtime_error(
+                    "GUITree node reference missing. namingFp=" + fingerprint_cached_ + ";" +
+                    describeNodeForNamingError(raw) +
+                    (dumped.empty() ? std::string() : ("; xmlDump=" + dumped)));
             }
             gui_tree::GUITreeNodePtr nptr = itNode->second;
             auto itSel = node_to_selected.find(raw);
             NameletPtr selected = (itSel != node_to_selected.end()) ? itSel->second : nullptr;
             if (!selected || !selected->getNamerPtr()) {
-                out.names.push_back(nullptr);
-                return out;
+                std::string cands;
+                auto itNl = node_to_namelets.find(raw);
+                cands = describeNameletCandidates(itNl != node_to_namelets.end() ? &itNl->second : nullptr);
+                const std::string dumped = saveXmlOnError(dom);
+                throw std::runtime_error(
+                    "A node has no namer. namingFp=" + fingerprint_cached_ + ";" +
+                    describeNodeForNamingError(raw) + "; candidates=" + cands +
+                    (dumped.empty() ? std::string() : ("; xmlDump=" + dumped)));
             }
             NamePtr name = selected->getNamer().naming(*nptr);
             if (!name) {
-                out.names.push_back(nullptr);
-                return out;
+                const std::string dumped = saveXmlOnError(dom);
+                throw std::runtime_error(
+                    "A node has no name. namingFp=" + fingerprint_cached_ + ";" +
+                    describeNodeForNamingError(raw) +
+                    (dumped.empty() ? std::string() : ("; xmlDump=" + dumped)));
             }
-            const std::string key = name->toXPath();
-            Group &g = groups[key];
-            if (!g.name) g.name = std::move(name);
+            Group &g = groups[name];
+            if (!g.name) g.name = name;
             g.nodes.push_back(nptr);
             g.namelets.push_back(selected);
         }
-        std::vector<std::string> sorted_keys;
-        sorted_keys.reserve(groups.size());
-        for (const auto &kv : groups) sorted_keys.push_back(kv.first);
-        std::sort(sorted_keys.begin(), sorted_keys.end());
-        for (const auto &k : sorted_keys) {
-            auto it = groups.find(k);
+        std::vector<NamePtr> sorted_names;
+        sorted_names.reserve(groups.size());
+        for (const auto &kv : groups) {
+            sorted_names.push_back(kv.first);
+        }
+        std::sort(sorted_names.begin(), sorted_names.end(), [](const NamePtr &a, const NamePtr &b) {
+            if (!a || !b) {
+                return a.get() < b.get();
+            }
+            return *a < *b;
+        });
+        for (const auto &nameKey : sorted_names) {
+            auto it = groups.find(nameKey);
             if (it == groups.end() || !it->second.name) continue;
             out.names.push_back(it->second.name);
             out.node_groups.push_back(std::move(it->second.nodes));
             out.namelet_groups.push_back(std::move(it->second.namelets));
+        }
+        {
+            std::lock_guard<std::mutex> lk(naming_cache_mu_);
+            tree_to_naming_result_[&tree] = out;
         }
         return out;
     }

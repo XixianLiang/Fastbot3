@@ -31,6 +31,7 @@
 #include <cinttypes>
 #include <set>
 #include <string>
+#include <vector>
 
 namespace fastbotx {
 namespace naming {
@@ -536,7 +537,7 @@ namespace {
                 return;
             }
 
-            // APE ancestor abstraction: remove state edges along old -> ... -> new path.
+            // Remove state edges along old -> ... -> new path.
             NamingPtr child = old_n;
             NamingPtr parent = child->getParent();
             while (parent) {
@@ -636,7 +637,7 @@ namespace {
         if (!source) {
             return NamingFactory::defaultRootNaming();
         }
-        // APE-style iterative edge walk with loop guard.
+        // Iterative edge walk with loop guard.
         const uintptr_t h = StateKey::hashFromGUITree(tree);
         if (h == 0) {
             return source;
@@ -743,6 +744,37 @@ namespace {
         EdgeLookupStats out = lookup_stats_;
         lookup_stats_ = EdgeLookupStats{};
         return out;
+    }
+
+    void StateNamingManager::releaseTreeCache(const gui_tree::GUITree &tree) {
+        std::vector<NamingPtr> roots = activity_mgr_->getAllNamings();
+        std::set<const Naming *> visited;
+        std::vector<NamingPtr> stack;
+        stack.reserve(64);
+        for (const NamingPtr &root : roots) {
+            if (!root) {
+                continue;
+            }
+            stack.push_back(root);
+            while (!stack.empty()) {
+                NamingPtr cur = stack.back();
+                stack.pop_back();
+                if (!cur) {
+                    continue;
+                }
+                const Naming *raw = cur.get();
+                if (visited.count(raw) != 0) {
+                    continue;
+                }
+                visited.insert(raw);
+                cur->releaseTreeCache(tree);
+                for (const auto &kv : cur->getRefinementChildren()) {
+                    if (kv.second) {
+                        stack.push_back(kv.second);
+                    }
+                }
+            }
+        }
     }
 
     StateNamingUpdateRejectDiagStats StateNamingManager::consumeUpdateRejectDiagStats() {

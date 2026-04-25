@@ -15,6 +15,7 @@
 #include "Element.h"
 #include "Action.h"
 #include "Graph.h"
+#include "TreeTransition.h"
 #include "AbstractAgent.h"
 #include "AgentFactory.h"
 #include "Preference.h"
@@ -29,6 +30,10 @@
 #ifndef NDEBUG
 #include <thread>
 #endif
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+#include <deque>
+#include "../desc/gui_tree/GUITree.h"
+#endif
 
 namespace fastbotx {
 
@@ -37,47 +42,83 @@ namespace gui_tree {
 }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-    /// APE Naming lattice: transition log keyed by StateKey::hash().
+    /// Naming transition log keyed by StateKey::hash().
     struct ApeTransitionEntry {
+        uint64_t transitionSeq{0};
         uintptr_t sourceKeyHash{0};
         bool hasSourceStateKey{false};
-        naming::StateKey sourceStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        naming::StateKey sourceStateKey = naming::StateKey::fromParts("", nullptr, {});
+        /// Runtime action object identity (NDActionBlacklist uses ModelAction object identity).
+        uintptr_t actionIdentity{0};
         uintptr_t actionHash{0};
         uintptr_t targetKeyHash{0};
         std::string sourceActivity;
         /// State hashes (Graph/RL identity) for transition replay/remap when Naming changes.
         uintptr_t sourceStateHash{0};
         uintptr_t targetStateHash{0};
+        std::string sourceXmlSnapshot;
         /// Action signature for replay/remap. actionHash itself may change after Naming updates.
         ActionType actionType{ActionType::NOP};
         bool hasTargetBounds{false};
         Rect targetBounds{};
-        /// Stable concrete target widget identity (APE trace field `full`).
+        /// Stable concrete target widget identity (`full` trace field).
         bool hasTargetFullPath{false};
         uintptr_t targetFullPathHash{0};
         /// Optional exact target StateKey for collision defense / debugging.
         bool hasTargetStateKey{false};
-        naming::StateKey targetStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        naming::StateKey targetStateKey = naming::StateKey::fromParts("", nullptr, {});
         bool valid{false};
     };
 
-    /// Per-activity Naming refine/coarsen (L′→L split on StateKey hashes, mirror ActivityAbstractionContext).
+    /// Per-activity naming refine/coarsen context.
     struct ApeNamingAbstractionContext {
         naming::NamingPtr previousNamingBeforeRefine;
         std::string previousNamingFingerprintBeforeRefine;
         std::unordered_map<uintptr_t, std::unordered_set<uintptr_t>> oldKeyHashToNewKeyHashes;
-        // Approximate APE batchAbstract "affected states" count per parent-key bucket.
+        // affected state observations per parent-key bucket (used by coarsen gate).
         std::unordered_map<uintptr_t, size_t> oldKeyHashToObservationCount;
         size_t stateCountAtLastNamingRefinement{0};
         int nonDetPairsAtLastNamingRefinement{0};
         // Pair-driven refine/coarsen context (Java resolveNonDeterminism / batchAbstract style)
         uintptr_t triggerSourceKeyHash{0};        // XML-space hash (for coarsen gate alignment)
         uintptr_t triggerSourceKeyHashOriginal{0}; // Element-space hash (for blacklist lookup)
+        uintptr_t triggerSourceKeyHashUsed{0};     // XML-space hash used by coarsen gate
         bool triggerSourceKeyExact{false};
-        naming::StateKey triggerSourceKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        naming::StateKey triggerSourceKey = naming::StateKey::fromParts("", nullptr, {});
         uintptr_t triggerActionHash{0};
         std::unordered_set<uintptr_t> triggerTargetKeyHashes;
         size_t triggerTargetCountAtRefine{0};
+    };
+
+    struct ApeActionDivergentPredicate {
+        uintptr_t sourceStateHash{0};
+        std::string sourceXml;
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        gui_tree::GUITreePtr sourceTree{};
+#endif
+        std::vector<std::vector<int>> partitionsStableIds;
+    };
+
+    struct ApeStatesFewerThanPredicate {
+        int threshold{0};
+        std::vector<uintptr_t> stateHashes;
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        std::vector<gui_tree::GUITreePtr> sourceTrees;
+#endif
+    };
+
+    /// Java AssertSourceDivergent: two ND branch source documents must not map to the same StateKey
+    /// under a candidate naming. `sharedSourceStateHash` is the single graph state for the pair
+    /// (st1.getSource() == st2.getSource()); used for predicate affected-scoping like
+    /// AssertActionDivergent.
+    struct ApeSourceDivergentPredicate {
+        std::string xmlA;
+        std::string xmlB;
+        uintptr_t sharedSourceStateHash{0};
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        gui_tree::GUITreePtr sourceTreeA{};
+        gui_tree::GUITreePtr sourceTreeB{};
+#endif
     };
 
     struct ApePairKey {
@@ -183,13 +224,16 @@ namespace gui_tree {
         ApeTargetCounts targetCounts;
         std::string sourceActivity;
         bool hasSourceStateKey{false};
-        naming::StateKey sourceStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        naming::StateKey sourceStateKey = naming::StateKey::fromParts("", nullptr, {});
     };
 
-    /// APE EvidencePool sample for one (sourceKeyHash, actionSignature) pair.
-    /// In native we use ApeTransitionEntry's concrete fields to approximate Java's evidence.
+    /// EvidencePool sample for one (sourceKeyHash, actionSignature) pair.
+    /// Uses concrete transition-entry fields to approximate Java's evidence.
     struct ApeEvidenceSample {
         uintptr_t sourceStateHash{0};
+        uintptr_t sourceTreeHash{0};
+        uint64_t sourceTransitionSeq{0};
+        std::string sourceXml;
         uintptr_t targetStateHash{0};
         uintptr_t targetKeyHash{0};
         ActionType actionType{ActionType::NOP};
@@ -418,7 +462,7 @@ namespace gui_tree {
          * Policy file path (per package):
          *   /sdcard/fastbot_{packageName}.statekey.json
          *
-         * v1 files may list legacy widget-key masks and coarseningBlacklist; they are ignored (APE dynamic
+         * v1 files may list legacy widget-key masks and coarseningBlacklist; they are ignored (dynamic
          * identity does not use mask refinement). v2 writes an empty activities array only.
          */
         void loadStateAbstractionPolicy();
@@ -431,23 +475,32 @@ namespace gui_tree {
         void saveStateAbstractionPolicy() const;
 
         /**
-         * @brief Optional APE bridge: store StateKey alongside an RL state (indexed by state->hash()).
+         * @brief Optional StateKey sidecar: store StateKey alongside an RL state (indexed by state->hash()).
          * Call after the state is in the graph (e.g. after createAndAddState) when GUITree + Naming produced a key.
          */
         void recordApeStateKey(const StatePtr &state, const naming::StateKey &key);
 
-        /** Lookup a previously recorded APE StateKey by state hash (returns false if none). */
-        bool tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out) const;
+        /**
+         * Lookup a previously recorded StateKey by state hash.
+         * When hash bucket has collisions, use hints to select exact key (object-equality style):
+         * - hintActivity: canonical activity string match
+         * - hintKeyHash: expected StateKey::hash()
+         */
+        bool tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out,
+                               const std::string &hintActivity = std::string(),
+                               uintptr_t hintKeyHash = 0) const;
 
-        /** Hash-only lookup for previously recorded APE StateKey. */
-        bool tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash) const;
+        /** Hash-only lookup for previously recorded StateKey. */
+        bool tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash,
+                                   const std::string &hintActivity = std::string(),
+                                   uintptr_t hintKeyHash = 0) const;
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         /**
-         * When APE Naming changes, Model prunes stale states from Graph. This returns the action hashes
+         * When naming changes, Model prunes stale states from Graph. This returns the action hashes
          * (ActivityNameAction::hash in dynamic mode) collected from those pruned states so agents can
          * invalidate hash-keyed caches in a scoped way. Valid during the call stack of
-         * Model::notifyAgentsOfApeNamingChange().
+         * Model::notifyAgentsOfNamingChange().
          */
         const std::unordered_set<uintptr_t> &getPendingInvalidatedReuseActionHashes() const {
             return _apeInvalidatedReuseActionHashes;
@@ -573,7 +626,7 @@ namespace gui_tree {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
         /** Build GUITree (+ dom for XPath); set outKey from Naming + tree. Returns false on failure.
-         *  When @p stateForDynamicApply is non-null (dynamic RL identity), applies APE action hashes
+         *  When @p stateForDynamicApply is non-null (dynamic RL identity), applies action hashes
          *  while the GUITree is still alive — must not defer to after return (node pointers invalid). */
         bool buildApeStateKeyFromElementTree(const ElementPtr &element, const std::string &activity,
                                              naming::StateKey *outKey,
@@ -586,30 +639,55 @@ namespace gui_tree {
         static void logApeStateKeySnapshot(const std::string &rawActivity, const StatePtr &state,
                                            const naming::StateKey &key, const GraphPtr &graph);
 
-        /// Record one transition for APE naming non-determinism detection (StateKey sidecars).
+        /// Record one transition for naming non-determinism detection (StateKey sidecars).
         void recordTransition(const AbstractAgentPtr &agent, const StatePtr &targetState);
-        /// Run APE naming refinement batch if step count reached interval
+        /// Run naming refinement batch if step count reached interval
         void runRefinementAndCoarseningIfScheduled();
-        /// APE Naming lattice: record transition when both ends have StateKey sidecars
+        /// Naming lattice: record transition when both ends have StateKey sidecars.
+        /// When skipNonDeterministicResolve (StatefulAgent.currentStateRecovered): keep pair aggregation /
+        /// logs aligned with Graph.addTransition; skip NamingFactory.resolveNonDeterminism equivalent only.
         void recordApeTransitionForAbstraction(const StatePtr &src, const StatePtr &tgt,
-                                               const ActivityStateActionPtr &act);
+                                               const ActivityStateActionPtr &act,
+                                               bool skipNonDeterministicResolve = false);
         std::vector<std::string> detectNonDeterminismApe() const;
         struct ApeRefinePair {
+            uint64_t nstTransitionSeq{0};
             uintptr_t sourceKeyHash{0};
             bool hasSourceStateKey{false};
-            naming::StateKey sourceStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+            naming::StateKey sourceStateKey = naming::StateKey::fromParts("", nullptr, {});
             uintptr_t actionHash{0};
+            uintptr_t actionIdentity{0};
             std::unordered_set<uintptr_t> targetKeyHashes;
             size_t targetCount{0};
         };
-        bool refineActivityApeNaming(const std::string &activity);
+        enum class ApeRefineFailReason {
+            None = 0,
+            ActionBlacklisted,
+            NoDefaultRootNaming,
+            MaxStatesPerActivity,
+            MaxGuitreesPerState,
+            PairTargetsInsufficient,
+            UnsupportedRefineRelation,
+            NoAcceptedCandidates,
+            /// Distinct from NoAcceptedCandidates: branch data (ND transition log / XML snapshots) was
+            /// unavailable for this (src,action) pair, so we never actually enumerated candidates.
+            /// The caller must NOT penalize the action via NDBlacklist in this case (would produce
+            /// false-positive blacklisting of transitions whose evidence was trimmed from the log).
+            BranchPairsUnavailable,
+            Other,
+        };
         /// @param precomputedActivityNonDetPairCount if >= 0 (from batch collectNonDetPairs), skip per-activity log scan
         bool refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
                                      int precomputedActivityNonDetPairCount = -1);
+        bool refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
+                                     int precomputedActivityNonDetPairCount,
+                                     ApeRefineFailReason *outFailReason);
         bool coarsenActivityApeNamingIfNeeded(const std::string &activity);
-        /// @return true if any refine success or coarsen rollback ran in this batch (for agent notify).
-        bool runApeNamingAbstractionBatch();
-        /// After APE Naming changes, StateKey::hash() space shifts; stale entries must not dedup new visits.
+        /// checkOverAbstractedState: sort targetedActions, dedupe by target, per action
+        /// replaceLast/extend + check (see NamingFactory.actionRefinement). Falls back to batch
+        /// NamingFactory::actionRefinement when pugixml or state XML cache is unavailable.
+        size_t runApeOverAbstractedPreEvolvePhase(const std::string &activity, const StatePtr &state);
+        /// After naming changes, StateKey::hash() space shifts; stale entries must not dedup new visits.
         void invalidateApeGraphStateKeyDedupMap();
 
         /**
@@ -632,41 +710,85 @@ namespace gui_tree {
             const naming::NamingPtr &toNaming,
             const std::unordered_set<uintptr_t> *focusOldKeyHashes = nullptr);
 
-        /// Drop APE transition log + pair-agg rows for @p actKeyCanonical (Java rebuild clears stale hash space).
+        /// Drop transition log + pair-agg rows for @p actKeyCanonical (rebuild clears stale hash space).
         void apeClearTransitionAggregationForActivity(const std::string &actKeyCanonical);
         void notifyAgentsOfApeNamingChange();
+        /// Model.version epoch: bumps each time naming/graph refresh notifications run;
+        /// Java increments Model.version on full rebuild() after a successful refine or coarsen).
+        uint64_t getApeStructuralVersion() const { return _apeStructuralVersion; }
 
-        /// Count of distinct APE StateKeys recorded for an activity under a specific Naming fingerprint.
+        /// Count of distinct StateKeys recorded for an activity under a specific Naming fingerprint.
         ///
         /// This helps keep refinement gates (e.g. minStates/minStateDelta) aligned with the *current* naming,
         /// instead of being biased by historical states created under older naming versions.
         size_t getApeStateCountByActivityAndNamingFingerprint(
             const std::string &activityKeyCanonical, const std::string &namingFingerprint) const;
 
-        /// Drop stale states created under a previous naming fingerprint for the given activity.
-        ///
-        /// This is a lightweight alternative to a full Java-style Model.rebuild(): we remove states/actions
-        /// created under an old naming key space so that agents and naming heuristics see a closer-to-consistent
-        /// abstract graph.
-        void pruneStaleApeStatesForActivity(const std::string &activityKeyCanonical,
-                                            const std::string &staleNamingFingerprint,
-                                            const std::unordered_set<uintptr_t> *affectedStateHashes = nullptr);
+        /// Sweep every state whose stored StateKey fingerprint
+        /// differs from the activity's current naming fingerprint. Model.rebuild() iterates
+        /// all states and removes any whose tree.currentNaming != namingManager.getNaming(tree);
+        /// our fingerprint comparison is the storage-level equivalent and catches both the
+        /// "just-superseded" fingerprint AND any older leaks that the explicit
+        /// stale-fingerprint prune call did not reach. Invoked before the
+        /// maxStatesPerActivity gate so the gate count reflects live states only (otherwise
+        /// stale states pin the activity above the threshold forever and refine never fires -
+        /// the end-of-refine prune never runs because the gate blocks it).
+        void pruneDivergentApeStatesForActivity(const std::string &activityKeyCanonical);
 
-        /// Java NamingFactory.guiTreeNamingBlaclist: reject candidate if fingerprint is banned for any affected
-        /// graph state (source-side + one repr per ND target key, see refineActivityApeNaming).
+        void pruneStaleApeStatesForActivity(const std::string &activityKeyCanonical,
+            const std::string &staleNamingFingerprint,
+            const std::unordered_set<uintptr_t> *affectedStateHashes = nullptr);
+
+        /// Shared cleanup body for per-activity state prunes. Drops graph states + sidecar caches
+        /// for the given hash set, preserving mini-history-referenced XML for later local rebuild.
+        /// Takes the set by reference (non-const) as a minor impl-level convenience: callers have
+        /// no further use for the set after the call, and we avoid an extra copy.
+        void pruneApeStatesByStateHashesCommon(const std::string &activityKeyCanonical,
+                                               std::unordered_set<uintptr_t> &staleStateHashes,
+                                               const char *reasonTag);
+
+        /// graph state from refine source-side GUITrees.
         bool evalApeGuiTreeNamingBlacklist(const std::vector<uintptr_t> &stateHashes,
                                            const naming::NamingPtr &naming) const;
+        /// NamingFactory.checkPredicate order (type enum); eval matches AbstractPredicate.getState/getName:
+        /// 'affected' is object-level GUITree set (not state-hash proxy). Trees in affected use candidate
+        /// naming; otherwise use per-tree naming via StateNamingManager::treeToNaming(tree)
+        /// (NamingManager.getNaming(tree)). If affected is empty/null, candidate naming is never used.
+        bool evalApeActionRefinementPredicates(const std::string &activity, const naming::NamingPtr &naming,
+                                               const std::vector<gui_tree::GUITreePtr> *affectedSourceTrees);
+        /// Resolve effective Naming for a concrete state's GUITree (state-key edge walk), `getNaming(tree)`.
+        naming::NamingPtr apeNamingResolvedViaTreeWalk(const std::string &activity, uintptr_t stateHash);
+        void addApeStatesFewerThanPredicate(const std::string &activity,
+                                            const std::unordered_set<uintptr_t> &affectedStateHashes,
+                                            int threshold);
+        /// Approximates Java AssertActionDivergent / AssertActionDivergent2 registration from ND refine and
+        /// over-abstracted pre-evolve phase (merged-widget partitions keyed by preorder indices).
+        void addApeActionRefinementPredicate(const std::string &activity,
+                                             uintptr_t sourceStateHash,
+                                             const std::string &sourceXml,
+                                             const std::vector<int> &resolvedNodeStableIds,
+                                             const naming::NamingPtr &updatedNaming);
+        void removeConflictingApeActionRefinementPredicates(
+            const std::string &activity, const naming::NamingPtr &naming,
+            const std::unordered_set<uintptr_t> &affectedStateHashes);
+        void removeConflictingApeStatesFewerThanPredicates(
+            const std::string &activity, const naming::NamingPtr &naming,
+            const std::unordered_set<uintptr_t> &affectedStateHashes);
+        void addApeSourceDivergentPredicate(const std::string &activity, const std::string &xmlA,
+                                            const std::string &xmlB, uintptr_t sharedSourceStateHash);
+        void removeConflictingApeSourceDivergentPredicates(
+            const std::string &activity, const naming::NamingPtr &naming,
+            const std::unordered_set<uintptr_t> &affectedStateHashes);
         void apeBlacklistFinerNamingOnRollback(
             const std::string &activity, const naming::NamingPtr &finerNaming,
             const ApeNamingAbstractionContext &ctx, const std::unordered_set<uintptr_t> &affectedStateHashesForBlacklist);
         void apeCapGuiTreeNamingBlacklist();
         /// Cap coarsening / pair / ND-action blacklists (long-run stability; Java rebuild drops stale data).
         void apeCapApeNamingCoarsenAndRefineBlacklists();
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-        /// APE Config.evolveModel: over-abstracted action refinement before selectAction (merged-widget analogue).
-        bool tryApeOverAbstractedActionRefinement(const StatePtr &state, const std::string &activity,
-                                                  const std::string &xml);
-#endif
+        /** Sync Graph.namingToStates analogue after state-key sidecar mutation. */
+        void syncApeNamingGraphIndex(const StatePtr &state);
+        /** Repopulate Graph naming index from sidecars (cold start / repair drift). */
+        void warmApeNamingGraphIndex();
 #endif
         
         /// Smart pointer to the graph object managing all states and actions
@@ -675,6 +797,8 @@ namespace gui_tree {
         /// Map from device ID to agent object
         /// Allows multiple devices to have different agents with different strategies
         AbstractAgentPtrStrMap _deviceIDAgentMap;
+        /// Latest screen State from getOperateOpt (used to validate actions after naming rebuild).
+        StatePtr _apeLastScreenStateForValidate;
         
         /// User-specified preferences for customizing behavior
         PreferencePtr _preference;
@@ -699,27 +823,30 @@ namespace gui_tree {
         /// Per-activity widget key mask for dynamic state abstraction
         mutable std::unordered_map<std::string, WidgetKeyMask> _activityKeyMask;
 
-        /// Optional: APE-native StateKey sidecar (parallel to widget-hash State); not used by Graph dedup.
+        /// Optional StateKey sidecar (parallel to widget-hash State); not used by Graph dedup.
         /// Note: state hash equals StateKey::hash() in dynamic mode; keep a bucket to defend rare hash collisions.
         std::unordered_map<uintptr_t, std::vector<naming::StateKey>> _ape_state_keys_by_hash;
 
-        /// When max.apeGraphDedupByStateKey: canonical StatePtr per StateKey::hash().
-        /// When max.apeGraphDedupByStateKey: hash bucket + full StateKey equality check.
+        /// When state-key dedup is enabled: canonical StatePtr per StateKey::hash().
+        /// Uses hash bucket + full StateKey equality check.
         std::unordered_map<uintptr_t, std::vector<ApeGraphStateKeyDedupEntry>> _ape_graph_state_by_key;
-        /// APE correctness counters (debug/telemetry).
+        /// Correctness counters (debug/telemetry).
         ApeCorrectnessCounters _ape_correctness_counters{};
 
-        /// APE naming: wraps ActivityNamingManager + optional getNamingFixedPoint(actionRefinement on same dom).
+        /// Naming manager wrapper + optional getNamingFixedPoint(actionRefinement on same dom).
         std::shared_ptr<naming::StateNamingManager> _apeStateNamingManager;
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         std::vector<ApeTransitionEntry> _apeTransitionLog;
         size_t _apeTransitionLogWriteIndex{0};
+        std::vector<TreeTransitionEntry> _apeTreeTransitionLog;
+        size_t _apeTreeTransitionLogWriteIndex{0};
         std::unordered_map<ApePairKey, ApePairAggValue, ApePairKeyHash> _apePairAgg;
         void apePairAggRemove(const ApeTransitionEntry &e);
         void apePairAggAdd(const ApeTransitionEntry &e);
 
-        void apeEvidencePoolAdd(const ApePairKey &pairKey, const ApeTransitionEntry &e);
+        void apeEvidencePoolAdd(const ApePairKey &pairKey, const ApeTransitionEntry &e,
+                                const std::string *sourceXmlSnapshot = nullptr);
         void apeEvidencePoolClockEvict();
 
         std::unordered_map<ApePairKey, ApeEvidencePool, ApePairKeyHash> _apeEvidencePools;
@@ -727,25 +854,44 @@ namespace gui_tree {
         size_t _apeEvidencePoolClockWriteIndex{0};
         size_t _apeEvidencePoolClockEvictIndex{0};
         uint64_t _apeEvidenceEpoch{0};
+        uint64_t _apeTransitionSeq{0};
+        uint64_t _apeStructuralVersion{0};
 
-        size_t _stepCountSinceLastCheck{0};
         size_t _apeEventRefineSuccessCount{0};
         size_t _apeEventCoarsenRollbackCount{0};
-        size_t _apeBatchRefineSuccessCount{0};
-        size_t _apeBatchCoarsenRollbackCount{0};
         std::unordered_map<std::string, ApeNamingAbstractionContext> _apeNamingContext;
         std::set<std::pair<std::string, std::string>> _apeNamingCoarseningBlacklist;
-        // Java-like predicate memory: avoid repeatedly refining on proven-bad trigger pairs.
-        std::unordered_map<std::string, std::unordered_set<ApePairKey, ApePairKeyHash>> _apeRefinePairBlacklist;
-        // APE NamingFactory.NDActionBlacklist: after failed resolveNonDeterminism, if out-edge count for this
-        // action is >= 3 (Java: getOutStateTransitions(action).size() >= 3), blacklist the action.
-        std::unordered_map<std::string, std::unordered_set<uintptr_t>> _apeRefineActionBlacklist;
+        // NDActionBlacklist: blacklist exact action object identity.
+        // actionHash remains for pair grouping/statistics only.
+        std::unordered_set<uintptr_t> _apeRefineActionIdentityBlacklist;
+        /// actionRefinementBlacklist during preEvolveModel over-abstracted phase.
+        std::unordered_set<uint64_t> _apeOverAbstractedPreEvolveActionBlacklist;
+        /// AssertActionDivergent2 predicates persisted after successful action-refinement.
+        std::unordered_map<std::string, std::vector<ApeActionDivergentPredicate>>
+            _apeActionRefinementPredicates;
+        /// AssertStatesFewerThan predicates persisted after rollback coarsening.
+        std::unordered_map<std::string, std::vector<ApeStatesFewerThanPredicate>>
+            _apeStatesFewerThanPredicates;
+        /// AssertSourceDivergent: ND branch source XML pair per successful refine.
+        std::unordered_map<std::string, std::vector<ApeSourceDivergentPredicate>>
+            _apeSourceDivergentPredicates;
         /// Action hashes belonging to states pruned after a Naming change; used for agent cache invalidation.
         std::unordered_set<uintptr_t> _apeInvalidatedReuseActionHashes;
+
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+        /** State tree history: capped deque of immutable GUITree clones per concrete state hash. */
+        static constexpr size_t kMaxApeGuiTreeSnapshotsPerState = 64;
+        std::unordered_map<uintptr_t, std::deque<gui_tree::GUITreePtr>> _apeGuiTreeSnapshotsByStateHash;
+        void apeRememberGuiTreeSnapshot(uintptr_t stateHash, const gui_tree::GUITree &tree);
+        gui_tree::GUITreePtr apeLatestGuiTreeSnapshot(uintptr_t stateHash) const;
+        /** Prefer snapshot whose cached XML equals `xml` (transition-tree consistency). */
+        gui_tree::GUITreePtr apeGuiTreeSnapshotForExactCachedXml(const std::string &xml) const;
+#endif
 
         struct ApeMiniHistoryTransition {
             uintptr_t sourceStateHash{0};
             uintptr_t targetStateHash{0};
+            uintptr_t actionHash{0};
             ActionType actionType{ActionType::NOP};
             bool hasTargetBounds{false};
             Rect targetBounds{};
@@ -793,7 +939,9 @@ namespace gui_tree {
         void apeMiniHistoryTouchState(const std::string &activityKeyCanonical, uintptr_t stateHash);
         void apeMiniHistoryRecordTransition(const std::string &activityKeyCanonical,
                                             const ApeTransitionEntry &e);
-        void apeInsertTransitionEntryNoRefine(const ApeTransitionEntry &e);
+        void apeInsertTransitionEntryNoRefine(
+            const ApeTransitionEntry &e, const TreeTransitionEntry *treeMeta = nullptr);
+        void apeInsertTreeTransitionNoRefine(const TreeTransitionEntry &e);
         bool apeLocalRebuildFromHistoryIfNeeded(const std::string &activityKeyCanonical,
                                                 const char *reason);
         bool apeLocalRebuildFromHistory(const std::string &activityKeyCanonical);
@@ -805,8 +953,10 @@ namespace gui_tree {
         void assertApeSingleThreaded() const;
 #endif
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-        /// Recent page XML per state hash for transition-level refine candidate replay (APE checkActionRefinement-style).
+        /// Recent page XML per state hash for transition-level refine candidate replay (checkActionRefinement-style).
         std::unordered_map<uintptr_t, std::string> _apeStateXmlByStateHash;
+        /// Same keys when the live Element snapshot exists - avoids tinyxml re-parse; matches buildFromElement semantics.
+        std::unordered_map<uintptr_t, ElementPtr> _apeStateElementByStateHash;
         /** Resolve widget XPath + parent Namelet under @p cur for cached XML of @p stateHash (Java resolveCurrentNamelet). */
         bool resolveApeWidgetExprAndParentNamelet(uintptr_t stateHash, const std::string &activityForSplit,
                                                   const naming::NamingPtr &cur, const WidgetPtr &targetWidget,

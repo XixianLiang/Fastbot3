@@ -20,9 +20,11 @@
 #include <sstream>
 #include <cinttypes>
 #include <atomic>
+#include <unordered_set>
 
 namespace fastbotx {
 namespace {
+    constexpr bool kApeStateHashWithOrder = true;
 
     std::string stateActivityLabel(const State &s) {
         const stringPtr ap = s.getActivityString();
@@ -148,7 +150,7 @@ namespace {
             // If widget order matters for hash computation, sort by hash to ensure consistency
             // This ensures that same set of widgets always produces same hash regardless of
             // the order they were inserted into the set
-            if (STATE_WITH_WIDGET_ORDER) {
+            if (kApeStateHashWithOrder) {
                 std::sort(sharedPtr->_widgets.begin(), sharedPtr->_widgets.end(),
                           [](const WidgetPtr& a, const WidgetPtr& b) {
                               if (a == nullptr || b == nullptr) {
@@ -161,7 +163,7 @@ namespace {
 
         // Combine activity hash with widget hash
         activityHash ^=
-                (combineHash<Widget>(sharedPtr->_widgets, STATE_WITH_WIDGET_ORDER) << 1);
+                (combineHash<Widget>(sharedPtr->_widgets, kApeStateHashWithOrder) << 1);
         sharedPtr->_hashcode = activityHash;
         
         // Build actions for all widgets
@@ -185,6 +187,40 @@ namespace {
             for (ActionType act: w->getActions()) {
                 ActivityStateActionPtr modelAction = std::make_shared<ActivityStateAction>(
                         sharedPtr, w, act);
+                RectPtr wb = w->getBounds();
+                RectPtr ab = modelAction->getTarget() ? modelAction->getTarget()->getBounds() : nullptr;
+                const bool boundsMismatch =
+                    wb && ab &&
+                    (wb->left != ab->left || wb->top != ab->top ||
+                     wb->right != ab->right || wb->bottom != ab->bottom);
+                if (boundsMismatch) {
+                    auto actPtr = sharedPtr->getActivityString();
+                    const std::string actName = (actPtr && actPtr.get()) ? *actPtr : std::string();
+                    BDLOG("state actions: widget_action_bounds_mismatch activity=%s state=%zu widgetHash=%zu "
+                          "actType=%d class=%s rid=%s widgetBounds=%s actionBounds=%s",
+                          actName.c_str(), sharedPtr->hash(), w->hash(), static_cast<int>(act),
+                          w->getClass().c_str(), w->getResourceID().c_str(),
+                          wb->toString().c_str(), ab->toString().c_str());
+                }
+                if (!wb || wb->isEmpty()) {
+                    auto actPtr = sharedPtr->getActivityString();
+                    const std::string actName = (actPtr && actPtr.get()) ? *actPtr : std::string();
+                    BDLOG("state actions: zero_or_missing_target_bounds activity=%s state=%zu widgetHash=%zu "
+                          "actType=%d class=%s rid=%s bounds=%s",
+                          actName.c_str(), sharedPtr->hash(), w->hash(), static_cast<int>(act),
+                          w->getClass().c_str(), w->getResourceID().c_str(),
+                          wb ? wb->toString().c_str() : "(null)");
+                }
+                if (!ab || ab->isEmpty()) {
+                    auto actPtr = sharedPtr->getActivityString();
+                    const std::string actName = (actPtr && actPtr.get()) ? *actPtr : std::string();
+                    BDLOG("state actions: action_target_bounds_empty activity=%s state=%zu widgetHash=%zu "
+                          "actType=%d class=%s rid=%s widgetBounds=%s actionBounds=%s",
+                          actName.c_str(), sharedPtr->hash(), w->hash(), static_cast<int>(act),
+                          w->getClass().c_str(), w->getResourceID().c_str(),
+                          wb ? wb->toString().c_str() : "(null)",
+                          ab ? ab->toString().c_str() : "(null)");
+                }
                 sharedPtr->_actions.emplace_back(modelAction);
             }
         }
@@ -309,6 +345,19 @@ namespace {
         
         WidgetPtr widget = std::make_shared<Widget>(parentWidget, elem);
         this->_widgets.emplace_back(widget);
+        RectPtr wb = widget ? widget->getBounds() : nullptr;
+        if (!wb || wb->isEmpty()) {
+            auto actPtr = this->getActivityString();
+            const std::string actName = (actPtr && actPtr.get()) ? *actPtr : std::string();
+            RectPtr eb = elem ? elem->getBounds() : nullptr;
+            BDLOG("state build: widget_empty_bounds activity=%s state=%zu widgetHash=%zu class=%s rid=%s "
+                  "elemBounds=%s widgetBounds=%s",
+                  actName.c_str(), this->hash(), widget ? widget->hash() : 0,
+                  widget ? widget->getClass().c_str() : "(null)",
+                  widget ? widget->getResourceID().c_str() : "(null)",
+                  eb ? eb->toString().c_str() : "(null)",
+                  wb ? wb->toString().c_str() : "(null)");
+        }
         
         // Recursively process children
         for (const auto &childElement: elem->getChildren()) {
@@ -399,9 +448,24 @@ namespace {
         auto pref = Preference::inst();
         const bool keepWidgetDetailsForLlmdroid =
             (pref != nullptr) && pref->isLlmdroidEnabled();
+        std::unordered_set<const Widget *> actionTargetWidgets;
+        actionTargetWidgets.reserve(this->_actions.size());
+        for (const auto &action : this->_actions) {
+            if (!action) {
+                continue;
+            }
+            const WidgetPtr target = action->getTarget();
+            if (target) {
+                actionTargetWidgets.insert(target.get());
+            }
+        }
+
         if (!keepWidgetDetailsForLlmdroid) {
             for (auto const &widget: this->_widgets) {
                 if (widget != nullptr) {
+                    if (actionTargetWidgets.count(widget.get()) != 0) {
+                        continue;
+                    }
                     widget->clearDetails();
                 }
             }

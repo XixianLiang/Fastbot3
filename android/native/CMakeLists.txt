@@ -16,10 +16,13 @@ ELSEIF (CMAKE_SYSTEM_NAME MATCHES "Linux")
 ENDIF (CMAKE_SYSTEM_NAME MATCHES "Android")
 
 IF (CMAKE_BUILD_TYPE MATCHES "Release")
- message(STATUES "compile release")
+ message(STATUS "compile release")
 ELSE (CMAKE_BUILD_TYPE MATCHES "Release")
 add_definitions(-D_DEBUG_)
 ENDIF (CMAKE_BUILD_TYPE MATCHES "Release")
+
+# Strip shared libs in Release (-s). Turn OFF when you need llvm-addr2line / ndk-stack on arm64 artifact.
+option(FASTBOT_STRIP_NATIVE_SO "Strip Release native .so (-s); OFF keeps symbols for crash symbolication" ON)
 
 set(ANDROID_STL "c++_static")
 set(CMAKE_CXX_STANDARD 14) 
@@ -33,8 +36,15 @@ set(ANDROID_ARM_NEON ON)
 
 set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -Wall -Wno-deprecated-literal-operator")
 set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -Wall -Wno-deprecated-literal-operator")
-set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -s")
-set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -s")
+if(FASTBOT_STRIP_NATIVE_SO)
+  set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} -s")
+  set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} -s")
+else()
+  # Dwarf for native stack decoding (still use -fvisibility=hidden on symbols)
+  set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} -g")
+  set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} -g")
+  message(STATUS "FASTBOT_STRIP_NATIVE_SO=OFF: Release .so keeps debug info for addr2line")
+endif()
 
 find_library( # Sets the name of the path variable.
               log-lib
@@ -85,6 +95,8 @@ file( GLOB SRC_LIST
 
 # LVQExplorerAgent.cpp was removed; exclude from build in case of stale GLOB/cache
 list(REMOVE_ITEM SRC_LIST "agent/LVQExplorerAgent.cpp")
+list(APPEND SRC_LIST "model/TreeTransition.cpp")
+list(APPEND SRC_LIST "desc/naming/NameManager.cpp")
 
 # pugixml (XPath 1.0): optional until thirdpart/pugixml/pugixml.cpp is vendored (see vendor_pugixml.sh)
 set(PUGIXML_CPP "${CMAKE_CURRENT_SOURCE_DIR}/thirdpart/pugixml/pugixml.cpp")

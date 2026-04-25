@@ -17,6 +17,7 @@
  * @authors Tianxiao Gu, Zhao Zhang
  */
 #include "ActionPatchNamer.h"
+#include "NameManager.h"
 #include "../gui_tree/GUITreeNode.h"
 #include "../../Base.h"
 
@@ -105,7 +106,6 @@ namespace {
 
     ScrollType normalizeScrollTypeForToken(ScrollType st, bool /*includeScrollType*/,
                                            uint8_t /*includeBoolPropsMask*/) {
-        // APE Java derives scroll actions from node scroll type, but does not serialize scroll-type into XPath.
         return st;
     }
 
@@ -240,7 +240,6 @@ void setActionPatchProfile(const std::string &value) {
     const std::string lower = toLowerCopy(trimmed);
     if (lower.empty() || lower == "default" || lower == "full" || lower == "ape" || lower == "all") {
         g_cfg.include_bool_props_mask = 0x1Fu;
-        // APE Java ActionPatchName.toXPath() does not include scroll-type.
         g_cfg.include_scroll_type = false;
         return;
     }
@@ -351,8 +350,8 @@ NamePtr ActionPatchNamer::naming(gui_tree::GUITreeNode &node) {
     const ScrollType st =
         normalizeScrollTypeForToken(actionPatchScrollTypeForNode(node), cfg.include_scroll_type,
                                     cfg.include_bool_props_mask);
-    return std::make_shared<ActionPatchName>(shared_from_this(), std::move(baseName), p, st,
-                                             cfg.include_bool_props_mask, cfg.include_scroll_type);
+    return cacheName(std::make_shared<ActionPatchName>(
+        shared_from_this(), std::move(baseName), p, st, cfg.include_bool_props_mask, cfg.include_scroll_type));
 }
 
 NamePtr ActionPatchNamer::namingWithXPathKey(gui_tree::GUITreeNode &node, const std::string &xpathKey) {
@@ -364,8 +363,9 @@ NamePtr ActionPatchNamer::namingWithXPathKey(gui_tree::GUITreeNode &node, const 
     // `xpathKey` must be base-key only (no ActionPatch suffix). We append the suffix exactly once here.
     std::string full = appendActionPatchXPathSuffix(std::string(xpathKey), p, st, cfg.include_bool_props_mask,
                                                     cfg.include_scroll_type);
-    return std::make_shared<ActionPatchName>(shared_from_this(), nullptr, p, st, cfg.include_bool_props_mask,
-                                             cfg.include_scroll_type, std::move(full));
+    return cacheName(std::make_shared<ActionPatchName>(
+        shared_from_this(), nullptr, p, st, cfg.include_bool_props_mask, cfg.include_scroll_type,
+        std::move(full)));
 }
 
 std::string ActionPatchNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const {

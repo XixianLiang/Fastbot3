@@ -528,6 +528,40 @@ namespace fastbotx {
         }
     }
 
+    void AbstractAgent::onVisitStateTransition(const StatePtr &fromState,
+                                               const ActivityStateActionPtr &action,
+                                               const StatePtr &toState,
+                                               GraphTransitionVisitKind visitKind) {
+        (void)action;
+        switch (visitKind) {
+        case GraphTransitionVisitKind::NewAction:
+        case GraphTransitionVisitKind::NewActionTarget:
+            _graphStableCounter = 0;
+            break;
+        case GraphTransitionVisitKind::Existing:
+            _graphStableCounter++;
+            break;
+        }
+        if (!fromState || !toState) {
+            _activityStableCounter = 0;
+            _stateStableCounter = 0;
+            return;
+        }
+        auto fa = fromState->getActivityString();
+        auto ta = toState->getActivityString();
+        if (fa && ta && fa.get() && ta.get() && *fa.get() == *ta.get()) {
+            _activityStableCounter++;
+        } else {
+            _activityStableCounter = 0;
+        }
+        // APE uses edge.isCircle() && theta==0; approximate with same abstract state identity.
+        if (fromState->hash() == toState->hash()) {
+            _stateStableCounter++;
+        } else {
+            _stateStableCounter = 0;
+        }
+    }
+
     /**
      * @brief Move forward in state machine
      * 
@@ -555,6 +589,27 @@ namespace fastbotx {
         _lastAction = _currentAction;
         _currentAction = _newAction;
         _newAction = nullptr;  // Clear new action, wait for next selection
+    }
+
+    void AbstractAgent::validateAllNewActionsLikeApe(const StatePtr &newState) {
+        if (!newState) {
+            return;
+        }
+        auto modelPtr = this->_model.lock();
+        if (!modelPtr) {
+            return;
+        }
+        GraphPtr graph = modelPtr->getGraph();
+        if (!graph) {
+            return;
+        }
+        const time_t ts = graph->getTimestamp();
+        for (const ActivityStateActionPtr &ap : newState->getActions()) {
+            if (!ap || !ap->isModelAct() || !ap->requireTarget()) {
+                continue;
+            }
+            newState->resolveAt(ap, ts);
+        }
     }
 
     /**

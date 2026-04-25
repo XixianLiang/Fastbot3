@@ -1,7 +1,3 @@
-/*
- * C++ analogue of Java APE StringCache: intern repeated text / content-desc to cut allocations.
- * removeQuotes + truncateText happen before cache (see ApeTextNormalize + GUITreeFactory).
- */
 /**
  * @authors Zhao Zhang
  */
@@ -21,7 +17,6 @@ class ApeStringCache {
 public:
     static const std::string &empty();
 
-    /** Java APE Config.maxStringListSize default is 2000. */
     static void setMaxStringListSize(size_t v);
 
     static const std::string &cacheStringEmptyOnNull(const char *s, bool addToList);

@@ -15,16 +15,26 @@
 #include "../utils.hpp"
 #include <algorithm>
 #include <atomic>
+#include <cstdint>
 #include <deque>
 #include <limits>
 #include <queue>
 #include <cinttypes>
 #include <sstream>
+#include <string>
 #include <unordered_set>
 #include <vector>
 
 
 namespace fastbotx {
+
+    namespace {
+        uint64_t apeMixSrcActionKey(uintptr_t srcHash, uintptr_t actionHash) {
+            uint64_t x = static_cast<uint64_t>(srcHash);
+            uint64_t y = static_cast<uint64_t>(actionHash);
+            return x ^ (y + UINT64_C(0x9e3779b97f4a7c15) + (x << 6) + (x >> 2));
+        }
+    } // namespace
 
 
     /**
@@ -189,6 +199,9 @@ namespace fastbotx {
                 ++it;
                 continue;
             }
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+            apeNamingIndexRemoveState(s);
+#endif
             for (const auto &a : s->getActions()) {
                 this->_visitedActions.erase(a);
                 this->_unvisitedActions.erase(a);
@@ -234,6 +247,107 @@ namespace fastbotx {
         auto it = this->_activityStateCount.find(activity);
         return it != this->_activityStateCount.end() ? it->second : 0;
     }
+
+    void Graph::syncApeStructuralEpoch(uint64_t epoch) {
+        this->_structureId = std::string("g") + std::to_string(static_cast<unsigned long long>(epoch));
+        // Graph edge identity resets with a new naming epoch.
+        this->_apeSrcActionToSeenTargets.clear();
+    }
+
+    void Graph::notifyVisitStateTransition(const StatePtr &fromState,
+                                           const ActivityStateActionPtr &action,
+                                           const StatePtr &toState) {
+        GraphTransitionVisitKind kind = GraphTransitionVisitKind::Existing;
+        if (fromState && action && toState && action->isModelAct() && action->requireTarget()) {
+            const uintptr_t sh = fromState->hash();
+            const uintptr_t ah = action->hash();
+            const uintptr_t th = toState->hash();
+            const uint64_t key = apeMixSrcActionKey(sh, ah);
+            auto &targets = this->_apeSrcActionToSeenTargets[key];
+            if (targets.count(th) != 0) {
+                kind = GraphTransitionVisitKind::Existing;
+            } else {
+                const bool firstTargetForPair = targets.empty();
+                targets.insert(th);
+                kind = firstTargetForPair ? GraphTransitionVisitKind::NewAction
+                                          : GraphTransitionVisitKind::NewActionTarget;
+            }
+        }
+
+        for (const auto &listener : this->_listeners) {
+            if (listener) {
+                listener->onVisitStateTransition(fromState, action, toState, kind);
+            }
+        }
+    }
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    void Graph::apeNamingIndexUpsert(const StatePtr &state, const std::string &namingFingerprint) {
+        if (!state || namingFingerprint.empty()) {
+            return;
+        }
+        auto itPrev = _apeStateToNamingFingerprint.find(state);
+        if (itPrev != _apeStateToNamingFingerprint.end()) {
+            if (itPrev->second == namingFingerprint) {
+                return;
+            }
+            auto itOldSet = _apeStatesByNamingFingerprint.find(itPrev->second);
+            if (itOldSet != _apeStatesByNamingFingerprint.end()) {
+                itOldSet->second.erase(state);
+                if (itOldSet->second.empty()) {
+                    _apeStatesByNamingFingerprint.erase(itOldSet);
+                }
+            }
+            itPrev->second = namingFingerprint;
+        } else {
+            _apeStateToNamingFingerprint[state] = namingFingerprint;
+        }
+        _apeStatesByNamingFingerprint[namingFingerprint].insert(state);
+    }
+
+    void Graph::apeNamingIndexRemoveState(const StatePtr &state) {
+        if (!state) {
+            return;
+        }
+        auto itPrev = _apeStateToNamingFingerprint.find(state);
+        if (itPrev == _apeStateToNamingFingerprint.end()) {
+            return;
+        }
+        auto itSet = _apeStatesByNamingFingerprint.find(itPrev->second);
+        if (itSet != _apeStatesByNamingFingerprint.end()) {
+            itSet->second.erase(state);
+            if (itSet->second.empty()) {
+                _apeStatesByNamingFingerprint.erase(itSet);
+            }
+        }
+        _apeStateToNamingFingerprint.erase(itPrev);
+    }
+
+    void Graph::apeCollectStatesByNamingFingerprints(
+        const std::unordered_set<std::string> &fingerprints,
+        std::vector<StatePtr> *out) const {
+        if (!out) {
+            return;
+        }
+        out->clear();
+        std::unordered_set<StatePtr> dedup;
+        for (const auto &fp : fingerprints) {
+            auto it = _apeStatesByNamingFingerprint.find(fp);
+            if (it == _apeStatesByNamingFingerprint.end()) {
+                continue;
+            }
+            for (const auto &s : it->second) {
+                if (s) {
+                    dedup.insert(s);
+                }
+            }
+        }
+        out->reserve(dedup.size());
+        for (const auto &s : dedup) {
+            out->push_back(s);
+        }
+    }
+#endif
 
     /**
      * @brief Process and index all actions from a state

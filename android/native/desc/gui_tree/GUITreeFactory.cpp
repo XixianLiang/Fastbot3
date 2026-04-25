@@ -21,8 +21,10 @@
 #include "../ApeTextNormalize.h"
 #include "../xpath/XPathNodeMapper.h"
 #include "../Element.h"
+#include "../../events/Preference.h"
 
 #include "../../Base.h"
+#include "../../utils.hpp"
 
 #include <algorithm>
 #include <cstdio>
@@ -99,7 +101,6 @@ namespace {
             return 0;
         }
         if (std::strcmp(scrollableStr, "true") == 0) {
-            // Java APE: Accessibility boolean scrollable => scrollable=3.
             return 3;
         }
         if (std::strcmp(scrollableStr, "false") == 0) {
@@ -134,7 +135,6 @@ namespace {
         if (!className || !*className) {
             return "all";
         }
-        // Align with Java APE GUITreeNode.getScrollType() class whitelist (no RecyclerView here).
         if (std::strcmp(className, "android.widget.ScrollView") == 0 ||
             std::strcmp(className, "android.widget.ListView") == 0 ||
             std::strcmp(className, "android.widget.ExpandableListView") == 0 ||
@@ -175,8 +175,7 @@ namespace {
                         int yr = parseIntAndAdvance(p);
                         if (*p == ']') {
                             Rect r(xl, yl, xr, yr);
-                            if (!r.isEmpty())
-                                gn->setBounds(r);
+                            gn->setBounds(r);
                         }
                     }
                 }
@@ -185,7 +184,6 @@ namespace {
         const char *tclassname = nullptr;
         if (readString(xmlNode, "class", "class", tclassname)) gn->setClassName(std::string(tclassname));
         const bool isEditText = tclassname != nullptr && isEditTextClassName(tclassname);
-        // Java APE GUITreeBuilder.fillNode: text = truncateText(removeQuotes(text)).
         std::string normText;
         const char *rawText = nullptr;
         if (readString(xmlNode, "t", "text", rawText)) {
@@ -253,7 +251,6 @@ namespace {
             }
             scl.set_value(scrollableBits != 0 ? "true" : "false");
         }
-        // Patch DOM scroll-type like Java APE GUITreeBuilder does.
         {
             const int bitsForScrollType = gn->getScrollable();
             const char *scrollTypeStr = computeScrollTypeString(bitsForScrollType, tclassname);
@@ -279,17 +276,113 @@ namespace {
         n->setHeight(h);
     }
 
+    bool asciiLiteralEqualsIgnoreCase(const char *v, const char *lit) {
+        if (!v || !lit) {
+            return false;
+        }
+        while (*v && *lit) {
+            char cv = *v++;
+            char cl = *lit++;
+            if (cv >= 'A' && cv <= 'Z') {
+                cv = static_cast<char>(cv + 32);
+            }
+            if (cl >= 'A' && cl <= 'Z') {
+                cl = static_cast<char>(cl + 32);
+            }
+            if (cv != cl) {
+                return false;
+            }
+        }
+        return *v == *lit;
+    }
+
+    /**
+     * when excludeInvisibleNode (default true), skip non-visible children;
+     * when excludeEmptyChild (default true), skip null-slot analogues (leaf + empty bounds attr).
+     */
+    bool xmlSubtreeExcludedByApePreference(const pugi::xml_node &xe, bool isOuterXmlRoot) {
+        if (!xe || xe.type() != pugi::node_element || isOuterXmlRoot) {
+            return false;
+        }
+
+        fastbotx::PreferencePtr pref = fastbotx::Preference::inst();
+        const bool filterInvisible = !pref || pref->useApeExcludeInvisibleNode();
+        if (filterInvisible) {
+            bool vu = true;
+            if (readBool(xe, "vu", "visible-to-user", vu) && !vu) {
+                return true;
+            }
+
+            const char *vis = nullptr;
+            if (readString(xe, "vis", "visibility", vis) && vis && *vis) {
+                if (asciiLiteralEqualsIgnoreCase(vis, "gone") ||
+                    asciiLiteralEqualsIgnoreCase(vis, "invisible")) {
+                    return true;
+                }
+            }
+        }
+        const bool filterEmptySlot = !pref || pref->useApeExcludeEmptyChild();
+        if (filterEmptySlot) {
+            bool hasElemChild = false;
+            for (pugi::xml_node ch = xe.first_child(); ch; ch = ch.next_sibling()) {
+                if (ch.type() == pugi::node_element) {
+                    hasElemChild = true;
+                    break;
+                }
+            }
+            if (!hasElemChild) {
+                pugi::xml_attribute b = xe.attribute("bounds");
+                if (b && b.value() && b.value()[0] == '\0') {
+                    return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    bool elementSubtreeExcludedByApePreference(const ElementPtr &xe, bool isOuterElementRoot) {
+        if (!xe || isOuterElementRoot) {
+            return false;
+        }
+        fastbotx::PreferencePtr pref = fastbotx::Preference::inst();
+        const bool filterInvisible = !pref || pref->useApeExcludeInvisibleNode();
+        if (filterInvisible) {
+            if (xe->hasApeVisibleToUserAttribute() && !xe->getApeVisibleToUser()) {
+                return true;
+            }
+            const std::string &vis = xe->getApeVisibilityRaw();
+            if (!vis.empty()) {
+                if (asciiLiteralEqualsIgnoreCase(vis.c_str(), "gone") ||
+                    asciiLiteralEqualsIgnoreCase(vis.c_str(), "invisible")) {
+                    return true;
+                }
+            }
+        }
+        const bool filterEmptySlot = !pref || pref->useApeExcludeEmptyChild();
+        if (filterEmptySlot && xe->getChildren().empty() && xe->hasApeEmptyBoundsAttribute()) {
+            return true;
+        }
+        return false;
+    }
+
     GUITreeNodePtr parseElement(pugi::xml_node xe, const GUITreeNodeWeakPtr &parentWeak,
-                                XPathNodeMapper &dom) {
+                                XPathNodeMapper &dom, bool isOuterXmlRoot) {
+        if (xmlSubtreeExcludedByApePreference(xe, isOuterXmlRoot)) {
+            return nullptr;
+        }
         GUITreeNodePtr gn = GUITreeNode::create(parentWeak);
         if (xe.type() == pugi::node_element) {
             dom.registerNode(xe, gn);
         }
         fillFromAttributes(xe, gn);
         for (pugi::xml_node ch = xe.first_child(); ch; ch = ch.next_sibling()) {
-            if (ch.type() != pugi::node_element) continue;
-            GUITreeNodePtr child = parseElement(ch, gn, dom);
-            gn->appendChild(std::move(child));
+            if (ch.type() != pugi::node_element) {
+                continue;
+            }
+            GUITreeNodePtr child = parseElement(ch, gn, dom, false);
+            if (child) {
+                gn->appendChild(std::move(child));
+            }
         }
         return gn;
     }
@@ -300,7 +393,7 @@ namespace {
         }
         gn->setIndex(el->getIndex());
         RectPtr b = el->getBounds();
-        if (b && !b->isEmpty()) {
+        if (b) {
             gn->setBounds(*b);
         }
         gn->setText(ape_text::normalizeTextForApe(el->getText().c_str()));
@@ -364,10 +457,20 @@ namespace {
             const char *stName = computeScrollTypeString(scrollableBits, el->getClassname().c_str());
             xml.append_attribute("scroll-type").set_value(stName);
         }
+        if (el->hasApeVisibleToUserAttribute()) {
+            xml.append_attribute("visible-to-user").set_value(el->getApeVisibleToUser() ? "true" : "false");
+        }
+        if (!el->getApeVisibilityRaw().empty()) {
+            xml.append_attribute("visibility").set_value(el->getApeVisibilityRaw().c_str());
+        }
     }
 
     GUITreeNodePtr parseElementFromElementWithDom(const ElementPtr &xe, const GUITreeNodeWeakPtr &parentWeak,
-                                                  pugi::xml_node xmlNode, XPathNodeMapper &dom) {
+                                                  pugi::xml_node xmlNode, XPathNodeMapper &dom,
+                                                  bool isOuterElementRoot) {
+        if (!xe || elementSubtreeExcludedByApePreference(xe, isOuterElementRoot)) {
+            return nullptr;
+        }
         GUITreeNodePtr gn = GUITreeNode::create(parentWeak);
         fillFromElement(xe, gn);
         if (xmlNode && xmlNode.type() == pugi::node_element) {
@@ -382,7 +485,12 @@ namespace {
             if (xmlNode && xmlNode.type() == pugi::node_element) {
                 xmlChild = xmlNode.append_child("node");
             }
-            gn->appendChild(parseElementFromElementWithDom(ch, gn, xmlChild, dom));
+            GUITreeNodePtr childGn = parseElementFromElementWithDom(ch, gn, xmlChild, dom, false);
+            if (childGn) {
+                gn->appendChild(std::move(childGn));
+            } else if (xmlChild) {
+                xmlNode.remove_child(xmlChild);
+            }
         }
         return gn;
     }
@@ -396,6 +504,12 @@ namespace {
     GUITreeBuildResult GUITreeFactory::buildFromXml(const std::string &utf8, const std::string &activity_package,
                                                     const std::string &activity_class) {
         GUITreeBuildResult r;
+        const size_t xmlLen = utf8.size();
+        const std::string prefix = utf8.substr(0, std::min<size_t>(120, xmlLen));
+        std::string suffix;
+        if (xmlLen > 120) {
+            suffix = utf8.substr(xmlLen - 120);
+        }
         auto bridge = std::make_shared<XPathNodeMapper>();
         if (!bridge->loadXmlString(utf8)) {
             bridge.reset();
@@ -406,7 +520,11 @@ namespace {
             bridge.reset();
             return r;
         }
-        GUITreeNodePtr rootGn = parseElement(root, GUITreeNodeWeakPtr(), *bridge);
+        GUITreeNodePtr rootGn = parseElement(root, GUITreeNodeWeakPtr(), *bridge, true);
+        if (!rootGn) {
+            bridge.reset();
+            return r;
+        }
         postOrderStats(rootGn);
         r.tree = std::make_shared<GUITree>(std::move(rootGn), activity_package, activity_class);
         r.dom = std::move(bridge);
@@ -427,7 +545,11 @@ namespace {
             bridge.reset();
             return r;
         }
-        GUITreeNodePtr rootGn = parseElementFromElementWithDom(root, GUITreeNodeWeakPtr(), xmlRoot, *bridge);
+        GUITreeNodePtr rootGn = parseElementFromElementWithDom(root, GUITreeNodeWeakPtr(), xmlRoot, *bridge, true);
+        if (!rootGn) {
+            bridge.reset();
+            return r;
+        }
         postOrderStats(rootGn);
         r.tree = std::make_shared<GUITree>(std::move(rootGn), activity_package, activity_class);
         r.dom = std::move(bridge);

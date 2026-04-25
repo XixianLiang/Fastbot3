@@ -64,7 +64,7 @@ namespace fastbotx {
 
         bool isEditable() const;
 
-        // LLMDroid compatibility accessors (non-APE path)
+        // LLMDroid compatibility accessors
         std::string getClass() const { return this->_clazz; }
 
         std::string getTextualInfo() const { return this->_info; }

@@ -17,10 +17,7 @@
  * @authors Tianxiao Gu, Zhao Zhang
  */
 /**
- * APE ActionPatchNamer: wraps a base namer and appends interactive predicates to `Name::toXPath`.
- *
- * Java `ActionPatchName` carries `ScrollType` and participates in `NamerFactory.decodeActions(name)`.
- * Native Fastbot mirrors that so executable action-sets can be aligned with the abstract name token.
+ * ActionPatchNamer: wraps a base namer and appends interactive predicates to `Name::toXPath`.
  *
  * Token composition is configurable (`max.apeActionPatchProfile`); optional scroll-type in XPath;
  * optional filtering of RL actions from the decoded token (`max.apeActionPatchDeriveActions`).
@@ -32,6 +29,7 @@
 
 #include <cstdint>
 #include <memory>
+#include <sstream>
 #include <string>
 
 namespace fastbotx {
@@ -45,7 +43,7 @@ constexpr uint32_t kDerivedKindScroll = 1u << 2;
 struct ActionPatchTokenConfig {
     /// Bit i corresponds to `kInteractiveProps[i]` in the XPath token (enabled…scrollable).
     uint8_t include_bool_props_mask{0x1Fu};
-    /// Whether to include scroll-type in the XPath token. (APE Java: NOT included.)
+    /// Whether to include scroll-type in the XPath token.
     bool include_scroll_type{false};
     bool derive_actions_from_name{false};
     std::string profile{"default"};
@@ -60,6 +58,13 @@ public:
     std::shared_ptr<Namer> getNamer() const override { return namer_; }
 
     const std::string &toXPath() const override;
+    std::string cacheKeyString() const override {
+        std::ostringstream oss;
+        oss << "ActionPatchName{" << toXPath() << "|patch=" << patch_ << "|scroll="
+            << static_cast<int>(scroll_type_) << "|mask=" << static_cast<unsigned>(include_bool_props_mask_)
+            << "|incScroll=" << (include_scroll_type_ ? 1 : 0) << "}";
+        return oss.str();
+    }
 
     void appendXPathLocalProperties(std::string &sb) const override;
 
@@ -73,7 +78,6 @@ private:
     ScrollType scroll_type_{ScrollType::NONE};
     uint8_t include_bool_props_mask_{0};
     bool include_scroll_type_{false};
-    // Derived action-set (APE NamerFactory.decodeActions(ActionPatchName)).
     uint32_t derived_action_mask_{0};
     uint32_t derived_action_known_kinds_{0};
     /// Cache full XPath to avoid repeated base_->toXPath() + suffix construction.

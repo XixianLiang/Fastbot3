@@ -34,8 +34,6 @@ namespace naming {
     }
 
     int compareNamer(const Namer &a, const Namer &b) {
-        // Align with Java APE Namelet.namerComparator semantics:
-        // 1) compare |types|; 2) compare sorted NamerType ordinals lexicographically; 3) equal sets => 0.
         std::vector<NamerType> ta = a.getNamerTypes();
         std::vector<NamerType> tb = b.getNamerTypes();
         auto ord = [](NamerType t) -> unsigned { return static_cast<unsigned>(t); };

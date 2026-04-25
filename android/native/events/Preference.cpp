@@ -1559,6 +1559,10 @@ namespace fastbotx {
 #define ApeIgnoreWebViewThresholdSTR "max.apeIgnoreWebViewThreshold"
 #define ApeWebViewClassPatternsSTR "max.apeWebViewClassPatterns"
 #define ApeComputeImageTextSTR "max.apeComputeImageText"
+#define ApeIgnoreEmptySTR "max.apeIgnoreEmpty"
+#define ApeIgnoreOutOfBoundsSTR "max.apeIgnoreOutOfBounds"
+#define ApeExcludeEmptyChildSTR "max.apeExcludeEmptyChild"
+#define ApeExcludeInvisibleNodeSTR "max.apeExcludeInvisibleNode"
 #define ApePatchGUITreeSTR "max.apePatchGUITree"
 #define ApeBaseNamingSTR "max.ape.baseNaming"
 #define ApeBaseNamingAliasSTR "ape.baseNaming"
@@ -1622,9 +1626,14 @@ namespace fastbotx {
         // Re-parse defaults: keys omitted from max.config must revert to off (same reload semantics as other toggles we set explicitly per line).
         this->_llmdroidEnabled = false;
         this->_llmdroidExploreWindowSec = 120;
-        this->_apeEvolveModel = false;
-        this->_apeActionRefinementThreshold = 1;
-        this->_apeMaxInitialNamesPerState = 256;
+        this->_apeEvolveModel = true;
+        this->_apeActionRefinementThreshold = 3;
+        this->_apeMaxInitialNamesPerState = 20;
+        this->_apeComputeImageText = true;
+        this->_apeIgnoreEmpty = true;
+        this->_apeIgnoreOutOfBounds = true;
+        this->_apeExcludeEmptyChild = true;
+        this->_apeExcludeInvisibleNode = true;
 
         // Pretty-print max.config without extra blank line, and indent each entry
         BLOG("max.config:");
@@ -1701,10 +1710,12 @@ namespace fastbotx {
                     if (v > 256) {
                         v = 256;
                     }
-                    this->_apeNamingFixedPointMaxIter = v;
-                    if (v > 0) {
-                        BLOG("APE: naming fixed-point refine/rebuild max steps=%d (max.apeNamingFixedPointSteps)", v);
+                    // Strict APE parity: StateKey evolution should not include extra native fixed-point
+                    // refinement iterations. Force this knob off even if configured.
+                    if (v != 0) {
+                        BLOG("APE parity: ignore %s=%d, force 0", ApeNamingFixedPointStepsSTR, v);
                     }
+                    this->_apeNamingFixedPointMaxIter = 0;
                 } catch (...) {
                     BLOGE("invalid max.apeNamingFixedPointSteps value: %s", value.c_str());
                 }
@@ -1992,32 +2003,51 @@ namespace fastbotx {
                 BLOG("APE: patchGUITree=%s (%s)",
                      this->_apePatchGUITree ? "true" : "false",
                      ApePatchGUITreeSTR);
+            } else if (key == ApeIgnoreEmptySTR) {
+                this->_apeIgnoreEmpty = (value == "true");
+                BLOG("APE: ignoreEmpty=%s (%s)",
+                     this->_apeIgnoreEmpty ? "true" : "false",
+                     ApeIgnoreEmptySTR);
+            } else if (key == ApeIgnoreOutOfBoundsSTR) {
+                this->_apeIgnoreOutOfBounds = (value == "true");
+                BLOG("APE: ignoreOutOfBounds=%s (%s)",
+                     this->_apeIgnoreOutOfBounds ? "true" : "false",
+                     ApeIgnoreOutOfBoundsSTR);
+            } else if (key == ApeExcludeEmptyChildSTR) {
+                this->_apeExcludeEmptyChild = (value == "true");
+                BLOG("APE: excludeEmptyChild=%s (%s)",
+                     this->_apeExcludeEmptyChild ? "true" : "false",
+                     ApeExcludeEmptyChildSTR);
+            } else if (key == ApeExcludeInvisibleNodeSTR) {
+                this->_apeExcludeInvisibleNode = (value == "true");
+                BLOG("APE: excludeInvisibleNode=%s (%s)",
+                     this->_apeExcludeInvisibleNode ? "true" : "false",
+                     ApeExcludeInvisibleNodeSTR);
             } else if (key == ApeBaseNamingSTR || key == ApeBaseNamingAliasSTR) {
+                // Align Java APE createBaseNaming(): configurable via ape.baseNaming,
+                // default to actiontype when unknown.
                 std::string mode = value;
                 std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
                     return static_cast<char>(std::tolower(c));
                 });
-                if (mode == "actiontype" || mode == "ape" || mode == "default") {
-                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::ActionType);
-                    BLOG("APE: base naming mode=actiontype (%s)", key.c_str());
-                } else if (mode == "type" || mode == "type_only" || mode == "legacy") {
-                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::TypeOnly);
-                    BLOG("APE: base naming mode=type_only (%s)", key.c_str());
-                } else if (mode == "resourceid" || mode == "resource_id") {
-                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::ResourceID);
-                    BLOG("APE: base naming mode=resourceid (%s)", key.c_str());
-                } else if (mode == "parentindex" || mode == "parent_index") {
-                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::ParentIndex);
-                    BLOG("APE: base naming mode=parentindex (%s)", key.c_str());
-                } else if (mode == "stoat") {
-                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::Stoat);
-                    BLOG("APE: base naming mode=stoat (%s)", key.c_str());
-                } else if (mode == "boosted" || mode == "boost") {
-                    naming::NamingFactory::setDefaultRootNamingMode(naming::ApeBaseNamingMode::Boosted);
-                    BLOG("APE: base naming mode=boosted (%s)", key.c_str());
+                naming::ApeBaseNamingMode m = naming::ApeBaseNamingMode::ActionType;
+                if (mode == "stoat") {
+                    m = naming::ApeBaseNamingMode::Stoat;
+                } else if (mode == "resourceid") {
+                    m = naming::ApeBaseNamingMode::ResourceID;
+                } else if (mode == "parentindex") {
+                    m = naming::ApeBaseNamingMode::ParentIndex;
+                } else if (mode == "boosted") {
+                    m = naming::ApeBaseNamingMode::Boosted;
+                } else if (mode == "typeonly" || mode == "type_only") {
+                    m = naming::ApeBaseNamingMode::TypeOnly;
+                } else if (mode == "actiontype" || mode == "ape" || mode == "default" || mode.empty()) {
+                    m = naming::ApeBaseNamingMode::ActionType;
                 } else {
-                    BLOGE("invalid %s value: %s", key.c_str(), value.c_str());
+                    BLOG("APE: unknown %s=%s, fallback to actiontype", key.c_str(), value.c_str());
                 }
+                naming::NamingFactory::setDefaultRootNamingMode(m);
+                BLOG("APE: base naming mode=%s (%s)", mode.c_str(), key.c_str());
             } else if (key == UseAncestorNamerSTR) {
                 const bool enabled = (value == "true");
                 naming::setUseAncestorNamer(enabled);
@@ -2112,6 +2142,9 @@ namespace fastbotx {
                 }
             }
         }
+        // Final guardrail for fixed-point iterations (APE java baseline).
+        this->_apeNamingFixedPointMaxIter = 0;
+
         const char *baseNamingMode = "actiontype";
         switch (naming::NamingFactory::getDefaultRootNamingMode()) {
         case naming::ApeBaseNamingMode::TypeOnly:
@@ -2138,7 +2171,8 @@ namespace fastbotx {
              "fixedPointSteps=%d "
              "ruleProfile=%s predicateMode=%s selectionMode=%s candidateTransitionReplay=%s "
              "actionRefinementFirst=%s enableReplacingNamelet=%s maxStatesPerActivity=%d maxGuitreesPerState=%d "
-             "evolveModel=%s actionRefinementThreshold=%d maxInitialNamesPerState=%d",
+             "evolveModel=%s actionRefinementThreshold=%d maxInitialNamesPerState=%d "
+             "excludeEmptyChild=%s excludeInvisibleNode=%s",
              baseNamingMode,
              naming::useAncestorNamer() ? "true" : "false",
              naming::usePatchNamer() ? "true" : "false",
@@ -2154,7 +2188,9 @@ namespace fastbotx {
              _apeMaxGuitreesPerState,
              _apeEvolveModel ? "true" : "false",
              _apeActionRefinementThreshold,
-             _apeMaxInitialNamesPerState);
+             _apeMaxInitialNamesPerState,
+             _apeExcludeEmptyChild ? "true" : "false",
+             _apeExcludeInvisibleNode ? "true" : "false");
     }
 
     /**

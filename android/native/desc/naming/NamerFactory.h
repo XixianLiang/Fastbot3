@@ -9,8 +9,8 @@
  */
 
 /*
- * Pre-registered namers for every subset of namerTypesUsed() (APE NamerFactory).
- * When usePatchNamer() is true (APE default), each namer is ActionPatchNamer(BitmaskNamer(mask)).
+ * Pre-registered namers for every subset of namerTypesUsed().
+ * When usePatchNamer() is true, each namer is ActionPatchNamer(BitmaskNamer(mask)).
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMERFACTORY_H_
 #define FASTBOTX_DESC_NAMING_NAMERFACTORY_H_

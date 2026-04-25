@@ -18,7 +18,7 @@
  */
 
 /*
- * APE NamerType.
+ * NamerType.
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMERTYPE_H_
 #define FASTBOTX_DESC_NAMING_NAMERTYPE_H_
@@ -42,7 +42,7 @@ namespace naming {
     void setUseAncestorNamer(bool enabled);
     bool useAncestorNamer();
 
-    /** Runtime switch for Config.usePatchNamer (default true in APE). */
+    /** Runtime switch for Config.usePatchNamer. */
     void setUsePatchNamer(bool enabled);
     bool usePatchNamer();
 

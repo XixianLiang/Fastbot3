@@ -1,6 +1,3 @@
-/*
- * String normalization aligned with Java APE GUITreeBuilder (text / content-desc for naming & DOM).
- */
 /**
  * @authors Zhao Zhang
  */
@@ -58,12 +55,10 @@ inline std::string truncateUtf8Codepoints(const std::string &s, size_t maxCodepo
     return s.substr(0, i);
 }
 
-// Java APE: truncateText(removeQuotes(text)), default truncate length = 8.
 inline std::string normalizeTextForApe(const char *input) {
     return truncateUtf8Codepoints(removeDoubleQuotes(input), 8);
 }
 
-// Java APE: removeQuotes(content-desc), no truncate.
 inline std::string normalizeContentDescForApe(const char *input) {
     return removeDoubleQuotes(input);
 }

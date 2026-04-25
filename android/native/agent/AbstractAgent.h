@@ -114,6 +114,11 @@ namespace fastbotx {
          */
         void onAddNode(StatePtr node) override;
 
+        void onVisitStateTransition(const StatePtr &fromState,
+                                    const ActivityStateActionPtr &action,
+                                    const StatePtr &toState,
+                                    GraphTransitionVisitKind visitKind) override;
+
         /**
          * @brief Constructor
          * 
@@ -148,11 +153,22 @@ namespace fastbotx {
         ActivityStateActionPtr getCurrentAction() const { return this->_currentAction; }
 
         /**
+         * @brief Whether current state was recovered.
+         */
+        bool isCurrentStateRecovered() const { return this->_currentStateRecovered; }
+
+        /// Set recovered-state marker for ND refine gate.
+        void setCurrentStateRecovered(bool recovered) { this->_currentStateRecovered = recovered; }
+
+        /**
          * @brief Callback when state abstraction has changed (refine/coarsen batch finished).
          * Subclasses may override to clear hash-dependent caches when abstraction changes.
          * Default: no-op.
          */
         virtual void onStateAbstractionChanged() {}
+
+        /// Re-resolve each targeted model action (resolveAt on newState).
+        virtual void validateAllNewActionsLikeApe(const StatePtr &newState);
 
         /**
          * @brief Optional: return LLM-generated input text for an action (e.g. content-aware input).

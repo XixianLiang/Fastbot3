@@ -13,6 +13,7 @@
 namespace fastbotx {
 namespace naming {
 namespace {
+    constexpr bool kApeStateKeyHashWithOrder = true;
 
     uintptr_t combineStringHashes(const std::vector<std::string> &sorted, bool withOrder) {
         // Avoid XOR-only multiset hashing (collision-prone). Use a cheap mix similar to boost::hash_combine.
@@ -33,7 +34,7 @@ namespace {
         if (!naming_fp.empty()) {
             activityHash ^= (fastStringHash(naming_fp) << 2);
         }
-        activityHash ^= (combineStringHashes(sorted_xpaths, STATE_WITH_WIDGET_ORDER) << 1);
+        activityHash ^= (combineStringHashes(sorted_xpaths, kApeStateKeyHashWithOrder) << 1);
         return activityHash;
     }
 
@@ -52,7 +53,7 @@ namespace {
                 continue;
             }
             uintptr_t h = fastStringHash(s);
-            if (STATE_WITH_WIDGET_ORDER) {
+            if (kApeStateKeyHashWithOrder) {
                 h ^= (127U * (static_cast<unsigned>(j) << 6));
             }
             combined ^= h + 0x9e3779b97f4a7c15ULL + (combined << 6) + (combined >> 2);
@@ -114,9 +115,6 @@ namespace {
     }
 
     std::string StateKey::activityFromPackageAndClass(const std::string &pkg, const std::string &cls) {
-        if (!pkg.empty() && !cls.empty()) {
-            return pkg + "/" + cls;
-        }
         if (!cls.empty()) {
             return cls;
         }
@@ -152,14 +150,6 @@ namespace {
             tree.getCurrentNaming() ? tree.getCurrentNaming()->fingerprintString() : std::string();
         const auto &cached = tree.getCurrentXPaths();
         return computeStateKeyHashFromXPaths(act, nf, cached);
-    }
-
-    StateKey StateKey::fromFallbackXmlStringHash(const std::string &activity, uintptr_t xmlStringHash) {
-        std::string nf = "fallback";
-        std::vector<std::string> xs;
-        xs.push_back(std::string("x/") + std::to_string(static_cast<unsigned long long>(xmlStringHash)));
-        std::sort(xs.begin(), xs.end());
-        return StateKey(canonicalActivityString(activity), std::move(nf), std::move(xs));
     }
 
     bool StateKey::operator==(const StateKey &o) const {

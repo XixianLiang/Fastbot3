@@ -16,10 +16,6 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
-/*
- * Per-activity current Naming root.
- * Keys should be StateKey::canonicalActivityString(jniActivity) so they match StateKey::fromGUITree / treeToNaming.
- */
 #ifndef FASTBOTX_DESC_NAMING_ACTIVITYNAMINGMANAGER_H_
 #define FASTBOTX_DESC_NAMING_ACTIVITYNAMINGMANAGER_H_
 
@@ -28,6 +24,7 @@
 #include <memory>
 #include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace fastbotx {
 namespace naming {
@@ -43,8 +40,10 @@ namespace naming {
 
         void clear();
 
+        /** Snapshot current per-activity naming roots (for cache-release traversal). */
+        std::vector<NamingPtr> getAllNamings() const;
+
     private:
-        // Mutable to keep APE semantics: getNaming() lazily initializes unseen activities.
         mutable std::unordered_map<std::string, NamingPtr> current_{};
     };
 

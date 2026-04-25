@@ -19,21 +19,23 @@
 
 #include "Name.h"
 
+#include <stdexcept>
+
 namespace fastbotx {
 namespace naming {
 
     Name::~Name() = default;
 
     bool Name::operator<(const Name &other) const {
-        const std::string &a = toXPath();
-        const std::string &b = other.toXPath();
-        return a < b;
+        const int ret = getOrder() - other.getOrder();
+        if (ret == 0 && this != &other) {
+            throw std::logic_error("Name order collision on distinct instances");
+        }
+        return ret < 0;
     }
 
     bool Name::operator==(const Name &other) const {
-        const std::string &a = toXPath();
-        const std::string &b = other.toXPath();
-        return a == b;
+        return this == &other;
     }
 
 } // namespace naming

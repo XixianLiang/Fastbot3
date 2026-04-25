@@ -93,12 +93,13 @@ namespace naming {
 
         /** One Namelet (root XPath for all nodes) with TYPE-only BitmaskNamer (coarsest non-empty namer in the cube). */
         static NamingPtr defaultRootNaming();
+        static NamingPtr getBaseNaming();
         static void setDefaultRootNamingMode(ApeBaseNamingMode mode);
         static ApeBaseNamingMode getDefaultRootNamingMode();
 
         /**
-         * Java NamingFactory lattice extend step: append one REFINE namelet under namelet {@code nameletIndex}
-         * with namer {@code finer} (same XPath as that namelet). Used by APE-style refine enumeration.
+         * Append one REFINE namelet under namelet {@code nameletIndex}
+         * with namer {@code finer} (same XPath as that namelet).
          */
         static NamingPtr latticeRefinementChildAtNamelet(const NamingPtr &base, size_t nameletIndex,
                                                          const NamerPtr &finer);
@@ -106,7 +107,7 @@ namespace naming {
         /**
          * Java Naming.extend(parentNamelet, newNamelet): append a REFINE namelet with
          * {@code widgetXPathExpr} and {@code finer} under the existing lattice namelet at
-         * {@code parentNameletIndex} (APE stateRefinement / actionRefinement).
+         * {@code parentNameletIndex}.
          */
         static NamingPtr extendUnderNamelet(const NamingPtr &base, size_t parentNameletIndex,
                                             const std::string &widgetXPathExpr, const NamerPtr &finer);
@@ -140,7 +141,7 @@ namespace naming {
         static NamingPtr batchAbstract(const NamingPtr &naming, const NamerLattice &lattice, int max_steps);
 
         /**
-         * Java APE "action refinement" (α) analogue: greedy refine hops along the bitmask lattice.
+         * Greedy refine hops along the bitmask lattice.
          * Implemented via actionRefinementWithOptions with default acceptance.
          */
         static NamingPtr actionRefinement(const NamingPtr &naming, const NamerLattice &lattice, int max_steps);

@@ -119,10 +119,6 @@ namespace fastbotx {
          */
         bool useStaticReuseAbstraction() const;
 
-        /**
-         * When true with FASTBOTX_APE_NATIVE_RECORD, graph merges states by APE StateKey::hash()
-         * (in addition to widget-hash dedup inside addState). max.config: max.apeGraphDedupByStateKey=true|false
-         */
         bool useApeGraphDedupByStateKey() const;
 
         /**
@@ -132,29 +128,29 @@ namespace fastbotx {
         int getApeNamingFixedPointMaxIter() const { return _apeNamingFixedPointMaxIter; }
 
         /**
-         * When false, Model skips periodic APE Naming refinement (non-determinism-driven refine batch).
+         * When false, Model skips periodic aming refinement (non-determinism-driven refine batch).
          * Use with max.apeNamingFixedPointSteps to avoid double refinement. Default true.
          * max.config: max.apeNamingPeriodicRefinement=true|false
          */
         bool useApeNamingPeriodicRefinement() const { return _apeNamingPeriodicRefinement; }
         /**
-         * APE-aligned L-input normalization: WebView pruning.
+         * L-input normalization: WebView pruning.
          * max.config: max.apeAlwaysIgnoreWebView=true|false
          */
         bool useApeAlwaysIgnoreWebView() const { return _apeAlwaysIgnoreWebView; }
         /**
-         * APE-aligned L-input normalization: ignore actions inside WebView subtree.
+         * L-input normalization: ignore actions inside WebView subtree.
          * max.config: max.apeAlwaysIgnoreWebViewAction=true|false
          */
         bool useApeAlwaysIgnoreWebViewAction() const { return _apeAlwaysIgnoreWebViewAction; }
         /**
-         * APE-aligned L-input normalization: if a WebView subtree descendant count exceeds this threshold,
+         * L-input normalization: if a WebView subtree descendant count exceeds this threshold,
          * its children are cleared (keep WebView shell node).
          * max.config: max.apeIgnoreWebViewThreshold=N (0 disables)
          */
         int getApeIgnoreWebViewThreshold() const { return _apeIgnoreWebViewThreshold; }
         /**
-         * APE-aligned L-input normalization: extra WebView class patterns.
+         * L-input normalization: extra WebView class patterns.
          *
          * Comma/semicolon-separated patterns. Supported forms:
          * - Exact match:   android.webkit.WebView
@@ -167,23 +163,46 @@ namespace fastbotx {
             return _apeWebViewClassPatterns;
         }
         /**
-         * APE-aligned L-input normalization: compute stable pseudo text for icon-only widgets.
+         * L-input normalization: compute stable pseudo text for icon-only widgets.
          *
          * Since native has no screenshot bitmap, we compute a deterministic hash from widget attributes
          * (class/resource-id/bounds/index) and write it into @text when both text and content-desc are empty.
-         * This approximates Java APE computeImageText() behavior.
+         * This approximates the Java computeImageText() behavior.
+         * Default true. max.config: max.apeComputeImageText=true|false
          * max.config: max.apeComputeImageText=true|false
          */
         bool useApeComputeImageText() const { return _apeComputeImageText; }
         /**
-         * APE-aligned L-input normalization: clickable patching (container->child) based on bounds.
+         * L-input normalization: clickable patching (container->child) based on bounds.
          * max.config: max.apePatchGUITree=true|false
          */
         bool useApePatchGUITree() const { return _apePatchGUITree; }
         /**
+         * Mirrors Config.ignoreEmpty — ignore nodes with empty/invalid bounds during naming.
+         * max.config: max.apeIgnoreEmpty=true|false (default true)
+         */
+        bool useApeIgnoreEmpty() const { return _apeIgnoreEmpty; }
+        /**
+         * Mirrors Config.ignoreOutOfBounds — ignore nodes outside root bounds during naming.
+         * max.config: max.apeIgnoreOutOfBounds=true|false (default true)
+         */
+        bool useApeIgnoreOutOfBounds() const { return _apeIgnoreOutOfBounds; }
+        /**
+         * Mirrors Config.excludeEmptyChild — when building GUITree from UI XML, omit placeholder / empty-bounds
+         * leaf nodes (Accessibility null-slot analogue).
+         * max.config: max.apeExcludeEmptyChild=true|false (default true)
+         */
+        bool useApeExcludeEmptyChild() const { return _apeExcludeEmptyChild; }
+        /**
+         * Mirrors Config.excludeInvisibleNode — when building GUITree from UI XML, omit subtrees that are not
+         * visible to the user (@visible-to-user=\"false\", or visibility gone/invisible).
+         * max.config: max.apeExcludeInvisibleNode=true|false (default true)
+         */
+        bool useApeExcludeInvisibleNode() const { return _apeExcludeInvisibleNode; }
+        /**
          * Only used when native is built without pugixml (no GUITree). If true, skip legacy widget/mask batch
          * and run only runApeNamingAbstractionBatch (often empty). With FASTBOT_HAS_PUGIXML, Model always
-         * uses the APE naming batch for periodic refinement; this flag is ignored.
+         * uses the naming batch for periodic refinement; this flag is ignored.
          */
         bool useApeNamingOnly() const { return _apeNamingOnly; }
 
@@ -212,7 +231,9 @@ namespace fastbotx {
 
         /**
          * Candidate selection mode among acceptable refinement hops.
-         * Values: first_accept | deepest_accept.
+         * Values: first_accept | deepest_accept. (ND `refineActivityApeNaming` with Java candidates
+         * always sorts with NamingFactory::comparator and takes the first — see Model.cpp; this key
+         * mainly affects other naming-factory batch paths.)
          * max.config: max.apeNamingActionRefineSelectionMode=<mode>
          */
         const std::string &getApeNamingActionRefineSelectionMode() const {
@@ -237,19 +258,19 @@ namespace fastbotx {
         }
 
         /**
-         * Non-determinism target threshold for APE naming (sourceKey,action)->targetKey fan-out.
+         * Non-determinism target threshold for naming (sourceKey,action)->targetKey fan-out.
          * max.config: max.apeNamingMinNonDetTargets=N (clamped to [2, 100], default MinNonDeterminismCount).
          */
         int getApeNamingMinNonDetTargets() const { return _apeNamingMinNonDetTargets; }
 
         /**
-         * Minimal activity state count delta since last successful APE naming refinement.
+         * Minimal activity state count delta since last successful naming refinement.
          * max.config: max.apeNamingActionRefineMinStateDelta=N (clamped to [1, 10000], default 1).
          */
         int getApeNamingActionRefineMinStateDelta() const { return _apeNamingActionRefineMinStateDelta; }
 
         /**
-         * Minimal non-deterministic pair count delta since last successful APE naming refinement.
+         * Minimal non-deterministic pair count delta since last successful naming refinement.
          * max.config: max.apeNamingActionRefineMinNonDetPairDelta=N (clamped to [0, 10000], default 0).
          */
         int getApeNamingActionRefineMinNonDetPairDelta() const {
@@ -257,7 +278,7 @@ namespace fastbotx {
         }
 
         /**
-         * Rule profile for periodic APE action refinement baseline.
+         * Rule profile for periodic action refinement baseline.
          * Values: baseline | strict_baseline | java_rule_01_preview | java_rule_02_preview | java_rule_03_preview.
          * max.config: max.apeNamingActionRefineRuleProfile=<profile>
          */
@@ -267,53 +288,53 @@ namespace fastbotx {
 
         /**
          * When true (default), refine candidate selection uses transition replay: rebuildTree(candidate) on
-         * cached page XML and rank by distinct target StateKey fan-out (APE-style effect check).
+         * cached page XML and rank by distinct target StateKey fan-out (effect check).
          * max.config: max.apeNamingCandidateTransitionReplay=true|false
          */
         bool useApeNamingCandidateTransitionReplay() const { return _apeNamingCandidateTransitionReplay; }
 
         /**
-         * Mirrors APE Config.actionRefinementFirst: when true (default), try a strict multi-branch refine pass
+         * Mirrors Config.actionRefinementFirst: when true (default), try a strict multi-branch refine pass
          * before the user ruleProfile/predicate-driven pass in Model::refineActivityApeNaming.
          * max.config: max.apeNamingActionRefinementFirst=true|false
          */
         bool useApeNamingActionRefinementFirst() const { return _apeNamingActionRefinementFirst; }
 
         /**
-         * Mirrors APE Config.enableReplacingNamelet: try Naming.replaceLast on the lattice leaf before extend.
+         * Mirrors Config.enableReplacingNamelet: try Naming.replaceLast on the lattice leaf before extend.
          * max.config: max.apeNamingEnableReplacingNamelet=true|false
          */
         bool useApeNamingEnableReplacingNamelet() const { return _apeNamingEnableReplacingNamelet; }
 
         /**
-         * Mirrors APE Config.maxStatesPerActivity — NamingFactory.refine pre-check on activity state count.
+         * Mirrors Config.maxStatesPerActivity — NamingFactory.refine pre-check on activity state count.
          * max.config: max.apeMaxStatesPerActivity=N
          */
         int getApeMaxStatesPerActivity() const { return _apeMaxStatesPerActivity; }
 
         /**
-         * Mirrors APE Config.maxGUITreesPerState — Java refine second gate uses the same metric as the first
-         * (activity state count); kept for config parity with ape.properties.
+         * Mirrors Config.maxGUITreesPerState — Java refine second gate uses the same metric as the first
+         * (activity state count); kept for config parity with properties.
          * max.config: max.apeMaxGuitreesPerState=N
          */
         int getApeMaxGuitreesPerState() const { return _apeMaxGuitreesPerState; }
 
         /**
-         * Mirrors APE Config.evolveModel: after a new state + XML, run over-abstracted action refinement
+         * Mirrors Config.evolveModel: after a new state + XML, run over-abstracted action refinement
          * (merged-widget analogue of resolvedNodes.length > threshold) before selectAction.
-         * Default false. max.config: max.apeEvolveModel=true|false
+         * Default true. max.config: max.apeEvolveModel=true|false
          */
         bool useApeEvolveModel() const { return _apeEvolveModel; }
 
         /**
-         * Merged-widget count must exceed this to trigger evolveModel action refinement (Java: actionRefinmentThreshold).
-         * max.config: max.apeActionRefinementThreshold=N (default 1 → need at least 2 concretes)
+         * Merged-widget / resolved-node count must exceed this to trigger evolveModel action refinement
+         * (Config.actionRefinementThreshold). max.config: max.apeActionRefinementThreshold=N (default 3, same as java)
          */
         int getApeActionRefinementThreshold() const { return _apeActionRefinementThreshold; }
 
         /**
-         * Upper bound on StateKey sorted XPath count after rebuild (Java maxInitialNamesPerStateThreshold analogue).
-         * max.config: max.apeMaxInitialNamesPerState=N (clamped, default 256)
+         * Upper bound on StateKey sorted XPath count after rebuild (maxInitialNamesPerStateThreshold).
+         * max.config: max.apeMaxInitialNamesPerState=N (clamped, default 20, same as Java)
          */
         int getApeMaxInitialNamesPerState() const { return _apeMaxInitialNamesPerState; }
 
@@ -467,7 +488,6 @@ namespace fastbotx {
         bool _useApeGraphDedupByStateKey{};
         int _apeNamingFixedPointMaxIter{0};
         bool _apeNamingPeriodicRefinement{true};
-        // Default true: prefer APE naming dynamic abstraction batch over legacy widget/mask batch.
         bool _apeNamingOnly{true};
         int _apeNamingActionRefineHops{8};
         bool _apeNamingActionRefineRequireFingerprintChange{true};
@@ -475,30 +495,29 @@ namespace fastbotx {
         std::string _apeNamingActionRefineSelectionMode{"first_accept"};
         int _apeNamingActionRefineMinActivityStates{2};
         int _apeNamingActionRefineMinNonDetPairs{1};
-        int _apeNamingMinNonDetTargets{MinNonDeterminismCount};
+        int _apeNamingMinNonDetTargets{2};
         int _apeNamingActionRefineMinStateDelta{1};
         int _apeNamingActionRefineMinNonDetPairDelta{0};
         std::string _apeNamingActionRefineRuleProfile{"baseline"};
         bool _apeNamingCandidateTransitionReplay{true};
-        /// Default true, same as Java Config.actionRefinementFirst.
         bool _apeNamingActionRefinementFirst{true};
-        /// Default false, same as Java Config.enableReplacingNamelet.
         bool _apeNamingEnableReplacingNamelet{false};
-        /// Default 10 / 20, same as Java Config.maxStatesPerActivity / maxGUITreesPerState.
         int _apeMaxStatesPerActivity{10};
         int _apeMaxGuitreesPerState{20};
-        /// Default off; Java Config.evolveModel drives preEvolveModel / actionRefinement on over-abstracted actions.
-        bool _apeEvolveModel{false};
-        /// Default 1: merged group size must be > 1 (i.e. ≥2 widgets) to trigger evolve refinement.
-        int _apeActionRefinementThreshold{1};
-        int _apeMaxInitialNamesPerState{256};
+        bool _apeEvolveModel{true};
+        int _apeActionRefinementThreshold{3};
+        int _apeMaxInitialNamesPerState{20};
         // APE-aligned L-input normalization switches (WebView + clickable patch).
         bool _apeAlwaysIgnoreWebView{false};
         bool _apeAlwaysIgnoreWebViewAction{false};
         int _apeIgnoreWebViewThreshold{64};
         std::vector<std::string> _apeWebViewClassPatterns;
-        bool _apeComputeImageText{false};
+        bool _apeComputeImageText{true};
         bool _apePatchGUITree{true};
+        bool _apeIgnoreEmpty{true};
+        bool _apeIgnoreOutOfBounds{true};
+        bool _apeExcludeEmptyChild{true};
+        bool _apeExcludeInvisibleNode{true};
         bool _forceUseTextModel{};
         int _forceMaxBlockStateTimes{};
         RectPtr _rootScreenSize;

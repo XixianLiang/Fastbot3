@@ -3,7 +3,7 @@
  */
  
 /*
- * Concrete Name: XPath fragment + owning Namer (APE local widget name).
+ * Concrete Name: XPath fragment + owning Namer.
  */
 #ifndef FASTBOTX_DESC_NAMING_LOCALXPATHNAME_H_
 #define FASTBOTX_DESC_NAMING_LOCALXPATHNAME_H_
@@ -24,6 +24,7 @@ namespace naming {
         std::shared_ptr<Namer> getNamer() const override { return namer_; }
 
         const std::string &toXPath() const override;
+        std::string cacheKeyString() const override { return std::string("LocalXPathName{") + xpath_full_ + "}"; }
 
         void appendXPathLocalProperties(std::string &sb) const override;
 
@@ -43,7 +44,7 @@ namespace naming {
     }
 
     /**
-     * APE AncestorName / ParentName-style full XPath (not always descendant-or-self wildcard + tail).
+     * AncestorName / ParentName-style full XPath (not always descendant-or-self wildcard + tail).
      * toXPath() returns the stored path verbatim (Java Name::toXPath).
      */
     class FullPathName : public Name {
@@ -53,6 +54,7 @@ namespace naming {
         std::shared_ptr<Namer> getNamer() const override { return namer_; }
 
         const std::string &toXPath() const override { return xpath_; }
+        std::string cacheKeyString() const override { return std::string("FullPathName{") + xpath_ + "}"; }
 
         void appendXPathLocalProperties(std::string &sb) const override { (void)sb; }
 

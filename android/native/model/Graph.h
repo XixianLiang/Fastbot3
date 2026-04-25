@@ -12,11 +12,19 @@
 #include "Action.h"
 #include "GraphPath.h"
 #include <map>
+#include <string>
+#include <cstdint>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 namespace fastbotx {
+
+    enum class GraphTransitionVisitKind {
+        NewAction,
+        NewActionTarget,
+        Existing,
+    };
 
     class Activity;
     typedef std::shared_ptr<Activity> ActivityPtr;
@@ -84,12 +92,23 @@ namespace fastbotx {
      */
     class GraphListener {
     public:
+        virtual ~GraphListener() = default;
         /**
          * @brief Called when a new state node is added to the graph
          * 
          * @param node The state node that was added
          */
         virtual void onAddNode(StatePtr node) = 0;
+        virtual void onVisitStateTransition(const StatePtr &fromState,
+                                            const ActivityStateActionPtr &action,
+                                            const StatePtr &toState,
+                                            GraphTransitionVisitKind visitKind =
+                                                GraphTransitionVisitKind::Existing) {
+            (void)fromState;
+            (void)action;
+            (void)toState;
+            (void)visitKind;
+        }
     };
 
     /// Smart pointer type for GraphListener
@@ -137,6 +156,12 @@ namespace fastbotx {
          * @return Current timestamp
          */
         time_t getTimestamp() const { return this->_timeStamp; }
+        const std::string &getStructureId() const { return _structureId; }
+        void syncApeStructuralEpoch(uint64_t epoch);
+        /// After a model action with target: (source state, action, destination state).
+        void notifyVisitStateTransition(const StatePtr &fromState,
+                                        const ActivityStateActionPtr &action,
+                                        const StatePtr &toState);
 
         /**
          * @brief Add a listener to be notified when new states are added
@@ -159,7 +184,7 @@ namespace fastbotx {
         /**
          * Record a revisit to an existing graph state (same as addState tail when the state already
          * exists by widget hash): notifications, distribution, addActionFromState. Used when graph
-         * identity is merged by an external key (e.g. APE StateKey) instead of widget hash alone.
+         * identity is merged by an external key instead of widget hash alone.
          */
         void recordStateVisit(StatePtr canonical, StatePtr freshlyBuilt);
 
@@ -183,7 +208,7 @@ namespace fastbotx {
 
         /**
          * LLMDroid legacy-compatible activity-level graph export.
-         * This is observational/debug output and does not affect RL or APE logic.
+         * This is observational/debug output and does not affect RL logic.
          */
         std::string generateGraphCodeForActivity();
 
@@ -208,6 +233,17 @@ namespace fastbotx {
          * Used for dynamic state abstraction (coarsening threshold).
          */
         size_t getStateCountByActivity(const std::string &activity) const;
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        /**
+         * Java Graph.namingToStates: maintain states grouped by StateKey naming fingerprint.
+         * Upsert when Model records a unique StateKey for a state; remove on graph eviction.
+         */
+        void apeNamingIndexUpsert(const StatePtr &state, const std::string &namingFingerprint);
+        void apeNamingIndexRemoveState(const StatePtr &state);
+        void apeCollectStatesByNamingFingerprints(const std::unordered_set<std::string> &fingerprints,
+                                                  std::vector<StatePtr> *out) const;
+#endif
 
         /**
          * @brief Destructor clears all internal data structures
@@ -288,9 +324,17 @@ namespace fastbotx {
         /// Current timestamp of the graph (updated when states are added)
         time_t _timeStamp;
 
+        std::string _structureId{"g0"};
+        std::unordered_map<uint64_t, std::unordered_set<uintptr_t>> _apeSrcActionToSeenTargets;
+
         /// Per-activity count of unique states (updated only when a new state is added)
         /// Used for dynamic state abstraction (coarsening threshold) - O(1) lookup
         std::unordered_map<std::string, size_t> _activityStateCount;
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        std::unordered_map<std::string, std::unordered_set<StatePtr>> _apeStatesByNamingFingerprint;
+        std::unordered_map<StatePtr, std::string> _apeStateToNamingFingerprint;
+#endif
 
         /// Default distribution pair (0, 0.0) used for initializing new activities
         const static std::pair<int, double> _defaultDistri;

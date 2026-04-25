@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <sstream>
 #include <unordered_map>
 #include <unordered_set>
 #include <string>
@@ -120,6 +121,16 @@ namespace gui_tree {
         return out;
     }
 
+    std::string XPathNodeMapper::dumpXmlString() const {
+        if (!impl_) {
+            return std::string();
+        }
+        std::lock_guard<std::mutex> lk(impl_->mu);
+        std::ostringstream os;
+        impl_->doc.save(os, " ", pugi::format_default);
+        return os.str();
+    }
+
 #else
 
     struct XPathNodeMapper::Impl {};
@@ -131,6 +142,10 @@ namespace gui_tree {
 
     std::vector<GUITreeNodePtr> XPathNodeMapper::nodesForXPath(const std::string &) const {
         return {};
+    }
+
+    std::string XPathNodeMapper::dumpXmlString() const {
+        return std::string();
     }
 
 #endif

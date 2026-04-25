@@ -87,10 +87,6 @@ namespace fastbotx {
         /** Textual page summary for GPT / MergedState::stateDescription (not RL identity). */
         std::string getStateDescriptionForMergedState() const;
 
-        /**
-         * Similarity for MergedState merge only (LLMDroid-style widget overlap).
-         * Do not use for APE or RL clustering; see {@link computeSimilarityForMergedState} name.
-         */
         float computeSimilarityForMergedState(const ReuseStatePtr &target) const;
 
         /** Widget-overlap similarity for navigation {@link guideCheck} (LLMDroid). */

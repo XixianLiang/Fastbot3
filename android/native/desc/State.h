@@ -86,8 +86,8 @@ namespace fastbotx {
         virtual uintptr_t getHashUnderMask(WidgetKeyMask mask) const;
 
         /**
-         * Replace dynamic (non-static) state identity with APE StateKey::hash() so RL/graph reuse the same
-         * abstraction as APE naming; static reuse mode keeps widget-based hash from ReuseState::buildHashForState.
+         * Replace dynamic (non-static) state identity with StateKey::hash() so RL/graph reuse the same
+         * abstraction as naming; static reuse mode keeps widget-based hash from ReuseState::buildHashForState.
          */
         void applyDynamicAbstractionIdentityHash(uintptr_t apeStateKeyHash);
 
@@ -203,7 +203,7 @@ namespace fastbotx {
         void filterActionsByKeepMask(const std::vector<uint8_t> &keepMask);
 
         /**
-         * APE evolveModel: number of concrete targets merged under the same abstract widget hash as @p target.
+         * EvolveModel: number of concrete targets merged under the same abstract widget hash as @p target.
          * Returns 1 when there is no merge entry (single target).
          */
         size_t getMergedTargetGroupSize(const WidgetPtr &target) const;
@@ -302,7 +302,7 @@ namespace fastbotx {
         uintptr_t _hashcode{};
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        /** True when _hashcode was set from APE StateKey (dynamic path only). */
+        /** True when _hashcode was set from StateKey (dynamic path only). */
         bool _usesApeIdentityHash{false};
 #endif
         

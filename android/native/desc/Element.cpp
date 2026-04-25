@@ -79,6 +79,24 @@ namespace {
         return false;
     }
 
+    void logInvalidBounds(const char *source,
+                          int index,
+                          const std::string &clazz,
+                          const std::string &resourceId,
+                          const RectPtr &bounds,
+                          const char *rawBounds = nullptr) {
+        if (!bounds || !bounds->isEmpty()) {
+            return;
+        }
+        BDLOG("element bounds invalid source=%s class=%s rid=%s idx=%d raw=%s parsed=%s",
+              source ? source : "(null)",
+              clazz.empty() ? "(none)" : clazz.c_str(),
+              resourceId.empty() ? "(none)" : resourceId.c_str(),
+              index,
+              rawBounds ? rawBounds : "(null)",
+              bounds->toString().c_str());
+    }
+
     Element::Element()
             : _enabled(false), _checked(false), _checkable(false), _clickable(false),
               _focusable(false), _scrollable(false), _longClickable(false), _childCount(0),
@@ -275,8 +293,6 @@ namespace {
         }
     }
 
-    bool Element::_allClickableFalse = false;
-
     /**
      * @brief Create an Element tree from XML string content
      * 
@@ -293,6 +309,13 @@ namespace {
      */
     ElementPtr Element::createFromXml(const std::string &xmlContent) {
         tinyxml2::XMLDocument doc;
+        const size_t xmlLen = xmlContent.size();
+        std::string prefix = xmlContent.substr(0, std::min<size_t>(120, xmlLen));
+        std::string suffix;
+        if (xmlLen > 120) {
+            suffix = xmlContent.substr(xmlLen - 120);
+        }
+        // Debug-only bounds scan logs disabled to reduce noise.
         
         // Raw domtree XML log: line by line so node hierarchy is visible (from XML indentation)
 #if FASTBOT_LOG_RAW_GUITREE
@@ -334,18 +357,8 @@ namespace {
 
         ElementPtr elementPtr = std::make_shared<Element>();
 
-        // Track if any element is clickable during parsing. Root has no parent (nullptr).
-        _allClickableFalse = true;
         elementPtr->fromXml(doc, nullptr);
-        
-        // If no elements are clickable, make all clickable as fallback
-        // This ensures the UI can still be interacted with
-        if (_allClickableFalse) {
-            elementPtr->recursiveDoElements([](const ElementPtr &elm) {
-                elm->_clickable = true;
-            });
-        }
-        
+
         // Keep root scrollable as reported by source tree; do not force-enable.
 
 #if FASTBOT_LOG_RAW_GUITREE
@@ -359,13 +372,7 @@ namespace {
 
     ElementPtr Element::createFromXml(const tinyxml2::XMLDocument &doc) {
         ElementPtr elementPtr = std::make_shared<Element>(); // Root element has no parent
-        _allClickableFalse = true;
         elementPtr->fromXml(doc, nullptr);
-        if (_allClickableFalse) {
-            elementPtr->recursiveDoElements([](const ElementPtr &elm) {
-                elm->_clickable = true;
-            });
-        }
         return elementPtr;
     }
 
@@ -401,7 +408,6 @@ namespace {
         _checkable = (flags & 1) != 0;
         _checked = (flags & 2) != 0;
         _clickable = (flags & 4) != 0;
-        if (_clickable) _allClickableFalse = false;
         _enabled = (flags & 8) != 0;
         _focusable = (flags & 16) != 0;
         _focused = (flags & 32) != 0;
@@ -421,6 +427,7 @@ namespace {
             else if (tag == TAG_PKG) _packageName = std::move(s);
             else if (tag == TAG_CD) _contentDesc = std::move(s);
         }
+        logInvalidBounds("binary", _index, _classname, _resourceID, _bounds, nullptr);
         uint16_t numChildren;
         if (!readBytes(buf, len, offset, &numChildren, 2)) return true;
         _children.reserve(numChildren > 32 ? 32 : numChildren);
@@ -440,12 +447,8 @@ namespace {
     ElementPtr Element::createFromBinary(const char *buf, size_t len) {
         if (len < 4 || memcmp(buf, BINARY_MAGIC, 4) != 0) return nullptr;
         size_t offset = 4;
-        Element::_allClickableFalse = true;
         ElementPtr root = Element::parseBinaryNode(buf, len, &offset, nullptr);
         if (!root) return nullptr;
-        if (Element::_allClickableFalse) {
-            root->recursiveDoElements([](const ElementPtr &elm) { elm->_clickable = true; });
-        }
         // Keep root scrollable as reported by source tree; do not force-enable.
 #if FASTBOT_LOG_RAW_GUITREE
         BLOG("[domtree] from binary (no raw XML); parsed tree hierarchy:");
@@ -510,6 +513,12 @@ namespace {
         xml->SetAttribute("scrollable", elm->_scrollable ? "true" : "false");
         xml->SetAttribute("long-clickable", elm->_longClickable ? "true" : "false");
         xml->SetAttribute("password", elm->_password ? "true" : "false");
+        if (elm->_apeHasVisibleToUserAttr) {
+            xml->SetAttribute("visible-to-user", elm->_apeVisibleToUser ? "true" : "false");
+        }
+        if (!elm->_apeVisibilityRaw.empty()) {
+            xml->SetAttribute("visibility", elm->_apeVisibilityRaw.c_str());
+        }
         {
             const ScrollType st = elm->getScrollType();
             const int stIdx = static_cast<int>(st);
@@ -563,13 +572,27 @@ namespace {
             return;
         this->_hashCached = false;
         this->_xmlCached = false;
+        _apeHasVisibleToUserAttr = false;
+        _apeVisibleToUser = true;
+        _apeVisibilityRaw.clear();
+        _apeEmptyBoundsAttr = false;
         if (parentOfNode)
             this->_parent = parentOfNode;
+        {
+            const char *boundsProbe = xmlNode->Attribute("bnd");
+            if (!boundsProbe) boundsProbe = xmlNode->Attribute("bounds");
+            if (boundsProbe && boundsProbe[0] == '\0') {
+                _apeEmptyBoundsAttr = true;
+            }
+        }
         int indexOfNode = 0;
         if (queryIntAttr(xmlNode, "idx", "index", indexOfNode))
             this->_index = indexOfNode;
         const char *boundingBoxStr = nullptr;
+        bool hasBoundsAttr = false;
+        bool parsedBounds = false;
         if (queryStringAttr(xmlNode, "bnd", "bounds", boundingBoxStr) && boundingBoxStr && *boundingBoxStr == '[') {
+            hasBoundsAttr = true;
             const char *p = boundingBoxStr + 1;
             int xl = parseIntAndAdvance(p);
             if (*p == ',') {
@@ -583,8 +606,7 @@ namespace {
                         int yr = parseIntAndAdvance(p);
                         if (*p == ']') {
                             this->_bounds = std::make_shared<Rect>(xl, yl, xr, yr);
-                            if (this->_bounds->isEmpty())
-                                this->_bounds = Rect::RectZero;
+                            parsedBounds = true;
                         }
                     }
                 }
@@ -602,7 +624,7 @@ namespace {
         if (queryStringAttr(xmlNode, "cd", "content-desc", content_desc)) this->_contentDesc = std::string(content_desc);
         bool b = false;
         if (queryBoolAttr(xmlNode, "ck", "checkable", b)) this->_checkable = b;
-        if (queryBoolAttr(xmlNode, "clk", "clickable", b)) { this->_clickable = b; if (b) _allClickableFalse = false; }
+        if (queryBoolAttr(xmlNode, "clk", "clickable", b)) { this->_clickable = b; }
         if (queryBoolAttr(xmlNode, "cked", "checked", b)) this->_checked = b;
         if (queryBoolAttr(xmlNode, "en", "enabled", b)) this->_enabled = b;
         if (queryBoolAttr(xmlNode, "fcd", "focused", b)) this->_focused = b;
@@ -611,10 +633,34 @@ namespace {
         if (queryBoolAttr(xmlNode, "lclk", "long-clickable", b)) this->_longClickable = b;
         if (queryBoolAttr(xmlNode, "pwd", "password", b)) this->_password = b;
         if (queryBoolAttr(xmlNode, "sel", "selected", b)) this->_selected = b;
+        {
+            bool vu = true;
+            if (queryBoolAttr(xmlNode, "vu", "visible-to-user", vu)) {
+                _apeHasVisibleToUserAttr = true;
+                _apeVisibleToUser = vu;
+            }
+        }
+        {
+            const char *vis = nullptr;
+            if (queryStringAttr(xmlNode, "vis", "visibility", vis) && vis) {
+                _apeVisibilityRaw.assign(vis);
+            }
+        }
 
         this->_isEditable = isEditTextClassName(this->_classname);
         if (FORCE_EDITTEXT_CLICK_TRUE && this->_isEditable) {
             this->_longClickable = this->_clickable = this->_enabled = true;
+        }
+        if (hasBoundsAttr) {
+            if (parsedBounds) {
+                logInvalidBounds("xml", this->_index, this->_classname, this->_resourceID, this->_bounds, boundingBoxStr);
+            } else {
+                BDLOG("element bounds parse failed source=xml class=%s rid=%s idx=%d raw=%s",
+                      this->_classname.empty() ? "(none)" : this->_classname.c_str(),
+                      this->_resourceID.empty() ? "(none)" : this->_resourceID.c_str(),
+                      this->_index,
+                      boundingBoxStr ? boundingBoxStr : "(null)");
+            }
         }
 
         if (PARENT_CLICK_CHANGE_CHILDREN && parentOfNode && parentOfNode->_longClickable) {
@@ -656,7 +702,6 @@ namespace {
         if (!this->_scrollable) {
             return ScrollType::NONE;
         }
-        // Align with Java APE GUITreeNode.getScrollType() class whitelist.
         if ("android.widget.ScrollView" == this->_classname
             || "android.widget.ListView" == _classname
             || "android.widget.ExpandableListView" == _classname

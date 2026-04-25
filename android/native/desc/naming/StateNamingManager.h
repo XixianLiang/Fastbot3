@@ -143,6 +143,8 @@ namespace naming {
         /** Return and reset lookup window stats for exact-vs-fallback hit-rate analysis. */
         EdgeLookupStats consumeEdgeLookupStats();
 
+        void releaseTreeCache(const gui_tree::GUITree &tree);
+
         /** Global (process-wide) counters; not tied to manager instance. */
         static StateNamingUpdateRejectDiagStats consumeUpdateRejectDiagStats();
         static StateNamingTreeWalkDiagStats consumeTreeWalkDiagStats();

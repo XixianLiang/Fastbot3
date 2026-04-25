@@ -36,6 +36,8 @@ namespace gui_tree {
 
         /** XPath 1.0 node-set mapped through the same DOM as the tree (invalid expr → empty). */
         std::vector<GUITreeNodePtr> nodesForXPath(const std::string &expr) const;
+        /** Debug helper: dump current DOM as XML string. */
+        std::string dumpXmlString() const;
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
         /**

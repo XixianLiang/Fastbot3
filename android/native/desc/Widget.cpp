@@ -186,6 +186,13 @@ namespace fastbotx {
             this->_bounds = Rect::RectZero;
             BLOGE("Widget::initFormElement: element->getBounds() returned null, using RectZero");
         }
+        if (this->_bounds && this->_bounds->isEmpty()) {
+            const RectPtr eb = element ? element->getBounds() : nullptr;
+            BDLOG("widget init: empty_bounds class=%s rid=%s idx=%d elemBounds=%s widgetBounds=%s",
+                  this->_clazz.c_str(), this->_resourceID.c_str(), element ? element->getIndex() : -1,
+                  eb ? eb->toString().c_str() : "(null)",
+                  this->_bounds->toString().c_str());
+        }
         this->_index = element->getIndex();
         this->_enabled = element->getEnable();
         this->_text = element->getText();

@@ -1,18 +1,19 @@
 /**
  * @authors Zhao Zhang
  *
- * XPath fragments align with APE Java naming:
+ * XPath:
  * - TypeNamer: [@class="..."][@resource-id="..."]
  * - TextNamer: [@text="..."][@content-desc="..."] (Java TextName.appendXPathLocalProperties)
  * - IndexNamer: [@index=N] (numeric, no quotes)
  * - Compound order: TYPE, TEXT, INDEX (Java CompoundNamer order for typeTextIndex)
  * - ParentNamer: recursive parent.toXPath, then child segment with slash-star + local predicates
  * - AncestorNamer: slash-star + local per level root→leaf; uniform local mask unless PARENT in mask,
- *   then per-node local mask from NamingRuntime (APE useParent branch).
+ *   then per-node local mask from NamingRuntime.
  */
 
 #include "BitmaskNamer.h"
 #include "LocalXPathName.h"
+#include "NameManager.h"
 #include "NamingRuntime.h"
 #include "../ApeTextNormalize.h"
 #include "../gui_tree/GUITreeNode.h"
@@ -51,7 +52,6 @@ namespace {
         return mask & ~(parentBit | ancestorBit);
     }
 
-    /** Java NamerFactory.escapeToXPathString: only escape double quotes. */
     std::string escapeJavaXPathString(const std::string &origin) {
         std::string out;
         out.reserve(origin.size() + 4);
@@ -230,17 +230,20 @@ namespace {
         const uint32_t locBase = localMaskOnly(mask_);
 
         if (!hasP && !hasA) {
-            return std::make_shared<LocalXPathName>(shared_from_this(), buildLocalPredicates(locBase, node));
+            return cacheName(std::make_shared<LocalXPathName>(
+                shared_from_this(), buildLocalPredicates(locBase, node)));
         }
         if (!hasA && hasP) {
-            return std::make_shared<FullPathName>(shared_from_this(), buildParentChainXPath(&node, locBase));
+            return cacheName(std::make_shared<FullPathName>(
+                shared_from_this(), buildParentChainXPath(&node, locBase)));
         }
         if (hasA && !hasP) {
-            return std::make_shared<FullPathName>(shared_from_this(), buildAncestorUniformXPath(node, locBase));
+            return cacheName(std::make_shared<FullPathName>(
+                shared_from_this(), buildAncestorUniformXPath(node, locBase)));
         }
         const auto *map = namingEvalNodeToNamer();
-        return std::make_shared<FullPathName>(shared_from_this(),
-                                              buildAncestorPerNodeXPath(node, locBase, map));
+        return cacheName(std::make_shared<FullPathName>(
+            shared_from_this(), buildAncestorPerNodeXPath(node, locBase, map)));
     }
 
     NamePtr BitmaskNamer::namingWithXPathKey(gui_tree::GUITreeNode &node,
@@ -255,11 +258,11 @@ namespace {
             if (xpathKey.rfind("//*", 0) == 0) {
                 predicates = xpathKey.substr(3);
             }
-            return std::make_shared<LocalXPathName>(shared_from_this(), std::move(predicates));
+            return cacheName(std::make_shared<LocalXPathName>(shared_from_this(), std::move(predicates)));
         }
 
         // For PARENT/ANCESTOR modes, xpathKey is already the full path XPath.
-        return std::make_shared<FullPathName>(shared_from_this(), xpathKey);
+        return cacheName(std::make_shared<FullPathName>(shared_from_this(), xpathKey));
     }
 
     std::string BitmaskNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const {

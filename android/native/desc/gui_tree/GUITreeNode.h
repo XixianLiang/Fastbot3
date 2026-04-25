@@ -16,9 +16,6 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
- /*
- * APE GUITreeNode — children owned as shared_ptr vector (Java uses sibling links; we keep API close via listChildren()).
- */
 #ifndef FASTBOTX_DESC_GUI_TREE_GUITREENODE_H_
 #define FASTBOTX_DESC_GUI_TREE_GUITREENODE_H_
 

@@ -16,9 +16,7 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
- /*
- * APE GUITree — root + activity + current Naming + parallel arrays (names ↔ node groups).
- */
+
 #ifndef FASTBOTX_DESC_GUI_TREE_GUITREE_H_
 #define FASTBOTX_DESC_GUI_TREE_GUITREE_H_
 
@@ -33,6 +31,9 @@
 
 namespace fastbotx {
 namespace gui_tree {
+
+    class GUITree;
+    using GUITreePtr = std::shared_ptr<GUITree>;
 
     class GUITree {
     public:
@@ -50,6 +51,8 @@ namespace gui_tree {
 
         GUITreeNode *getRootNode() { return root_.get(); }
         const GUITreeNode *getRootNode() const { return root_.get(); }
+        /** Shared owner for DOM-bridge registration. */
+        const GUITreeNodePtr &getRootNodePtr() const { return root_; }
 
         const std::string &getActivityPackageName() const { return activity_package_; }
         const std::string &getActivityClassName() const { return activity_class_; }
@@ -77,6 +80,12 @@ namespace gui_tree {
         /** Validate that each node's xpath Name matches the parallel Name entry (Java validate). */
         void validate() const;
 
+        /**
+         * Deep-copy node tree plus current naming/name groups.
+         * Returned tree is independent — safe to retain across refine/rebuild on another instance.
+         */
+        static GUITreePtr cloneDeep(const GUITree &src);
+
     private:
         static int nextId();
 
@@ -93,8 +102,6 @@ namespace gui_tree {
         std::vector<std::string> current_xpaths_{};
         bool has_focused_node_{false};
     };
-
-    using GUITreePtr = std::shared_ptr<GUITree>;
 
 } // namespace gui_tree
 } // namespace fastbotx

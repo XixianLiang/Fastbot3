@@ -1,9 +1,4 @@
 /**
- * Thread-local map used while NamingFactory::evaluateNaming builds Name::toXPath()
- * for BitmaskNamer when ANCESTOR (+ PARENT) semantics need each node's assigned Namer
- * (APE AncestorNamer useParent branch).
- */
-/**
  * @authors Zhao Zhang
  */
 

@@ -134,6 +134,14 @@ namespace fastbotx {
 
         RectPtr getBounds() const { return this->_bounds; };
 
+        bool hasApeVisibleToUserAttribute() const { return _apeHasVisibleToUserAttr; }
+
+        bool getApeVisibleToUser() const { return _apeVisibleToUser; }
+
+        const std::string &getApeVisibilityRaw() const { return _apeVisibilityRaw; }
+
+        bool hasApeEmptyBoundsAttribute() const { return _apeEmptyBoundsAttr; }
+
         int getIndex() const { return this->_index; }
 
         bool getClickable() const { return this->_clickable; }
@@ -310,10 +318,12 @@ namespace fastbotx {
         mutable std::string _cachedXml;
         mutable bool _xmlCached = false;
 
-        // a construct helper
-        static bool _allClickableFalse;
-
         int _stableElementId{-1};
+
+        bool _apeHasVisibleToUserAttr = false;
+        bool _apeVisibleToUser = true;
+        std::string _apeVisibilityRaw;
+        bool _apeEmptyBoundsAttr = false;
     };
 
     typedef std::shared_ptr<Element> ElementPtr;

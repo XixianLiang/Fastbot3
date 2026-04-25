@@ -23,6 +23,7 @@
 #include "../events/Preference.h"
 
 namespace fastbotx {
+    constexpr bool kApeStateHashWithOrder = true;
 
 
     ReuseState::ReuseState()
@@ -163,7 +164,7 @@ namespace fastbotx {
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         // In static reuse abstraction mode, ignore WidgetKeyMask and fall back to legacy hash
         if (Preference::inst() && Preference::inst()->useStaticReuseAbstraction()) {
-            activityHash ^= (combineHash<Widget>(_widgets, STATE_WITH_WIDGET_ORDER) << 1);
+            activityHash ^= (combineHash<Widget>(_widgets, kApeStateHashWithOrder) << 1);
         } else {
             uintptr_t widgetsHash = 0x1;
             for (const auto &w : _widgets) {
@@ -174,8 +175,8 @@ namespace fastbotx {
             activityHash ^= (widgetsHash << 1);
         }
 #else
-        // Combine with widget hash (may include order if STATE_WITH_WIDGET_ORDER is enabled)
-        activityHash ^= (combineHash<Widget>(_widgets, STATE_WITH_WIDGET_ORDER) << 1);
+        // Combine with widget hash.
+        activityHash ^= (combineHash<Widget>(_widgets, kApeStateHashWithOrder) << 1);
 #endif
         _hashcode = activityHash;
     }

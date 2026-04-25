@@ -26,9 +26,7 @@ namespace naming {
     NamingPtr ActivityNamingManager::getNaming(const std::string &activity_key) const {
         auto it = current_.find(activity_key);
         if (it == current_.end()) {
-            // APE ActivityNamingManager behavior: unseen activity falls back to base naming
-            // and persists the mapping on first access.
-            NamingPtr base = NamingFactory::defaultRootNaming();
+            NamingPtr base = NamingFactory::getBaseNaming();
             current_[activity_key] = base;
             return base;
         }
@@ -44,6 +42,17 @@ namespace naming {
     }
 
     void ActivityNamingManager::clear() { current_.clear(); }
+
+    std::vector<NamingPtr> ActivityNamingManager::getAllNamings() const {
+        std::vector<NamingPtr> out;
+        out.reserve(current_.size());
+        for (const auto &kv : current_) {
+            if (kv.second) {
+                out.push_back(kv.second);
+            }
+        }
+        return out;
+    }
 
 } // namespace naming
 } // namespace fastbotx

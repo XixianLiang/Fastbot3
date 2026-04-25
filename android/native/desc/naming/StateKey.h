@@ -2,7 +2,7 @@
  * @authors Zhao Zhang
  */
  /*
- * APE state identity: activity + Naming fingerprint + sorted widget Name XPaths (Java StateKey analogue).
+ * Activity + Naming fingerprint + sorted widget Name XPaths.
  * Hash mixes the same way as fastbotx::State (activity term + xor-combined name hashes).
  */
 #ifndef FASTBOTX_DESC_NAMING_STATEKEY_H_
@@ -34,21 +34,13 @@ namespace naming {
         /** Split at first `/` (same convention as GUITreeFactory / JNI activity). */
         static void splitActivityPackageClass(const std::string &activity, std::string *pkg, std::string *cls);
 
-        /** Activity string for `fromGUITree` (pkg + cls on tree). */
-        static std::string activityFromPackageAndClass(const std::string &pkg, const std::string &cls);
-
         /**
          * Canonical activity for `StateKey` and `ActivityNamingManager` keys: recomposes pkg/cls like `fromGUITree`.
-         * Use this when indexing naming state so it matches `StateKey::activity()` from a `GUITree` built with
-         * `splitActivityPackageClass` + `GUITreeFactory`.
+         * Falls back to `pkg` only when `cls` is empty so callers that get a single-field
+         * activity string keep working.
          */
+        static std::string activityFromPackageAndClass(const std::string &pkg, const std::string &cls);
         static std::string canonicalActivityString(const std::string &activity);
-
-        /**
-         * Deterministic identity when full GUITree/Naming cannot produce a key (same hash mixing as normal StateKey).
-         * Used so dynamic non-static runs never fall back to widget-mask state hashes (no APE vs legacy mixing).
-         */
-        static StateKey fromFallbackXmlStringHash(const std::string &activity, uintptr_t xmlStringHash);
 
         const std::string &activity() const { return activity_; }
 

@@ -8,7 +8,7 @@
 /**
  * Screen-level merge graph for LLMDroid GPT / navigation path planning.
  * Does not replace Graph for RL. GPT-mutating entry points (overview / reanalysis / listeners) are
- * gated by Preference::isLlmdroidEnabled(); must not write APE StateKey or action RL hashes.
+ * gated by Preference::isLlmdroidEnabled();
  *
  * Threading:
  * - **Monkey / exploration thread** (LLMDroid "MAIN_THREAD"): `MergedStateGraph::addNode`, `findPaths`,
