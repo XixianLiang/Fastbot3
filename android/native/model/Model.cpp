@@ -7243,7 +7243,7 @@ namespace {
             if (!shouldRollback) {
                 continue;
             }
-            naming::Nameing rollbackFrom = tn;
+            naming::NamingPtr rollbackFrom = tn;
             naming::NamingPtr rollbackTo = targetParentNaming;
             std::string fpFiner = rollbackFrom->fingerprintString();
             std::unordered_set<uintptr_t> affectedStateHashesForBlacklist = filteredAffectedStateHashes;
@@ -7351,265 +7351,6 @@ namespace {
         _apeRebuildStatsByActivity[actKey].consecutiveRollbacks = 0;
         BDLOG("ape naming: coarsen keep refinement activity=%s rollback=0", activity.c_str());
         return false;
-    }
-
-    bool Model::runApeNamingAbstractionBatch() {
-        if (Preference::inst() && Preference::inst()->useStaticReuseAbstraction()) {
-            BDLOG("ape naming: batch skip reason=static_reuse_abstraction");
-            return false;
-        }
-        const size_t eventRefineBefore = _apeEventRefineSuccessCount;
-        const size_t eventRollbackBefore = _apeEventCoarsenRollbackCount;
-        const size_t batchRefineBefore = _apeBatchRefineSuccessCount;
-        const size_t batchRollbackBefore = _apeBatchCoarsenRollbackCount;
-        const int minTargets = (_preference ? _preference->getApeNamingMinNonDetTargets()
-                                            : MinNonDeterminismCount);
-        for (const auto &kv : _apeNamingContext) {
-            const std::string &activity = kv.first;
-            const ApeNamingAbstractionContext &ctx = kv.second;
-            if (!ctx.previousNamingBeforeRefine) {
-                continue;
-            }
-            naming::NamingPtr n = _apeStateNamingManager->activityManager().getNaming(activity);
-            if (!n) {
-                continue;
-            }
-            if (ctx.previousNamingFingerprintBeforeRefine != n->fingerprintString()) {
-                if (coarsenActivityApeNamingIfNeeded(activity)) {
-                    _apeBatchCoarsenRollbackCount++;
-                }
-            }
-        }
-        if (Preference::inst() && !Preference::inst()->useApeNamingPeriodicRefinement()) {
-            const bool mutatedPrefetch =
-                (_apeBatchRefineSuccessCount > batchRefineBefore ||
-                 _apeBatchCoarsenRollbackCount > batchRollbackBefore);
-            BDLOG("ape naming: batch prefetch-only path (periodic refinement off) mutated=%d",
-                  mutatedPrefetch ? 1 : 0);
-            if (mutatedPrefetch) {
-                notifyAgentsOfApeNamingChange();
-            }
-            return mutatedPrefetch;
-        }
-        const std::string ruleProfile =
-            (_preference ? _preference->getApeNamingActionRefineRuleProfile() : "baseline");
-        auto collectNonDetPairs = [&]() -> std::vector<ApeNonDetPairStat> {
-            std::vector<ApeNonDetPairStat> out;
-            out.reserve(_apePairAgg.size());
-            for (const auto &kv : _apePairAgg) {
-                const auto &tm = kv.second.targetCounts;
-                if (tm.size() < static_cast<size_t>(minTargets)) {
-                    continue;
-                }
-                ApeNonDetPairStat s;
-                s.sourceKeyHash = kv.first.sourceKeyHash;
-                s.actionHash = kv.first.actionHash;
-                s.sourceActivity = kv.second.sourceActivity;
-                s.hasSourceStateKey = kv.second.hasSourceStateKey;
-                if (s.hasSourceStateKey) {
-                    s.sourceStateKey = kv.second.sourceStateKey;
-                }
-                tm.forEach([&](uintptr_t h, int /*count*/) {
-                    s.targetKeyHashes.insert(h);
-                });
-                s.targetCount = s.targetKeyHashes.size();
-                out.push_back(std::move(s));
-            }
-            std::sort(out.begin(), out.end(), [](const ApeNonDetPairStat &a, const ApeNonDetPairStat &b) {
-                if (a.targetCount != b.targetCount) return a.targetCount > b.targetCount;
-                if (a.sourceActivity != b.sourceActivity) return a.sourceActivity < b.sourceActivity;
-                if (a.sourceKeyHash != b.sourceKeyHash) return a.sourceKeyHash < b.sourceKeyHash;
-                return a.actionHash < b.actionHash;
-            });
-            return out;
-        };
-        auto toRefinePair = [](const ApeNonDetPairStat &p) -> ApeRefinePair {
-            ApeRefinePair out;
-            out.sourceKeyHash = p.sourceKeyHash;
-            out.hasSourceStateKey = p.hasSourceStateKey;
-            if (out.hasSourceStateKey) {
-                out.sourceStateKey = p.sourceStateKey;
-            }
-            out.actionHash = p.actionHash;
-            out.targetKeyHashes = p.targetKeyHashes;
-            out.targetCount = p.targetCount;
-            return out;
-        };
-        auto countNonDetPairsPerActivity = [](const std::vector<ApeNonDetPairStat> &v) {
-            std::unordered_map<std::string, int> m;
-            m.reserve(std::max<size_t>(v.size(), 8) * 2);
-            for (const auto &p : v) {
-                const std::string k = naming::StateKey::canonicalActivityString(p.sourceActivity);
-                m[k]++;
-            }
-            return m;
-        };
-        if (UsePaperRefinementOrder) {
-            std::vector<ApeNonDetPairStat> nonDetPairs = collectNonDetPairs();
-            const std::unordered_map<std::string, int> nonDetCountByAct = countNonDetPairsPerActivity(nonDetPairs);
-            if (ruleProfile == "java_rule_02_preview" && nonDetPairs.size() > 1) {
-                nonDetPairs.resize(1);
-            }
-            BLOG("ape naming: paper order nonDetPairs=%zu", nonDetPairs.size());
-            std::unordered_set<std::string> refinedActivities;
-            for (const auto &p : nonDetPairs) {
-                if (refinedActivities.count(p.sourceActivity) != 0) {
-                    continue;
-                }
-                ApeRefinePair rp = toRefinePair(p);
-                BLOG("ape naming: refine-attempt activity=%s srcKey=%lu act=%lu targets=%zu",
-                     p.sourceActivity.c_str(), (unsigned long)p.sourceKeyHash,
-                     (unsigned long)p.actionHash, p.targetCount);
-                const int preN = nonDetCountByAct.at(
-                    naming::StateKey::canonicalActivityString(p.sourceActivity));
-                if (refineActivityApeNaming(p.sourceActivity, &rp, preN)) {
-                    _apeBatchRefineSuccessCount++;
-                    if (coarsenActivityApeNamingIfNeeded(p.sourceActivity)) {
-                        _apeBatchCoarsenRollbackCount++;
-                    }
-                    refinedActivities.insert(p.sourceActivity);
-                } else if (rp.actionHash != 0 &&
-                           p.targetCount >= static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) {
-                    const std::string actKey = naming::StateKey::canonicalActivityString(p.sourceActivity);
-                    auto &blk = _apeRefineActionBlacklist[actKey];
-                    const bool inserted = blk.insert(rp.actionHash).second;
-                    apeCapApeNamingCoarsenAndRefineBlacklists();
-                    BLOG("ape naming: NDActionBlacklist add (APE: out>=%d after failed resolve) activity=%s "
-                         "act=%lu targets=%zu",
-                         kApeNDActionBlacklistMinOutEdges, p.sourceActivity.c_str(),
-                         (unsigned long)rp.actionHash, p.targetCount);
-                    if (shouldLogApeDiagSample(std::string("nd_blacklist_batch_add#") + actKey, 25)) {
-                        BLOG("ape naming: diag NDActionBlacklist[batch] activity=%s act=%lu inserted=%d size=%zu targets=%zu",
-                             p.sourceActivity.c_str(), (unsigned long)rp.actionHash,
-                             inserted ? 1 : 0, blk.size(), p.targetCount);
-                    }
-                }
-            }
-        } else {
-            std::vector<ApeNonDetPairStat> nonDetPairs = collectNonDetPairs();
-            const std::unordered_map<std::string, int> nonDetCountByAct = countNonDetPairsPerActivity(nonDetPairs);
-            if (ruleProfile == "java_rule_02_preview" && nonDetPairs.size() > 1) {
-                nonDetPairs.resize(1);
-            }
-            BLOG("ape naming: batch nonDetPairs=%zu", nonDetPairs.size());
-            std::vector<std::string> refinedActs;
-            std::unordered_set<std::string> refinedActivities;
-            for (const auto &p : nonDetPairs) {
-                if (refinedActivities.count(p.sourceActivity) != 0) {
-                    continue;
-                }
-                ApeRefinePair rp = toRefinePair(p);
-                BLOG("ape naming: refine-attempt activity=%s srcKey=%lu act=%lu targets=%zu",
-                     p.sourceActivity.c_str(), (unsigned long)p.sourceKeyHash,
-                     (unsigned long)p.actionHash, p.targetCount);
-                const int preN = nonDetCountByAct.at(
-                    naming::StateKey::canonicalActivityString(p.sourceActivity));
-                if (refineActivityApeNaming(p.sourceActivity, &rp, preN)) {
-                    _apeBatchRefineSuccessCount++;
-                    refinedActs.push_back(p.sourceActivity);
-                    refinedActivities.insert(p.sourceActivity);
-                } else if (rp.actionHash != 0 &&
-                           p.targetCount >= static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) {
-                    const std::string actKey = naming::StateKey::canonicalActivityString(p.sourceActivity);
-                    auto &blk = _apeRefineActionBlacklist[actKey];
-                    const bool inserted = blk.insert(rp.actionHash).second;
-                    apeCapApeNamingCoarsenAndRefineBlacklists();
-                    BLOG("ape naming: NDActionBlacklist add (APE: out>=%d after failed resolve) activity=%s "
-                         "act=%lu targets=%zu",
-                         kApeNDActionBlacklistMinOutEdges, p.sourceActivity.c_str(),
-                         (unsigned long)rp.actionHash, p.targetCount);
-                    if (shouldLogApeDiagSample(std::string("nd_blacklist_batch_add#") + actKey, 25)) {
-                        BLOG("ape naming: diag NDActionBlacklist[batch] activity=%s act=%lu inserted=%d size=%zu targets=%zu",
-                             p.sourceActivity.c_str(), (unsigned long)rp.actionHash,
-                             inserted ? 1 : 0, blk.size(), p.targetCount);
-                    }
-                }
-            }
-            for (const auto &a : refinedActs) {
-                if (coarsenActivityApeNamingIfNeeded(a)) {
-                    _apeBatchCoarsenRollbackCount++;
-                }
-            }
-        }
-        const size_t eventRefineDelta = _apeEventRefineSuccessCount - eventRefineBefore;
-        const size_t eventRollbackDelta = _apeEventCoarsenRollbackCount - eventRollbackBefore;
-        const size_t batchRefineDelta = _apeBatchRefineSuccessCount - batchRefineBefore;
-        const size_t batchRollbackDelta = _apeBatchCoarsenRollbackCount - batchRollbackBefore;
-        BLOG("ape naming: counters delta event(refine=%zu,rollback=%zu) "
-             "batch(refine=%zu,rollback=%zu) total event(refine=%zu,rollback=%zu) "
-             "batch(refine=%zu,rollback=%zu)",
-             eventRefineDelta, eventRollbackDelta, batchRefineDelta, batchRollbackDelta,
-             _apeEventRefineSuccessCount, _apeEventCoarsenRollbackCount,
-             _apeBatchRefineSuccessCount, _apeBatchCoarsenRollbackCount);
-        if (_apeStateNamingManager) {
-            const auto edgeStats = _apeStateNamingManager->consumeEdgeLookupStats();
-            const uint64_t total =
-                edgeStats.exact_hit + edgeStats.hash_only_hit + edgeStats.miss;
-            if (total > 0) {
-                const double exactRate = (100.0 * static_cast<double>(edgeStats.exact_hit)) /
-                                         static_cast<double>(total);
-                const double fallbackRate = (100.0 * static_cast<double>(edgeStats.hash_only_hit)) /
-                                            static_cast<double>(total);
-                const double missRate = (100.0 * static_cast<double>(edgeStats.miss)) /
-                                        static_cast<double>(total);
-                BLOG("ape naming: edge lookup window total=%" PRIu64
-                     " exact=%" PRIu64 " (%.2f%%) hashOnly=%" PRIu64 " (%.2f%%) miss=%" PRIu64 " (%.2f%%)",
-                     total, edgeStats.exact_hit, exactRate,
-                     edgeStats.hash_only_hit, fallbackRate, edgeStats.miss, missRate);
-            }
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-            // Review 1.1–1.2: evaluateNaming / default ActionType XPath / rebuild failures (logs inside consume*).
-            (void)naming::NamingFactory::consumeNamingEvaluateDiagStats();
-            // Review 1.3–1.4: StateNamingManager silent rejects + treeToNaming / fixed-point (logs inside consume*).
-            (void)naming::StateNamingManager::consumeUpdateRejectDiagStats();
-            (void)naming::StateNamingManager::consumeTreeWalkDiagStats();
-#endif
-        }
-        const ApeCorrectnessCounters counters = _ape_correctness_counters;
-        const uint64_t stateKeyBuildTotal = counters.statekey_build_ok + counters.statekey_build_fail;
-        if (stateKeyBuildTotal > 0 || counters.statekey_fallback_used > 0 ||
-            counters.graph_dedup_hash_hit > 0 || counters.naming_update_by_hash > 0 ||
-            counters.statekey_record_hash_collision > 0 || counters.evidence_pool_sample_add > 0 ||
-            counters.evidence_pool_new_pair > 0 || counters.evidence_pool_evict > 0) {
-            BLOG("ape correctness: stateKeyBuild=%" PRIu64 " ok=%" PRIu64 " fail=%" PRIu64
-                 " failNull=%" PRIu64 " failTree=%" PRIu64 " failNaming=%" PRIu64 " failRebuild=%" PRIu64
-                 " fallback=%" PRIu64 " stateKeyHashMulti=%" PRIu64
-                 " graphDedupLookups=%" PRIu64 " graphDedupExact=%" PRIu64 " graphDedupCollision=%" PRIu64
-                 " namingUpdateHash=%" PRIu64 " evidencePoolSampleAdd=%" PRIu64
-                 " evidencePoolNewPair=%" PRIu64 " evidencePoolEvict=%" PRIu64,
-                 stateKeyBuildTotal, counters.statekey_build_ok, counters.statekey_build_fail,
-                 counters.statekey_fail_null_input, counters.statekey_fail_build_tree_dom,
-                 counters.statekey_fail_no_naming, counters.statekey_fail_rebuild_tree,
-                 counters.statekey_fallback_used, counters.statekey_record_hash_collision,
-                 counters.graph_dedup_hash_hit, counters.graph_dedup_exact_hit,
-                 counters.graph_dedup_hash_collision, counters.naming_update_by_hash,
-                 counters.evidence_pool_sample_add, counters.evidence_pool_new_pair,
-                 counters.evidence_pool_evict);
-        }
-        _ape_correctness_counters = ApeCorrectnessCounters{};
-        const bool batchMutated = (batchRefineDelta > 0 || batchRollbackDelta > 0);
-        BDLOG("ape naming: batch done batchMutated=%d eventD(ref=%zu,rb=%zu) batchD(ref=%zu,rb=%zu)",
-              batchMutated ? 1 : 0, eventRefineDelta, eventRollbackDelta, batchRefineDelta,
-              batchRollbackDelta);
-        if (batchMutated) {
-            notifyAgentsOfApeNamingChange();
-        }
-        return batchMutated;
-    }
-
-    void Model::runRefinementAndCoarseningIfScheduled() {
-        if (Preference::inst() && Preference::inst()->useStaticReuseAbstraction()) {
-            BDLOG("state abstraction: skip scheduled ape batch reason=static_reuse_abstraction");
-            return;
-        }
-        if (_stepCountSinceLastCheck < static_cast<size_t>(RefinementCheckInterval)) {
-            BDLOG("state abstraction: skip scheduled ape batch reason=interval stepsSince=%zu need=%d",
-                  _stepCountSinceLastCheck, (int)RefinementCheckInterval);
-            return;
-        }
-        BLOG("state abstraction: ape-only batch at step %zu (interval=%d)",
-             _stepCountSinceLastCheck, (int)RefinementCheckInterval);
-        (void)runApeNamingAbstractionBatch();
     }
 #endif
 
@@ -7796,7 +7537,7 @@ namespace {
         if (!element || !outKey) {
             return fail(ApeStateKeyBuildFailReason::NullInput);
         }
-        // When static reuse abstraction is enabled, we must not sync APE naming fixed-point
+        // When static reuse abstraction is enabled, we must not sync naming fixed-point
         // refinement or update dynamic naming bookkeeping; we only need enough naming to
         // compute the StateKey identity.
         const bool wantApeRlIdentity =
@@ -7805,20 +7546,37 @@ namespace {
         std::string cls;
         naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
         const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+        // Lazily serialize once per call; share XML string across tree fallback + XML-space remap hashes.
+        std::string xmlSnapshotMemo;
+        bool xmlSnapshotMemoValid = false;
+        auto xmlSnapshotRef = [&]() -> const std::string & {
+            if (ioXmlCache && !ioXmlCache->empty()) {
+                return *ioXmlCache;
+            }
+            if (xmlSnapshotMemoValid) {
+                return xmlSnapshotMemo;
+            }
+            xmlSnapshotMemo = element->toXMLCached();
+            xmlSnapshotMemoValid = true;
+            if (ioXmlCache) {
+                *ioXmlCache = xmlSnapshotMemo;
+            }
+            return xmlSnapshotMemo;
+        };
         gui_tree::GUITreeBuildResult built = gui_tree::GUITreeFactory::buildFromElement(element, pkg, cls);
         if (!built.tree || !built.dom) {
-            const std::string *xmlPtr = nullptr;
-            std::string xmlLocal;
-            if (ioXmlCache && !ioXmlCache->empty()) {
-                xmlPtr = ioXmlCache;
-            } else {
-                xmlLocal = element->toXMLCached();
-                if (ioXmlCache) {
-                    *ioXmlCache = xmlLocal;
-                }
-                xmlPtr = &xmlLocal;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+            gui_tree::GUITreePtr fbSnap;
+            if (stateForDynamicApply && stateForDynamicApply->hash() != 0) {
+                fbSnap = apeLatestGuiTreeSnapshot(stateForDynamicApply->hash());
             }
-            built = gui_tree::GUITreeFactory::buildFromXml(*xmlPtr, pkg, cls);
+            const std::string &xs = xmlSnapshotRef();
+            built =
+                fbSnap ? buildGuitreePreferApeSnapshotAndDomXml(xs, pkg, cls, fbSnap)
+                       : buildGUITreeFromCachedXmlPreferElement(xs, pkg, cls);
+#else
+            built = buildGUITreeFromCachedXmlPreferElement(xmlSnapshotRef(), pkg, cls);
+#endif
         }
         if (!built.tree || !built.dom) {
             return fail(ApeStateKeyBuildFailReason::BuildTreeOrDomFailed);
@@ -7847,10 +7605,10 @@ namespace {
                 uintptr_t focusOldKeyHash = 0;
                 uintptr_t focusOldKeyHashXml = 0;
                 if (beforeNaming && built.tree && built.dom) {
-                    if (naming::NamingFactory::rebuildTree(beforeNaming, *built.tree, built.dom)) {
+                    if (safeRebuildTree(beforeNaming, *built.tree, built.dom)) {
                         focusOldKeyHash = naming::StateKey::hashFromGUITree(*built.tree);
                     }
-                    if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
+                    if (!safeRebuildTree(naming, *built.tree, built.dom)) {
                         // Rebuild under current naming failed; tree may be stuck in beforeNaming state.
                         // Re-run getNamingFixedPoint to restore the tree to a consistent state.
                         naming = _apeStateNamingManager->getNamingFixedPoint(
@@ -7864,17 +7622,23 @@ namespace {
                 // (apeStateHashFromXmlWithNaming uses buildFromXml which can differ from buildFromElement).
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
                 if (focusOldKeyHash != 0 && beforeNaming) {
-                    std::string xmlForRemap;
-                    if (ioXmlCache && !ioXmlCache->empty()) {
-                        xmlForRemap = *ioXmlCache;
-                    } else if (element) {
-                        xmlForRemap = element->toXMLCached();
-                    }
+                    const std::string &xmlForRemap = xmlSnapshotRef();
                     if (!xmlForRemap.empty()) {
-                        uintptr_t xmH = 0;
-                        if (apeStateHashFromXmlWithNaming(activity, xmlForRemap, beforeNaming, &xmH) &&
-                            xmH != 0) {
-                            focusOldKeyHashXml = xmH;
+                        uintptr_t xmh = 0;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                        gui_tree::GUITreePtr fpSnap;
+                        const gui_tree::GUITreePtr *fpSnapPtr = nullptr;
+                        if (stateForDynamicApply && stateForDynamicApply->hash() != 0) {
+                            fpSnap = apeLatestGuiTreeSnapshot(stateForDynamicApply->hash());
+                            fpSnapPtr = fpSnap ? &fpSnap : nullptr;
+                        }
+                        if (apeStateHashFromXmlWithNaming(activity, xmlForRemap, beforeNaming, &xmh, 0, nullptr,
+                                                          fpSnapPtr) &&
+#else
+                        if (apeStateHashFromXmlWithNaming(activity, xmlForRemap, beforeNaming, &xmh) &&
+#endif
+                            xmh != 0) {
+                            focusOldKeyHashXml = xmh;
                         }
                     }
                     if (focusOldKeyHashXml == 0) {
@@ -7900,19 +7664,25 @@ namespace {
                         if (xml.empty()) {
                             continue;
                         }
-                        naming::StateKey storedKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                        if (!tryGetApeStateKey(sh, &storedKey) || storedKey.activity() != actKey) {
+                        naming::StateKey storedKey = naming::StateKey::fromParts("", nullptr, {});
+                        if (!tryGetApeStateKey(sh, &storedKey, actKey) || storedKey.activity() != actKey) {
                             continue;
                         }
                         uintptr_t oldH = 0;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                        gui_tree::GUITreePtr afSnap = apeLatestGuiTreeSnapshot(sh);
+                        const gui_tree::GUITreePtr *afSnapPtr = afSnap ? &afSnap : nullptr;
+                        if (apeStateHashFromXmlWithNaming(activity, xml, beforeNaming, &oldH, 0, nullptr,
+                                                          afSnapPtr) &&
+#else
                         if (apeStateHashFromXmlWithNaming(activity, xml, beforeNaming, &oldH) &&
+#endif
                             oldH == focusOldKeyHashXml) {
                             affectedTrees.insert(sh);
                         }
                     }
                 }
-                pruneStaleApeStatesForActivity(actKey, fpBefore,
-                                               affectedTrees.empty() ? nullptr : &affectedTrees);
+                pruneStaleApeStatesForActivity(actKey, fpBefore, nullptr);
                 notifyAgentsOfApeNamingChange();
             }
 #endif
@@ -7924,12 +7694,13 @@ namespace {
                 if (naming && wantApeRlIdentity) {
                     _apeStateNamingManager->updateNaming(
                         actKey, naming::NamingUpdateKind::Refine, naming);
+                    pruneDivergentApeStatesForActivity(actKey);
                 }
             }
             if (!naming) {
                 return fail(ApeStateKeyBuildFailReason::NoNaming);
             }
-            if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
+            if (!safeRebuildTree(naming, *built.tree, built.dom)) {
                 return fail(ApeStateKeyBuildFailReason::RebuildTreeFailed);
             }
         }
@@ -7942,19 +7713,22 @@ namespace {
                 uintptr_t newH = 0;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
                 {
-                    std::string xmlForRemap;
-                    if (ioXmlCache && !ioXmlCache->empty()) {
-                        xmlForRemap = *ioXmlCache;
-                    } else if (element) {
-                        xmlForRemap = element->toXMLCached();
-                        if (ioXmlCache) {
-                            *ioXmlCache = xmlForRemap;
-                        }
-                    }
+                    const std::string &xmlForRemap = xmlSnapshotRef();
                     if (!xmlForRemap.empty()) {
                         uintptr_t xmlOldH = 0;
                         uintptr_t xmlNewH = 0;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                        gui_tree::GUITreePtr ctxSnap;
+                        const gui_tree::GUITreePtr *ctxSnapPtr = nullptr;
+                        if (stateForDynamicApply && stateForDynamicApply->hash() != 0) {
+                            ctxSnap = apeLatestGuiTreeSnapshot(stateForDynamicApply->hash());
+                            ctxSnapPtr = ctxSnap ? &ctxSnap : nullptr;
+                        }
+                        if (apeStateHashFromXmlWithTwoNamings(activity, xmlForRemap, prevN, &xmlOldH, naming, &xmlNewH,
+                                                              ctxSnapPtr)) {
+#else
                         if (apeStateHashFromXmlWithTwoNamings(activity, xmlForRemap, prevN, &xmlOldH, naming, &xmlNewH)) {
+#endif
                             oldH = xmlOldH;
                             newH = xmlNewH;
                         }
@@ -7963,10 +7737,10 @@ namespace {
 #endif
                 // Fallback to Element-space if XML remap unavailable.
                 if (oldH == 0 && newH == 0) {
-                    if (naming::NamingFactory::rebuildTree(prevN, *built.tree, built.dom)) {
+                    if (safeRebuildTree(prevN, *built.tree, built.dom)) {
                         oldH = naming::StateKey::hashFromGUITree(*built.tree);
                     }
-                    if (!naming::NamingFactory::rebuildTree(naming, *built.tree, built.dom)) {
+                    if (!safeRebuildTree(naming, *built.tree, built.dom)) {
                         oldH = 0;
                         newH = 0;
                     } else {
@@ -7986,6 +7760,23 @@ namespace {
             std::vector<gui_tree::GUITreeNode *> guiPreOrder;
             collectGUITreeNodesPreOrder(built.tree->getRootNode(), &guiPreOrder);
             applyApeDynamicActionHashesToReuseState(stateForDynamicApply, guiPreOrder, kNew);
+        }
+#endif
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+        if (wantApeRlIdentity && stateForDynamicApply && built.tree) {
+            // Index snapshots by the identity hash (kNew.hash()) - NOT by the live
+            // State::hash() at this point. stateForDynamicApply->hash() here is still the
+            // pre-dynamic structural hash; the caller swaps it to apeKey.hash() via
+            // State::applyDynamicAbstractionIdentityHash only AFTER this function returns.
+            // Downstream consumers (recordApeTransitionForAbstraction, predicate eval,
+            // refinement) always look up snapshots with src->hash() == identity hash,
+            // so publishing under the pre-dynamic hash would orphan every future snapshot
+            // in a bucket nobody reads - leaving apeLatestGuiTreeSnapshot stuck on the
+            // one-shot fallback rebuild from the very first visit (stale coordinates),
+            // which was observed to 100% miss widget bounds resolution for revisited
+            // states (cf. snap_fallback_rebuilt=1 only for seq=12, then hasLiveSnap=1 with
+            // bM=0 for all later visits of the same state).
+            apeRememberGuiTreeSnapshot(kNew.hash(), *built.tree);
         }
 #endif
         *outKey = std::move(kNew);
@@ -8011,6 +7802,9 @@ namespace {
         if (!inApeHashSpace) {
             bucket.clear();
             bucket.push_back(key);
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+            syncApeNamingGraphIndex(state);
+#endif
             return;
         }
 
@@ -8023,7 +7817,45 @@ namespace {
             _ape_correctness_counters.statekey_record_hash_collision++;
         }
         bucket.push_back(key);
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        syncApeNamingGraphIndex(state);
+#endif
     }
+
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    void Model::syncApeNamingGraphIndex(const StatePtr &state) {
+        if (!_graph || !state) {
+            return;
+        }
+        auto ap = state->getActivityString();
+        const std::string actKey =
+            (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
+        naming::StateKey k = naming::StateKey::fromParts("", nullptr, {});
+        if (tryGetApeStateKey(state->hash(), &k, actKey)) {
+            _graph->apeNamingIndexUpsert(state, k.namingFingerprint());
+        } else {
+            _graph->apeNamingIndexRemoveState(state);
+        }
+    }
+
+    void Model::warmApeNamingGraphIndex() {
+        if (!_graph) {
+            return;
+        }
+        for (const StatePtr &s : _graph->getStates()) {
+            if (!s) {
+                continue;
+            }
+            auto ap = s->getActivityString();
+            const std::string actKey =
+                (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
+            naming::StateKey k = naming::StateKey::fromParts("", nullptr, {});
+            if (tryGetApeStateKey(s->hash(), &k, actKey)) {
+                _graph->apeNamingIndexUpsert(s, k.namingFingerprint());
+            }
+        }
+    }
+#endif
 
     bool Model::tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out, const std::string &hintActivity,
                                   uintptr_t hintKeyHash) const {
@@ -8032,29 +7864,29 @@ namespace {
             return false;
         }
         const auto &bucket = it->second;
-        if (bucket.size() == 1) {
-            if (out != nullptr) {
-                *out = bucket.front();
+        const bool hasActivityHint = !hintActivity.empty();
+        const bool hasKeyHint = (hintKeyHash != 0);
+        auto matches = [&](const naming::StateKey &k) -> bool {
+            if (hasActivityHint && k.activity() != hintActivity) {
+                return false;
+            }
+            if (hasKeyHint && k.hash() != hintKeyHash) {
+                return false;
             }
             return true;
-        }
-        if (hintActivity.empty() && hintKeyHash == 0) {
-            return false;
-        }
-        size_t matchCount = 0;
+        };
         const naming::StateKey *picked = nullptr;
-        for (const naming::StateKey &k : bucket) {
-            if (!hintActivity.empty() &&
-                naming::StateKey::canonicalActivityString(k.activity()) != hintActivity) {
+        for (const auto &k : bucket) {
+            if (!matches(k)) {
                 continue;
             }
-            if (hintKeyHash != 0 && k.hash() != hintKeyHash) {
-                continue;
+            if (picked != nullptr && *picked != k) {
+                // Bucket remains ambiguous even with hints.
+                return false;
             }
-            ++matchCount;
             picked = &k;
         }
-        if (matchCount != 1 || picked == nullptr) {
+        if (!picked) {
             return false;
         }
         if (out != nullptr) {
@@ -8065,7 +7897,7 @@ namespace {
 
     bool Model::tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash, const std::string &hintActivity,
                                       uintptr_t hintKeyHash) const {
-        naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        naming::StateKey k = naming::StateKey::fromParts("", nullptr, {});
         if (!tryGetApeStateKey(stateHash, &k, hintActivity, hintKeyHash)) {
             return false;
         }
