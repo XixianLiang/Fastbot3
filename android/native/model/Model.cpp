@@ -226,8 +226,8 @@ int apeFindGuiTreeNodePreorderIndexForWidget(const std::vector<gui_tree::GUITree
     if (!wb) {
         return -1;
     }
-    const std::string &wClass = widget->getClassName();
-    const std::string &wRid = widget->getResourceId();
+    const std::string &wClass = widget->getClassname();
+    const std::string &wRid = widget->getResourceID();
     for (size_t i = 0; i < preorder.size(); ++i) {
         gui_tree::GUITreeNode *n = preorder[i];
         if (!n) {
@@ -272,7 +272,7 @@ ApeWidgetMatchMiss apeClassifyWidgetMatchMiss(const std::vector<gui_tree::GUITre
     if (!wb) {
         return out;
     }
-    const std::string &wClass = widget->getClassName();
+    const std::string &wClass = widget->getClassname();
     for (size_t i = 0; i < preorder.size(); ++i) {
         gui_tree::GUITreeNode *n = preorder[i];
         if (!n) {
@@ -1670,7 +1670,7 @@ std::vector<int> apeCollectResolvedNodeStableIds(const StatePtr &sourceState,
     {
         std::shared_ptr<Rect> wb = widget ? widget->getBounds() : nullptr;
         if (widget && wb) {
-            const std::string &wClass = widget->getClassName();
+            const std::string &wClass = widget->getClassname();
             const std::string &wRid = widget->getResourceID();
             for (size_t i = 0; i < preorder.size(); ++i) {
                 gui_tree::GUITreeNode *n = preorder[i];
@@ -1702,7 +1702,7 @@ std::vector<int> apeCollectResolvedNodeStableIds(const StatePtr &sourceState,
     // allocations beyond what the strict pass already touched).
     const ApeWidgetMatchMiss miss = apeClassifyWidgetMatchMiss(preorder, widget);
     std::shared_ptr<Rect> wbLog = widget ? widget->getBounds() : nullptr;
-    const std::string wClassLog = widget ? widget->getClassName() : std::string();
+    const std::string wClassLog = widget ? widget->getClassname() : std::string();
     const std::string wRidLog = widget ? widget->getResourceID() : std::string();
     gui_tree::GUITreeNode *sampleBoundsOnly =
         (miss.firstBoundsOnlyIdx >= 0 && miss.firstBoundsOnlyIdx < static_cast<int>(preorder.size()))
@@ -1914,7 +1914,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4142243, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4261709, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -2773,7 +2773,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         const auto itXml = _apeStateXmlByStateHash.find(state->hash());
         if (rs && itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty()) {
             const std::string &screenXml = itXml->second;
-            naming::NamerLattice lat(naming::NamingFactory::current());
+            naming::NamerLattice lat(naming::NamerFactory::current());
             std::set<std::string> blk;
             for (const auto &p : _apeNamingCoarseningBlacklist) {
                 if (p.first == actKey) {
@@ -2787,9 +2787,9 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             const int apeMaxStatesPerActivity =
                 _preference ? _preference->getApeMaxStatesPerActivity() : 10;
             const int apeMaxGUITreesPerState =
-                _preference ? _preference->getApeMaxGUITreesPerState() : 20;
+                _preference ? _preference->getApeMaxGuitreesPerState() : 20;
             const bool enableReplacingNameLet =
-                _preference && _preference->useApeNamingEnableReplacingNameLet();
+                _preference && _preference->useApeNamingEnableReplacingNamelet();
 
             bool activitySizeGateLogged = false;
 
@@ -2864,12 +2864,12 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 std::string pkg;
                 std::string cls;
                 naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
-                gui_tree::GUITreePtr apeVisitSnap = this->_apeLatestGuiTreeSnapshot(state->hash());
+                gui_tree::GUITreePtr apeVisitSnap = this->apeLatestGuiTreeSnapshot(state->hash());
                 const gui_tree::GUITreePtr *apeVisitSnapPtr = apeVisitSnap ? &apeVisitSnap : nullptr;
                 gui_tree::GUITreeBuildResult builtProbe =
                     (apeVisitSnapPtr && *apeVisitSnapPtr)
-                        ? buildGuiTreePreferApeSnapshotAndDomXml(screenXml, pkg, cls, *apeVisitSnapPtr)
-                        : buildGuiTreeFromCachedXmlPreferElement(screenXml, pkg, cls);
+                        ? buildGuitreePreferApeSnapshotAndDomXml(screenXml, pkg, cls, *apeVisitSnapPtr)
+                        : buildGuitreeFromCachedXmlPreferElement(screenXml, pkg, cls);
                 if (!builtProbe.tree || !builtProbe.dom) {
                     return false;
                 }
@@ -2879,34 +2879,34 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
 
                 const naming::StateKey skProbe = naming::StateKey::fromGUITree(*builtProbe.tree);
                 if (maxInitial > 0 &&
-                    static_cast<int>(skProbe.sortedPaths().size()) > maxInitial) {
+                    static_cast<int>(skProbe.sortedXPaths().size()) > maxInitial) {
                     return false;
                 }
 
                 std::string targetXPathName;
                 naming::NamerPtr targetNameNamer;
                 const std::vector<int> targetStableIds =
-                    apeResolveTargetTableIdsForTargetWidgetLikeJava(state, tw);
+                    apeResolveStableIdsForTargetWidgetLikeJava(state, tw);
                 if (!apeResolveTargetXPathNameLikeJava(activity, cur, screenXml, targetStableIds,
                                                        &targetXPathName, &targetNameNamer,
-                                                       apeVisitSnapPtr, apeVisitSnapPtr) ||
+                                                       apeVisitSnapPtr) ||
                     !targetNameNamer) {
                     return false;
                 }
 
                 size_t pIdx = 0;
                 std::string wxp;
-                if (!apeResolveParentNameLetAndWidgetXPath(activity, cur, targetXPathName, targetNameNamer,
+                if (!apeResolveParentNameletAndWidgetXPath(activity, cur, targetXPathName, targetNameNamer,
                                                            screenXml, screenXml, &pIdx, &wxp,
                                                            apeVisitSnapPtr, apeVisitSnapPtr)) {
                     return false;
                 }
 
-                if (pIdx >= cur->getNameLets().size()) {
+                if (pIdx >= cur->getNamelets().size()) {
                     return false;
                 }
 
-                naming::NameLetPtr anchorNL = cur->getNameLets()[pIdx];
+                naming::NameletPtr anchorNL = cur->getNamelets()[pIdx];
                 naming::NamerPtr curNam = anchorNL ? anchorNL->getNamerPtr() : nullptr;
                 if (!anchorNL || !curNam) {
                     return false;
@@ -2928,7 +2928,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     size_t p2 = 0;
                     if (!apeCheckOverAbstractedActionRefinementLikeJava(
                             activity, child, refined, screenXml, state, mergedConcretes, maxInitial,
-                            &upperBounds, &p1, &p2, apeVisitSnapPtr, apeVisitSnapPtr)) {
+                            &upperBounds, &p1, &p2, apeVisitSnapPtr)) {
                         return false;
                     }
                     const std::string cfp = child->fingerprintString();
@@ -2944,8 +2944,8 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         std::vector<int> overAbsStableIds;
                         gui_tree::GUITreeBuildResult bPred =
                             (apeVisitSnapPtr && *apeVisitSnapPtr)
-                                ? buildGuiTreePreferApeSnapshotAndDomXml(screenXml, pkg, cls, *apeVisitSnapPtr)
-                                : buildGuiTreeFromCachedXmlPreferElement(screenXml, pkg, cls);
+                                ? buildGuitreePreferApeSnapshotAndDomXml(screenXml, pkg, cls, *apeVisitSnapPtr)
+                                : buildGuitreeFromCachedXmlPreferElement(screenXml, pkg, cls);
                         if (bPred.tree && bPred.dom &&
                             safeRebuildTree(child, *bPred.tree, bPred.dom)) {
                             std::vector<gui_tree::GUITreeNode *> poPred;
@@ -2982,9 +2982,9 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 };
 
                 if (enableReplacingNameLet && cur->hasChild()) {
-                    const auto &cn = cur->getNameLets();
+                    const auto &cn = cur->getNamelets();
                     if (!cn.empty() && pIdx + 1 == cn.size() && cur->isReplaceable(anchorNL)) {
-                        naming::NameLetPtr parNL = anchorNL->getParent();
+                        naming::NameletPtr parNL = anchorNL->getParent();
                         if (parNL && parNL->getNamerPtr()) {
                             std::vector<naming::NamerPtr> upperRepl;
                             for (const naming::NamerPtr refined : lat.sortedAbove(parNL->getNamerPtr())) {
@@ -3033,7 +3033,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     }
 
                     naming::NamingPtr child =
-                        naming::NamingFactory::extendUnderNameLet(cur, pIdx, wxp, refined);
+                        naming::NamingFactory::extendUnderNamelet(cur, pIdx, wxp, refined);
                     if (acceptChild(std::move(child), refined)) {
                         return true;
                     }
@@ -3091,7 +3091,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
 #endif
 
-        naming::NamerLattice lat(naming::NamingFactory::current());
+        naming::NamerLattice lat(naming::NamerFactory::current());
         const int hopsRaw = _preference ? _preference->getApeNamingActionRefineHops() : 8;
         const int hopsClamped = std::max(1, std::min(64, hopsRaw));
         size_t refinements = 0;
@@ -3284,7 +3284,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 std::string clsFb;
                 naming::StateKey::splitActivityPackageClass(aSlot.sourceActivity, &pkgFb, &clsFb);
                 gui_tree::GUITreeBuildResult builtFb =
-                    buildGuiTreeFromCachedXmlPreferElement(itSrcXmlFallback->second, pkgFb, clsFb);
+                    buildGuitreeFromCachedXmlPreferElement(itSrcXmlFallback->second, pkgFb, clsFb);
                 if (builtFb.tree) {
                     apeRememberGuiTreeSnapshot(src->hash(), *builtFb.tree);
                     snapSrcLive = apeLatestGuiTreeSnapshot(src->hash());
@@ -4340,7 +4340,7 @@ namespace {
     #if DYNAMIC_STATE_ABSTRACTION_ENABLED
 
     #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-        naming::NamingPtr Model::apeNamingResolvedViaTreeWalk(const std::string &activity, uintptr_t *stateHash) {
+        naming::NamingPtr Model::apeNamingResolvedViaTreeWalk(const std::string &activity, uintptr_t stateHash) {
             const std::string actKey = naming::StateKey::canonicalActivityString(activity);
             if (!_apeStateNamingManager) {
                 return naming::NamingFactory::defaultRootNaming();
@@ -4359,7 +4359,7 @@ namespace {
             std::string cls;
             naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
             gui_tree::GUITreeBuildResult built;
-            if (gui_tree::GUITreePtr snap = apeLatestGuiTreeSnapshot(*stateHash)) {
+            if (gui_tree::GUITreePtr snap = apeLatestGuiTreeSnapshot(stateHash)) {
                 built = buildGuitreePreferApeSnapshotAndDomXml(itXml->second, pkg, cls, snap);
             } else {
                 built = buildGuitreeFromCachedXmlPreferElement(itXml->second, pkg, cls);
@@ -5057,10 +5057,6 @@ namespace {
         return static_cast<bool>(*outParent);
     }
 #endif
-
-    bool Model::refineActivityApeNaming(const std::string &activity) {
-        return refineActivityApeNaming(activity, nullptr, -1, nullptr);
-    }
 
     bool Model::refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
                                         int precomputedActivityNonDetPairCount) {
@@ -5898,8 +5894,8 @@ namespace {
                       "activity=%s srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
                       (unsigned long)dominantActionHash);
-                if (apeAreGuiTreesIsomorphicFromXmlLikeJava(activity, branchAXml.back(), snapBackA, branchBXml.back(),
-                                                            snapBackB)) {
+                if (apeAreGuitreesIsomorphicFromXmlLikeJava(activity, branchAXml.back(), branchBXml.back(),
+                                                            snapBackA, snapBackB)) {
                     BDLOG("ape naming: two GUI trees are top naming equivalent and isomorphic "
                           "(NamingFactory.stateRefinement) activity=%s srcKey=%lu act=%lu",
                           activity.c_str(), (unsigned long)dominantSourceKeyHash,
@@ -6532,7 +6528,7 @@ namespace {
             if (refineSiblingReplace && curPar && nondetSrcState) {
                 auto itSrcXml = _apeStateXmlByStateHash.find(nondetSrcState->hash());
                 if (itSrcXml != _apeStateXmlByStateHash.end() && !itSrcXml->second.empty()) {
-                    gui_tree::GUITreePtr trigSnap = this->apeLatestGUITreeSnapshot(nondetSrcState->hash());
+                    gui_tree::GUITreePtr trigSnap = this->apeLatestGuiTreeSnapshot(nondetSrcState->hash());
                     const gui_tree::GUITreePtr *trigSnapPtr = trigSnap ? &trigSnap : nullptr;
                     (void)apeStateHashFromXmlWithNaming(activity, itSrcXml->second, curPar, &triggerParentKeyHash,
                                                         0, nullptr, trigSnapPtr);
@@ -6542,7 +6538,7 @@ namespace {
                                        uintptr_t stateHashForXml) -> bool {
                 if (refineSiblingReplace && curPar && triggerParentKeyHash != 0) {
                     uintptr_t oldParentH = 0;
-                    gui_tree::GUITreePtr affSnap = this->apeLatestGUITreeSnapshot(stateHashForXml);
+                    gui_tree::GUITreePtr affSnap = this->apeLatestGuiTreeSnapshot(stateHashForXml);
                     const gui_tree::GUITreePtr *affSnapPtr = affSnap ? &affSnap : nullptr;
                     return apeStateHashFromXmlWithNaming(activity, xml, curPar, &oldParentH, 0, nullptr,
                                                          affSnapPtr) &&
@@ -6572,7 +6568,7 @@ namespace {
                 }
                 uintptr_t oldH = 0;
                 uintptr_t newH = 0;
-                gui_tree::GUITreePtr pairSnap = this->apeLatestGUITreeSnapshot(sh);
+                gui_tree::GUITreePtr pairSnap = this->apeLatestGuiTreeSnapshot(sh);
                 const gui_tree::GUITreePtr *pairSnapPtr = pairSnap ? &pairSnap : nullptr;
                 if (!apeStateHashFromXmlWithTwoNamings(activity, xml, cur, &oldH, next, &newH, pairSnapPtr)) {
                     continue;
@@ -6730,7 +6726,7 @@ namespace {
             }
             uintptr_t oldH = 0;
 #if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
-            gui_tree::GUITreePtr rbSnap = apeLatestGUITreeSnapshot(stateHash);
+            gui_tree::GUITreePtr rbSnap = apeLatestGuiTreeSnapshot(stateHash);
             const gui_tree::GUITreePtr *rbSnapPtr = rbSnap ? &rbSnap : nullptr;
             if (!apeStateHashFromXmlWithNaming(rawActivity, xml, oldNaming, &oldH, 0, nullptr, rbSnapPtr)) {
 #else
@@ -6845,9 +6841,9 @@ namespace {
             RemapTreeCacheEntry entry;
 #if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
             entry.built =
-                buildGuitreePreferApeSnapshotAndDomXml(xml, pkg, cls, apeLatestGUITreeSnapshot(stateHash));
+                buildGuitreePreferApeSnapshotAndDomXml(xml, pkg, cls, apeLatestGuiTreeSnapshot(stateHash));
 #else
-            entry.built = buildGUITreeFromCachedXmlPreferElement(xml, pkg, cls);
+            entry.built = buildGuitreeFromCachedXmlPreferElement(xml, pkg, cls);
 #endif
             if (!entry.built.tree || !entry.built.dom) {
                 treeCache.emplace(stateHash, std::move(entry));
@@ -6987,7 +6983,7 @@ namespace {
                     continue;
                 }
                 uintptr_t h = 0;
-                gui_tree::GUITreePtr snap = apeLatestGUITreeSnapshot(kv.first);
+                gui_tree::GUITreePtr snap = apeLatestGuiTreeSnapshot(kv.first);
                 const gui_tree::GUITreePtr *fnSnapPtr = snap ? &snap : nullptr;
                 if (apeStateHashFromXmlWithNaming(rawActivity, kv.second, fromNaming, &h, 0, nullptr, fnSnapPtr) && h != 0) {
                     fromNamingKeyHashCache.emplace(kv.first, h);
@@ -7243,8 +7239,6 @@ namespace {
             if (!shouldRollback) {
                 continue;
             }
-            naming::NamingPtr rollbackFrom = tn;
-            naming::NamingPtr rollbackTo = targetParentNaming;
             std::string fpFiner = rollbackFrom->fingerprintString();
             std::unordered_set<uintptr_t> affectedStateHashesForBlacklist = filteredAffectedStateHashes;
             apeBlacklistFinerNamingOnRollback(activity, rollbackFrom, ctx, affectedStateHashesForBlacklist);
@@ -7280,7 +7274,7 @@ namespace {
                     uintptr_t newH = 0;
                     if (!apeStateHashFromXmlWithTwoNamings(activity, itXml->second, rollbackFrom, &oldH,
                                                            rollbackTo, &newH)) {
-                        gui_tree::GUITreePtr pairSnap = apeLatestGUITreeSnapshot(sh);
+                        gui_tree::GUITreePtr pairSnap = apeLatestGuiTreeSnapshot(sh);
                         const gui_tree::GUITreePtr *pairSnapPtr = pairSnap ? &pairSnap : nullptr;
                         if (!apeStateHashFromXmlWithTwoNamings(activity, itXml->second, rollbackFrom, &oldH,
                                                                rollbackTo, &newH, pairSnapPtr)) {
@@ -7316,11 +7310,11 @@ namespace {
             }
             if (!affectedStateHashsForPrune.empty()) {
                 removeConflictingApeActionRefinementPredicates(activity, rollbackTo,
-                                                               &affectedStateHashsForPrune);
+                                                               affectedStateHashsForPrune);
                 removeConflictingApeSourceDivergentPredicates(activity, rollbackTo,
-                                                              &affectedStateHashsForPrune);
+                                                              affectedStateHashsForPrune);
                 removeConflictingApeStatesFewerThanPredicates(activity, rollbackTo,
-                                                              &affectedStateHashsForPrune);
+                                                              affectedStateHashsForPrune);
                 addApeStatesFewerThanPredicate(activity, affectedStateHashsForPrune, targetThreshold);
             }
             _apeNamingCoarseningBlacklist.insert(std::make_pair(actKey, fpFiner));
@@ -7573,9 +7567,9 @@ namespace {
             const std::string &xs = xmlSnapshotRef();
             built =
                 fbSnap ? buildGuitreePreferApeSnapshotAndDomXml(xs, pkg, cls, fbSnap)
-                       : buildGUITreeFromCachedXmlPreferElement(xs, pkg, cls);
+                       : buildGuitreeFromCachedXmlPreferElement(xs, pkg, cls);
 #else
-            built = buildGUITreeFromCachedXmlPreferElement(xmlSnapshotRef(), pkg, cls);
+            built = buildGuitreeFromCachedXmlPreferElement(xmlSnapshotRef(), pkg, cls);
 #endif
         }
         if (!built.tree || !built.dom) {
