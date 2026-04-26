@@ -5080,15 +5080,69 @@ namespace {
         size_t dominantPairTargets = 0;
         uintptr_t dominantSourceKeyHash = 0;
         uintptr_t dominantActionHash = 0;
+        uintptr_t dominantActionIdentity = 0;
         std::unordered_set<uintptr_t> dominantTargetKeyHashes;
-        const bool useBatchNonDet =
-            precomputedActivityNonDetPairCount >= 0 && pair && pair->sourceKeyHash != 0 &&
-            pair->actionHash != 0 && pair->targetCount >= static_cast<size_t>(minTargets);
-        if (useBatchNonDet) {
-            nonDetPairs = precomputedActivityNonDetPairCount;
+        auto resolveActionIdentityForPair = [&](uintptr_t srcKeyHash, uintptr_t actionHash) -> uintptr_t {
+            if (srcKeyHash == 0 || actionHash == 0) {
+                return 0;
+            }
+            uintptr_t resolved = 0;
+            uint64_t maxSeq = 0;
+            for (const auto &te : _apeTransitionLog) {
+                if (!te.valid || te.sourceActivity != actKey) {
+                    continue;
+                }
+                if (te.sourceKeyHash != srcKeyHash || te.actionHash != actionHash || te.actionIdentity == 0) {
+                    continue;
+                }
+                if (te.transitionSeq > maxSeq) {
+                    maxSeq = te.transitionSeq;
+                    resolved = te.actionIdentity;
+                }
+            }
+            return resolved;
+        };
+        auto isBackActionHashForActivity = [&](uintptr_t actionHash) -> bool {
+            if (actionHash == 0) {
+                return false;
+            }
+            for (const auto &te : _apeTransitionLog) {
+                if (!te.valid || te.sourceActivity != actKey || te.actionHash != actionHash) {
+                    continue;
+                }
+                if (te.actionType == ActionType::BACK) {
+                    return true;
+                }
+            }
+            return false;
+        };
+        const bool pairScopedCall = (pair != nullptr);
+        if (pairScopedCall) {
+            if (pair->sourceKeyHash == 0 || pair->actionHash == 0 || pair->targetCount < 2) {
+                if (outFailReason) {
+                    *outFailReason = ApeRefineFailReason::PairTargetsInsufficient;
+                }
+                return false;
+            }
+            if (isBackActionHashForActivity(pair->actionHash)) {
+                BDLOG("ape naming: skip refine activity=%s reason=back_action srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)pair->sourceKeyHash,
+                      (unsigned long)pair->actionHash);
+                if (outFailReason) {
+                    *outFailReason = ApeRefineFailReason::Other;
+                }
+                return false;
+            }
+            nonDetPairs = (precomputedActivityNonDetPairCount >= 0)
+                          ? precomputedActivityNonDetPairCount
+                          : 1;
             dominantPairTargets = pair->targetCount;
             dominantSourceKeyHash = pair->sourceKeyHash;
             dominantActionHash = pair->actionHash;
+            dominantActionIdentity = pair->actionIdentity;
+            if (dominantActionIdentity == 0) {
+                dominantActionIdentity = resolveActionIdentityForPair(pair->sourceKeyHash, pair->actionHash);
+            }
             dominantTargetKeyHashes = pair->targetKeyHashes;
         } else {
             for (const auto &kv : _apePairAgg) {
@@ -5099,91 +5153,120 @@ namespace {
                 if (tm.size() < static_cast<size_t>(minTargets)) {
                     continue;
                 }
+                if (isBackActionHashForActivity(kv.first.actionHash)) {
+                    continue;
+                }
                 nonDetPairs++;
                 if (tm.size() > dominantPairTargets) {
                     dominantPairTargets = tm.size();
                     dominantSourceKeyHash = kv.first.sourceKeyHash;
                     dominantActionHash = kv.first.actionHash;
+                    dominantActionIdentity =
+                        resolveActionIdentityForPair(kv.first.sourceKeyHash, kv.first.actionHash);
                     dominantTargetKeyHashes.clear();
                     tm.forEach([&](uintptr_t h, int /*count*/) {
                         dominantTargetKeyHashes.insert(h);
                     });
                 }
             }
-            // Batch (`runApeNamingAbstractionBatch`) passes the exact non-det pair for this attempt; use it as
-            // the trigger for blacklist/admissibility and `ctx.trigger*` so logs and behavior match `refine-attempt`.
-            // With `pair == nullptr` (one-arg API), keep scan-only dominant = max target fan-out for this activity.
-            if (pair && pair->sourceKeyHash != 0 && pair->actionHash != 0 &&
-                pair->targetCount >= static_cast<size_t>(minTargets)) {
-                dominantPairTargets = pair->targetCount;
-                dominantSourceKeyHash = pair->sourceKeyHash;
-                dominantActionHash = pair->actionHash;
-                dominantTargetKeyHashes = pair->targetKeyHashes;
-            }
         }
         if (dominantSourceKeyHash != 0 || dominantActionHash != 0) {
-            auto itActionBlk = _apeRefineActionBlacklist.find(actKey);
             ApeActivityRebuildStats &st = _apeRebuildStatsByActivity[actKey];
             if (dominantActionHash != 0) {
                 ++st.actionBlacklistChecks;
             }
-            if (itActionBlk != _apeRefineActionBlacklist.end() &&
-                itActionBlk->second.count(dominantActionHash) != 0) {
-                if (dominantActionHash != 0) {
+            if (dominantActionIdentity != 0 &&
+                _apeRefineActionIdentityBlacklist.count(dominantActionIdentity) != 0) {
+                if (dominantActionIdentity != 0) {
                     ++st.actionBlacklistHits;
                 }
-                (void)apeLocalRebuildFromHistoryIfNeeded(actKey, "action_blacklist");
-                BDLOG("ape naming: skip refine activity=%s reason=trigger action blacklisted act=%lu",
-                      activity.c_str(), (unsigned long)dominantActionHash);
-                if (shouldLogApeDiagSample(std::string("skip_action_blacklist#") + actKey, 20)) {
-                    const size_t blkSize = (itActionBlk == _apeRefineActionBlacklist.end()) ? 0 : itActionBlk->second.size();
-                    BLOG("ape naming: diag skip-summary activity=%s reason=action_blacklisted act=%lu checks=%d hits=%d blacklistSize=%zu nonDetPairs=%d domTargets=%zu",
-                         activity.c_str(), (unsigned long)dominantActionHash,
-                         st.actionBlacklistChecks, st.actionBlacklistHits, blkSize,
-                         nonDetPairs, dominantPairTargets);
+                BDLOG("ape naming: skip refine activity=%s reason=trigger action blacklisted srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
+                BDLOG("ape naming: action_blacklisted detail activity=%s srcKey=%lu act=%lu "
+                      "actId=%lu blacklistSize=%zu checks=%d hits=%d nonDetPairs=%d dominantTargets=%zu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                      (unsigned long)dominantActionHash, (unsigned long)dominantActionIdentity,
+                      _apeRefineActionIdentityBlacklist.size(),
+                      st.actionBlacklistChecks, st.actionBlacklistHits, nonDetPairs, dominantPairTargets);
+                if (outFailReason) {
+                    *outFailReason = ApeRefineFailReason::ActionBlacklisted;
                 }
                 return false;
             }
         }
-        auto itCtx = _apeNamingContext.find(actKey);
         naming::ActivityNamingManager &mgr = _apeStateNamingManager->activityManager();
         naming::NamingPtr cur = mgr.getNaming(actKey);
         if (!cur) {
             cur = naming::NamingFactory::defaultRootNaming();
             if (!cur) {
                 BDLOG("ape naming: skip refine activity=%s reason=no default root naming", activity.c_str());
+                if (outFailReason) {
+                    *outFailReason = ApeRefineFailReason::NoDefaultRootNaming;
+                }
                 return false;
             }
             _apeStateNamingManager->updateNaming(actKey, naming::NamingUpdateKind::Refine, cur);
+            pruneDivergentApeStatesForActivity(actKey);
         }
         const size_t activityStateCount = getApeStateCountByActivityAndNamingFingerprint(
             actKey, cur ? cur->fingerprintString() : std::string());
-        // Java NamingFactory.refine(Model,...): ActivityNode state-count gates (same comparison for both).
-        size_t graphStatesInActivity = 0;
-        if (_graph) {
-            for (const StatePtr &sp : _graph->getStates()) {
-                if (!sp) {
-                    continue;
-                }
-                auto ap = sp->getActivityString();
-                const std::string ac =
-                    (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                if (ac == actKey) {
-                    ++graphStatesInActivity;
-                }
-            }
-        }
+        // Java NamingFactory.refine lines 278-287: BOTH thresholds compare an.getStates().size()
+        const size_t graphStatesInActivity =
+            apeGraphActivityStateCountLikeJavaActivityNode(_graph, actKey);
         const int apeMaxStatesPerActivity =
             _preference ? _preference->getApeMaxStatesPerActivity() : 10;
         const int apeMaxGuitreesPerState = _preference ? _preference->getApeMaxGuitreesPerState() : 20;
         if (static_cast<int>(graphStatesInActivity) > apeMaxStatesPerActivity) {
             BDLOG("ape naming: skip refine activity=%s reason=maxStatesPerActivity graphStates=%zu max=%d",
                   activity.c_str(), graphStatesInActivity, apeMaxStatesPerActivity);
+            BDLOG("ape naming: maxStatesPerActivity detail activity=%s namingFingerprint=%s namingScopedStates=%zu",
+                  activity.c_str(), cur ? cur->fingerprintString().c_str() : "null", activityStateCount);
+            if (outFailReason) {
+                *outFailReason = ApeRefineFailReason::MaxStatesPerActivity;
+            }
             return false;
         }
+        // Same predicate as Java line 284: an.getStates().size() > maxGUITreesPerState.
         if (static_cast<int>(graphStatesInActivity) > apeMaxGuitreesPerState) {
-            BDLOG("ape naming: skip refine activity=%s reason=maxGuitreesPerState graphStates=%zu max=%d",
-                  activity.c_str(), graphStatesInActivity, apeMaxGuitreesPerState);
+            size_t javaLogGuitreesProxy = 1;
+            if (dominantSourceKeyHash != 0 && _graph) {
+                uintptr_t repStateHash = 0;
+                for (const StatePtr &sp : _graph->getStates()) {
+                    if (!sp) {
+                        continue;
+                    }
+                    uintptr_t kH = 0;
+                    if (!tryGetApeStateKeyHash(sp->hash(), &kH, actKey, dominantSourceKeyHash) ||
+                        kH != dominantSourceKeyHash) {
+                        continue;
+                    }
+                    auto ap = sp->getActivityString();
+                    const std::string ac = 
+                        (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
+                    if (ac != actKey) {
+                        continue;
+                    }
+                    repStateHash = sp->hash();
+                    break;
+                }
+                if (repStateHash != 0) {
+                    size_t n = 0;
+                    for (const auto &te : _apeTransitionLog) {
+                        if (te.valid && te.sourceStateHash == repStateHash) {
+                            ++n;
+                        }
+                    }
+                    if (n > 0) {
+                        javaLogGuitreesProxy = n;
+                    }
+                }
+            }
+            BDLOG("ape naming: skip refine activity=%s reason=maxGuitreesPerState graphStatesForCond=%zu max=%d "
+                  "javaLogGuitreesProxy=%zu (Java logs state.getGUITrees().size here; NamingFactory.refine)",
+                  activity.c_str(), graphStatesInActivity, apeMaxGuitreesPerState, javaLogGuitreesProxy);
+            if (outFailReason) {
+                *outFailReason = ApeRefineFailReason::MaxGuitreesPerState;
+            }
             return false;
         }
         naming::NamerLattice lat(naming::NamerFactory::current());
@@ -5194,7 +5277,7 @@ namespace {
             }
         }
         // XML-space remapped trigger hashes (align Element->GUITree hash space to XML->GUITree space
-        // so coarsen-gate hash comparisons are consistent with buildFromXml path).
+        // so coarsen-gate hash comparisons are consistent with cached-XML rebuild via buildGuitreeFromCachedXmlPreferElement).
         uintptr_t xmlSpaceTriggerSourceKeyHash = dominantSourceKeyHash;
         std::unordered_set<uintptr_t> xmlSpaceTriggerTargetKeyHashes = dominantTargetKeyHashes;
         std::vector<naming::NamingPtr> candidates;
@@ -5206,9 +5289,15 @@ namespace {
             size_t partitionTotal{0};
             size_t anchorIdx{0};
             naming::NamerPtr refinedNamer{nullptr};
+            /// Java RefinementResult.originalNamelet.getNamer() (comparator pass 2).
+            naming::NamerPtr originalNameletNamer{nullptr};
             bool useApeJavaStyleComparator{false};
             /** Last appended namelet expr (Java RefinementResult.updatedNamelet.getExprString() tie-break). */
             std::string updatedNameletExpr;
+            uintptr_t actionRefineSourceStateHash{0};
+            std::string actionRefineSourceXml;
+            std::vector<int> actionRefineResolvedNodeStableIds;
+            bool registerApeSourceDivergentPredicate{false};
         };
         std::vector<uintptr_t> guiTreeBlacklistCheckHashes;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
@@ -5226,7 +5315,10 @@ namespace {
                 }
                 stateByHash[sp->hash()] = sp;
                 uintptr_t kH = 0;
-                if (tryGetApeStateKeyHash(sp->hash(), &kH)) {
+                auto ap = sp->getActivityString();
+                const std::string activityKey =
+                    (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
+                if (tryGetApeStateKeyHash(sp->hash(), &kH, activityKey)) {
                     stateHashesByKeyHash[kH].push_back(sp->hash());
                 }
             }
@@ -5243,8 +5335,7 @@ namespace {
         std::string replaySrcXml;
         uintptr_t replaySrcStateHash = 0;
         std::vector<uintptr_t> replayTgtStateHashes;
-        if (_preference && _preference->useApeNamingCandidateTransitionReplay() &&
-            dominantPairTargets >= static_cast<size_t>(minTargets) && dominantSourceKeyHash != 0 &&
+        if (dominantPairTargets >= static_cast<size_t>(minTargets) && dominantSourceKeyHash != 0 &&
             !dominantTargetKeyHashes.empty()) {
             auto findRepresentativeStateHashForKey = [&](uintptr_t keyH) -> uintptr_t {
                 auto it = stateHashesByKeyHash.find(keyH);
@@ -5288,9 +5379,9 @@ namespace {
             }
         }
         // Remap dominantSourceKeyHash / dominantTargetKeyHashes from Element->GUITree hash space
-        // to XML->GUITree hash space. The coarsen gate (apeStateHashFromXmlWithNaming) always
-        // reconstructs hashes via buildFromXml, which can diverge from buildFromElement due to
-        // subtle attribute-handling differences (scrollable int vs bool, isEditText, etc.).
+        // to XML->GUITree hash space. apeStateHashFromXmlWithNaming rebuilds from cached XML via
+        // buildGuitreeFromCachedXmlPreferElement (Element parse + buildFromElement, else pugixml).
+        // Residual divergence vs the live Element tree can remain (scrollable/edit-text normalization, etc.).
         {
             auto remapKeyHashToXmlSpace = [&](uintptr_t elementKeyHash) -> uintptr_t {
                 if (elementKeyHash == 0) {
@@ -5306,7 +5397,10 @@ namespace {
                         continue;
                     }
                     uintptr_t xmH = 0;
-                    if (apeStateHashFromXmlWithNaming(activity, itXml->second, cur, &xmH) &&
+                    gui_tree::GUITreePtr snapRm = this->apeLatestGuiTreeSnapshot(sh);
+                    const gui_tree::GUITreePtr *snapPtr = snapRm ? &snapRm : nullptr;
+                    if (apeStateHashFromXmlWithNaming(activity, itXml->second, cur, &xmH, 0, nullptr,
+                                                      snapPtr) &&
                         xmH != 0) {
                         return xmH;
                     }
@@ -5328,117 +5422,153 @@ namespace {
 #endif
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         {
-#if !defined(FASTBOT_HAS_PUGIXML) || !FASTBOT_HAS_PUGIXML
             if (guiTreeBlacklistCheckHashes.empty() && dominantSourceKeyHash != 0) {
-                size_t srcReprAdded = 0;
-                for (const auto &sp : getGraph()->getStates()) {
-                    if (!sp) {
-                        continue;
-                    }
-                    auto ap = sp->getActivityString();
-                    const std::string a =
-                        (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                    if (a != actKey) {
-                        continue;
-                    }
-                    uintptr_t kH = 0;
-                    if (tryGetApeStateKeyHash(sp->hash(), &kH) && kH == dominantSourceKeyHash) {
-                        guiTreeBlacklistCheckHashes.push_back(sp->hash());
-                        ++srcReprAdded;
-                    }
-                }
-            }
-#endif
-            std::unordered_set<uintptr_t> seenGtb(guiTreeBlacklistCheckHashes.begin(),
-                                                  guiTreeBlacklistCheckHashes.end());
-            for (uintptr_t tkh : dominantTargetKeyHashes) {
-                auto it = stateHashesByKeyHash.find(tkh);
-                if (it == stateHashesByKeyHash.end()) {
-                    continue;
-                }
-                for (uintptr_t sh : it->second) {
-                    if (seenGtb.insert(sh).second) {
-                        guiTreeBlacklistCheckHashes.push_back(sh);
-                    }
+                auto itSrcBlk = stateHashesByKeyHash.find(dominantSourceKeyHash);
+                if (itSrcBlk != stateHashesByKeyHash.end()) {
+                    guiTreeBlacklistCheckHashes = itSrcBlk->second;
                 }
             }
         }
 #endif
+        std::vector<gui_tree::GUITreePtr> predicateAffectedSourceTrees;
+        std::unordered_set<const gui_tree::GUITree *> predicateAffectedSeen;
+        predicateAffectedSourceTrees.reserve(guiTreeBlacklistCheckHashes.size());
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        for (uintptr_t sh : guiTreeBlacklistCheckHashes) {
+            gui_tree::GUITreePtr snap = apeLatestGuiTreeSnapshot(sh);
+            if (!snap) {
+                continue;
+            }
+            if (predicateAffectedSeen.insert(snap.get()).second) {
+                predicateAffectedSourceTrees.push_back(std::move(snap));
+            }
+        }
+#endif
+        auto apeCheckPredicateLikeJava = [&](const naming::NamingPtr &cand) -> bool {
+            if (!cand) {
+                return false;
+            }
+            if (!evalApeGuiTreeNamingBlacklist(guiTreeBlacklistCheckHashes, cand)) {
+                return false;
+            }
+            return this->evalApeActionRefinementPredicates(activity, cand, &predicateAffectedSourceTrees);
+        };
         std::vector<CandidateEval> accepted;
         accepted.reserve(32);
         bool filledViaApeJava = false;
+        std::string apeRefineNdBranchAXml;
+        std::string apeRefineNdBranchBXml;
+        uintptr_t apeRefineNdSharedSrcStateHash = 0;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-        // Align with APE Java NamingFactory.refine: actionRefinementFirst → action / state / action
-        // (or the reverse), using Naming.extend / Naming.replaceLast + checkActionRefinement /
-        // checkStateRefinement + GUI-tree blacklist when max.apeNamingEnableReplacingNamelet=true.
         std::vector<std::string> branchAXml;
         std::vector<std::string> branchBXml;
-        uintptr_t brKeyA = 0;
-        uintptr_t brKeyB = 0;
-        const ApePairKey poolKey{dominantSourceKeyHash, dominantActionHash};
-        const bool haveXmlBranches =
-            dominantSourceKeyHash != 0 && dominantActionHash != 0 &&
+        std::vector<NondetTreeTransitionBranchPair::SourceTransition> branchATransitions;
+        std::vector<NondetTreeTransitionBranchPair::SourceTransition> branchBTransitions;
+        uintptr_t brSharedSrcStateHash = 0;
+        std::vector<NondetTreeTransitionBranchPair> branchPairs;
+        if (dominantSourceKeyHash != 0 && dominantActionHash != 0 &&
             dominantTargetKeyHashes.size() >= static_cast<size_t>(minTargets) &&
-            apeGatherNondetSourceXmlBranches(_apeEvidencePools, _apeStateXmlByStateHash, poolKey,
-                                             dominantTargetKeyHashes, &branchAXml, &branchBXml, &brKeyA, &brKeyB);
-        (void)brKeyA;
-        (void)brKeyB;
+            !_apeTransitionLog.empty()) {
+            const uint64_t nstSeq = (pair ? pair->nstTransitionSeq : 0);
+            NondetBranchCollectionResult branchCollect = collectNondetBranchPairsForRefine(
+                _apeTransitionLog, _apeTransitionLogWriteIndex, _apeTreeTransitionLog, actKey,
+                dominantSourceKeyHash, dominantActionHash, dominantTargetKeyHashes,
+                [&](uintptr_t sourceStateHash) {
+                    if (!pair || !pair->hasSourceStateKey) {
+                        return true;
+                    }
+                    auto itKeys = _ape_state_keys_by_hash.find(sourceStateHash);
+                    if (itKeys == _ape_state_keys_by_hash.end()) {
+                        return false;
+                    }
+                    for (const naming::StateKey &k : itKeys->second) {
+                        if (k == pair->sourceStateKey) {
+                            return true;
+                        }
+                    }
+                    return false;
+                },
+                nstSeq);
+            BDLOG("ape refine: branch_input_stats activity=%s srcKey=%zu act=%zu logN=%zu ordered=%zu "
+                  "dropPair=%zu dropTarget=%zu dropSnapshot=%zu dropSrcStateKey=%zu",
+                  actKey.c_str(), dominantSourceKeyHash, dominantActionHash, branchCollect.inputStats.logN,
+                  branchCollect.inputStats.orderedCount, branchCollect.inputStats.filteredByActivityOrPair,
+                  branchCollect.inputStats.filteredByTarget, branchCollect.inputStats.filteredBySnapshot,
+                  branchCollect.inputStats.filteredBySourceStateKey);
+            branchPairs = std::move(branchCollect.branchPairs);
+            if (nstSeq == 0) {
+                BDLOG("ape refine: skip pair reason=nst_transition_seq_not_found activity=%s "
+                      "srcKeyHash=%zu actionHash=%zu nstSeq=%llu observed=%zu",
+                      actKey.c_str(), dominantSourceKeyHash, dominantActionHash,
+                      static_cast<unsigned long long>(nstSeq), branchCollect.orderedCount);
+            } else if (!branchCollect.nstSeqFound) {
+                BDLOG("ape refine: skip pair reason=nst_transition_seq_not_found activity=%s "
+                      "srcKeyHash=%zu actionHash=%zu nstSeq=%llu observed=%zu",
+                      actKey.c_str(), dominantSourceKeyHash, dominantActionHash,
+                      static_cast<unsigned long long>(nstSeq), branchCollect.orderedCount);
+            }
+            BDLOG("ape refine: branch_pairs_stats activity=%s srcKey=%zu act=%zu pairs=%zu",
+                  actKey.c_str(), dominantSourceKeyHash, dominantActionHash, branchPairs.size());
+            for (size_t i = 0; i < branchPairs.size(); ++i) {
+                const auto &bp = branchPairs[i];
+                BDLOG("ape refine: branch_pair_detail activity=%s pairIdx=%zu srcStateHash=%zu "
+                      "targetKeyA=%zu targetKeyB=%zu nstTargetStateHash=%zu firstSeenSeq=%llu "
+                      "A.count=%zu B.count=%zu A.transitions=%s B.transitions=%s",
+                      actKey.c_str(), i, static_cast<size_t>(bp.sourceStateHash),
+                      static_cast<size_t>(bp.targetKeyA), static_cast<size_t>(bp.targetKeyB),
+                      static_cast<size_t>(bp.nstTargetStateHash),
+                      static_cast<unsigned long long>(bp.firstSeenSeq), bp.branchATransitions.size(),
+                      bp.branchBTransitions.size(), apeTransitionListDebugSummary(bp.branchATransitions).c_str(),
+                      apeTransitionListDebugSummary(bp.branchBTransitions).c_str());
+                for (const auto &st : bp.branchATransitions) {
+                    if (st.sourceGuiSnapshot &&
+                        predicateAffectedSeen.insert(st.sourceGuiSnapshot.get()).second) {
+                        predicateAffectedSourceTrees.push_back(st.sourceGuiSnapshot);
+                    }
+                }
+                for (const auto &st : bp.branchBTransitions) {
+                    if (st.sourceGuiSnapshot &&
+                        predicateAffectedSeen.insert(st.sourceGuiSnapshot.get()).second) {
+                        predicateAffectedSourceTrees.push_back(st.sourceGuiSnapshot);
+                    }
+                }
+            }
+        }
+        bool haveXmlBranches = false;
         const bool arFirst = _preference && _preference->useApeNamingActionRefinementFirst();
         const bool enableReplacingNamelet =
             _preference && _preference->useApeNamingEnableReplacingNamelet();
-        const auto &graphStates = getGraph()->getStates();
-
         // Java refine() uses a single source State (st1.getSource() == st2.getSource()).
         StatePtr nondetSrcState;
-        {
-            std::vector<StatePtr> matches;
-            matches.reserve(8);
-            for (const StatePtr &sp : graphStates) {
-                if (!sp) {
-                    continue;
-                }
-                auto ap = sp->getActivityString();
-                const std::string a =
-                    (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                if (a != actKey) {
-                    continue;
-                }
-                uintptr_t kH = 0;
-                if (!tryGetApeStateKeyHash(sp->hash(), &kH) || kH != dominantSourceKeyHash) {
-                    continue;
-                }
-                if (pair && pair->hasSourceStateKey) {
-                    auto itB = _ape_state_keys_by_hash.find(sp->hash());
-                    if (itB == _ape_state_keys_by_hash.end()) {
-                        continue;
-                    }
-                    bool keyOk = false;
-                    for (const naming::StateKey &k : itB->second) {
-                        if (k == pair->sourceStateKey) {
-                            keyOk = true;
-                            break;
-                        }
-                    }
-                    if (!keyOk) {
-                        continue;
-                    }
-                }
-                matches.push_back(sp);
-            }
-            std::sort(matches.begin(), matches.end(), [](const StatePtr &a, const StatePtr &b) {
-                return a->hash() < b->hash();
-            });
-            if (!matches.empty()) {
-                nondetSrcState = matches.front();
-            }
-        }
-
         auto tryApeActionRefinement = [&]() {
             if (!haveXmlBranches || branchAXml.empty() || branchBXml.empty() || !nondetSrcState) {
+                BDLOG("ape naming: skip action refinement activity=%s reason=missing_branches_or_source "
+                      "haveBranches=%d aEmpty=%d bEmpty=%d hasSrc=%d srcKey=%lu act=%lu",
+                      activity.c_str(), haveXmlBranches ? 1 : 0, branchAXml.empty() ? 1 : 0,
+                      branchBXml.empty() ? 1 : 0, nondetSrcState ? 1 : 0,
+                      (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
-            const std::string &xmlA = branchAXml.front();
-            const std::string &xmlB = branchBXml.front();
+            const std::string &xmlA = branchAXml.back();
+            const std::string &xmlB = branchBXml.back();
+            const gui_tree::GUITreePtr *snapXmlA =
+                (!branchATransitions.empty()) ? &branchATransitions.back().sourceGuiSnapshot : nullptr;
+            const gui_tree::GUITreePtr *snapXmlB =
+                (!branchBTransitions.empty()) ? &branchBTransitions.back().sourceGuiSnapshot : nullptr;
+            std::vector<gui_tree::GUITreePtr> parallelBranchASnaps;
+            std::vector<gui_tree::GUITreePtr> parallelBranchBSnaps;
+            parallelBranchASnaps.reserve(branchATransitions.size());
+            for (const auto &st : branchATransitions) {
+                parallelBranchASnaps.push_back(st.sourceGuiSnapshot);
+            }
+            parallelBranchBSnaps.reserve(branchBTransitions.size());
+            for (const auto &st : branchBTransitions) {
+                parallelBranchBSnaps.push_back(st.sourceGuiSnapshot);
+            }
+            const std::vector<gui_tree::GUITreePtr> *parASnapsPtr =
+                (parallelBranchASnaps.size() == branchAXml.size()) ? &parallelBranchASnaps : nullptr;
+            const std::vector<gui_tree::GUITreePtr> *parBSnapsPtr =
+                (parallelBranchBSnaps.size() == branchBXml.size()) ? &parallelBranchBSnaps : nullptr;
             ActivityStateActionPtr edgeAct;
             for (const auto &action : nondetSrcState->getActions()) {
                 auto asa = std::dynamic_pointer_cast<ActivityStateAction>(action);
@@ -5449,60 +5579,125 @@ namespace {
                 break;
             }
             if (!edgeAct || !edgeAct->requireTarget() || !edgeAct->getTarget()) {
+                BDLOG("ape naming: skip action refinement activity=%s reason=missing_edge_action_or_target "
+                      "hasEdge=%d requireTarget=%d hasTarget=%d srcKey=%lu act=%lu",
+                      activity.c_str(), edgeAct ? 1 : 0, (edgeAct && edgeAct->requireTarget()) ? 1 : 0,
+                      (edgeAct && edgeAct->getTarget()) ? 1 : 0, (unsigned long)dominantSourceKeyHash,
+                      (unsigned long)dominantActionHash);
                 return;
             }
             const WidgetPtr tw = edgeAct->getTarget();
             const std::shared_ptr<Rect> bnds = tw->getBounds();
             if (!bnds) {
+                BDLOG("ape naming: skip action refinement activity=%s reason=target_bounds_missing srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
-            std::string targetXp;
-            naming::NamerPtr targetNam;
-            if (!apeResolveTargetXPathNameLikeJava(activity, cur, nondetSrcState, tw, xmlA, &targetXp, &targetNam,
-                                                   nullptr)) {
+            const Rect tr = *bnds;
+            if (tr.isEmpty()) {
+                BDLOG("ape refine: zero_target_bounds_on_edge activity=%s srcKey=%lu act=%lu srcState=%zu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash,
+                      nondetSrcState ? nondetSrcState->hash() : 0);
+            }
+            const NondetActionRefineTransitionContext transCtx =
+                buildNondetActionRefineTransitionContext(branchATransitions, branchBTransitions,
+                                                         _apeTreeTransitionLog);
+            const uintptr_t actionPredicateSourceStateHash = transCtx.actionPredicateSourceStateHash;
+            const bool selectedTeHasBounds = transCtx.selectedTargetBoundsFound;
+            const Rect selectedTeBounds = transCtx.selectedTargetBounds;
+            ApeSharedTargetEvalStats sharedAStats;
+            ApeSharedTargetEvalStats sharedBStats;
+            std::string targetXPathName;
+            naming::NamerPtr targetNameNamer;
+            static const std::vector<int> kEmptyResolvedIds;
+            const std::vector<int> &resolvedIdsA =
+                branchATransitions.empty() ? kEmptyResolvedIds : branchATransitions.back().resolvedNodeStableIds;
+            const std::vector<int> &resolvedIdsB =
+                branchBTransitions.empty() ? kEmptyResolvedIds : branchBTransitions.back().resolvedNodeStableIds;
+            if (!apeResolveTargetXPathNameLikeJava(activity, cur, xmlA, resolvedIdsA, &targetXPathName,
+                                                   &targetNameNamer, snapXmlA) ||
+                !apeResolveTargetXPathNameLikeJava(activity, cur, xmlB, resolvedIdsB, &targetXPathName,
+                                                   &targetNameNamer, snapXmlB)) {
+                BDLOG("ape naming: skip action refinement activity=%s reason=target_name_unresolved "
+                      "srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
-            if (!apeIsSharedTargetWidgetLikeJava(activity, cur, branchAXml, targetXp, nullptr) &&
-                !apeIsSharedTargetWidgetLikeJava(activity, cur, branchBXml, targetXp, nullptr)) {
+            const bool sharedA =
+                apeIsSharedTargetWidgetLikeJava(activity, cur, branchAXml, targetXPathName, parASnapsPtr);
+            const bool sharedB =
+                apeIsSharedTargetWidgetLikeJava(activity, cur, branchBXml, targetXPathName, parBSnapsPtr);
+            (void)apeCollectSharedTargetWidgetStatsLikeJava(activity, cur, branchAXml, tr, &sharedAStats,
+                                                            parASnapsPtr);
+            (void)apeCollectSharedTargetWidgetStatsLikeJava(activity, cur, branchBXml, tr, &sharedBStats,
+                                                            parBSnapsPtr);
+            if (!sharedA && !sharedB) {
+                BDLOG("ape naming: skip action refinement activity=%s reason=target_not_shared srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
+                BDLOG("ape naming: target_not_shared details activity=%s srcKey=%lu act=%lu "
+                      "targetBounds=%s teHasBounds=%d teBounds=%s teBoundsEqEdge=%d "
+                      "branchA(xml=%zu build=%zu rebuild=%zu maxBounds=%zu totalMatch=%zu z=%zu o=%zu m=%zu) "
+                      "branchB(xml=%zu build=%zu rebuild=%zu maxBounds=%zu totalMatch=%zu z=%zu o=%zu m=%zu)",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash,
+                      tr.toString().c_str(), selectedTeHasBounds ? 1 : 0,
+                      selectedTeHasBounds ? selectedTeBounds.toString().c_str() : "N/A",
+                      (selectedTeHasBounds && selectedTeBounds == tr) ? 1 : 0, sharedAStats.xmlCount,
+                      sharedAStats.buildOk, sharedAStats.rebuildOk, sharedAStats.maxSameBoundsCount,
+                      sharedAStats.totalBoundsMatches, sharedAStats.xmlWithZeroBounds,
+                      sharedAStats.xmlWithSingleBounds, sharedAStats.xmlWithMultiBounds, sharedBStats.xmlCount,
+                      sharedBStats.buildOk, sharedBStats.rebuildOk, sharedBStats.maxSameBoundsCount,
+                      sharedBStats.totalBoundsMatches, sharedBStats.xmlWithZeroBounds,
+                      sharedBStats.xmlWithSingleBounds, sharedBStats.xmlWithMultiBounds);
                 return;
             }
             size_t pIdx = 0;
             std::string wxp;
-            if (!targetNam) {
-                return;
-            }
-            if (!apeResolveParentNameletAndWidgetXPath(activity, cur, targetXp, *targetNam, xmlA, xmlB, &pIdx,
-                                                       &wxp, nullptr, nullptr)) {
+            if (!apeResolveParentNameletAndWidgetXPath(activity, cur, targetXPathName, targetNameNamer,
+                                                       xmlA, xmlB, &pIdx, &wxp, snapXmlA, snapXmlB)) {
+                BDLOG("ape naming: skip action refinement activity=%s reason=resolve_parent_namelet_failed "
+                      "srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
             if (pIdx >= cur->getNamelets().size()) {
+                BDLOG("ape naming: skip action refinement activity=%s reason=parent_index_out_of_range "
+                      "pIdx=%zu namelets=%zu srcKey=%lu act=%lu",
+                      activity.c_str(), pIdx, cur ? cur->getNamelets().size() : 0,
+                      (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
             std::unordered_set<std::string> acceptedFp;
             std::vector<naming::NamerPtr> upperBounds;
+            size_t dropReplaceByNull = 0;
+            size_t dropReplaceByBlacklist = 0;
+            size_t dropReplaceByActionCheck = 0;
+            size_t dropReplaceByDupFp = 0;
+            size_t dropExtendByNull = 0;
+            size_t dropExtendByBlacklist = 0;
+            size_t dropExtendByActionCheck = 0;
+            size_t dropExtendByDupFp = 0;
+            // P0-2: aggregate type-dimension masks of refined namers the lattice expanded for us,
+            // so `candCount=0` cases can be triaged by which dimensions ever got tried
+            // (Type/Resource-id, Text/Content-desc, Index, ...) vs which were dropped.
+            uint32_t extendDimTriedMask = 0;
+            uint32_t extendDimDroppedMask = 0;
+            size_t extendTried = 0;
             naming::NameletPtr anchorNl = cur->getNamelets()[pIdx];
             naming::NamerPtr curNam = anchorNl ? anchorNl->getNamerPtr() : nullptr;
             if (!curNam) {
+                BDLOG("ape naming: skip action refinement activity=%s reason=anchor_namer_missing "
+                      "srcKey=%lu act=%lu pIdx=%zu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                      (unsigned long)dominantActionHash, pIdx);
                 return;
             }
-            auto buildTransitionsFromXmlList =
-                [&](const std::vector<std::string> &xmls)
-                -> std::vector<fastbotx::NondetTreeTransitionBranchPair::SourceTransition> {
-                    std::vector<fastbotx::NondetTreeTransitionBranchPair::SourceTransition> out;
-                    out.reserve(xmls.size());
-                    for (const std::string &sx : xmls) {
-                        fastbotx::NondetTreeTransitionBranchPair::SourceTransition tt;
-                        tt.sourceXml = sx;
-                        tt.resolvedNodeStableIds =
-                            apeResolveStableIdsForTargetWidgetLikeJava(nondetSrcState, tw);
-                        out.push_back(std::move(tt));
-                    }
-                    return out;
-                };
-            const std::vector<fastbotx::NondetTreeTransitionBranchPair::SourceTransition> ttsA =
-                buildTransitionsFromXmlList(branchAXml);
-            const std::vector<fastbotx::NondetTreeTransitionBranchPair::SourceTransition> ttsB =
-                buildTransitionsFromXmlList(branchBXml);
+            BDLOG("ape naming: action_refinement_context activity=%s srcKey=%lu act=%lu "
+                  "targetXPath=%s parentIdx=%zu anchorExpr=%s anchorMask=%u branchA.transitions=%s branchB.transitions=%s",
+                  activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash,
+                  targetXPathName.c_str(), pIdx, anchorNl ? anchorNl->getExprString().c_str() : "null",
+                  (anchorNl && anchorNl->getNamerPtr()) ? anchorNl->getNamerPtr()->typeDimensionMask() : 0u,
+                  apeTransitionListDebugSummary(branchATransitions).c_str(),
+                  apeTransitionListDebugSummary(branchBTransitions).c_str());
             // Java actionRefinement: optional replaceLast(currentNamelet, …) using sortedAbove(parentNamer).
             if (enableReplacingNamelet && cur->hasChild()) {
                 const auto &cn = cur->getNamelets();
@@ -5530,22 +5725,28 @@ namespace {
                             naming::NamingPtr child =
                                 naming::NamingFactory::replaceLast(cur, anchorNl, refined);
                             if (!child || !child->hasChild()) {
+                                ++dropReplaceByNull;
                                 continue;
                             }
                             if (blk.count(child->fingerprintString()) != 0) {
+                                ++dropReplaceByBlacklist;
                                 continue;
                             }
                             size_t p1 = 0;
                             size_t p2 = 0;
-                            if (!apeCheckActionRefinementLikeJava(activity, child, refined, ttsA, ttsB, &upperRepl,
-                                                                  &p1, &p2)) {
+                            if (!apeCheckActionRefinementLikeJava(
+                                    activity, child, refined, branchATransitions, branchBTransitions, &upperRepl,
+                                    &p1, &p2)) {
+                                ++dropReplaceByActionCheck;
                                 continue;
                             }
-                            if (!evalApeGuiTreeNamingBlacklist(guiTreeBlacklistCheckHashes, child)) {
+                            if (!apeCheckPredicateLikeJava(child)) {
+                                ++dropReplaceByActionCheck;
                                 continue;
                             }
                             const std::string cfp = child->fingerprintString();
                             if (!acceptedFp.insert(cfp).second) {
+                                ++dropReplaceByDupFp;
                                 continue;
                             }
                             CandidateEval ev;
@@ -5556,7 +5757,14 @@ namespace {
                             ev.partitionTotal = p1 + p2;
                             ev.anchorIdx = pIdx;
                             ev.refinedNamer = refined;
+                            ev.originalNameletNamer = anchorNl ? anchorNl->getNamerPtr() : nullptr;
                             ev.useApeJavaStyleComparator = true;
+                            ev.actionRefineSourceStateHash = actionPredicateSourceStateHash;
+                            ev.actionRefineSourceXml = xmlA;
+                            if (!branchATransitions.empty()) {
+                                ev.actionRefineResolvedNodeStableIds =
+                                    branchATransitions.back().resolvedNodeStableIds;
+                            }
                             {
                                 const auto &nmls = ev.naming->getNamelets();
                                 if (!nmls.empty()) {
@@ -5583,24 +5791,38 @@ namespace {
                 if (skipByUpper) {
                     continue;
                 }
+                const uint32_t curRefinedDimMask = refined->typeDimensionMask();
+                ++extendTried;
+                extendDimTriedMask |= curRefinedDimMask;
                 naming::NamingPtr child = naming::NamingFactory::extendUnderNamelet(cur, pIdx, wxp, refined);
                 if (!child) {
+                    ++dropExtendByNull;
+                    extendDimDroppedMask |= curRefinedDimMask;
                     continue;
                 }
                 if (blk.count(child->fingerprintString()) != 0) {
+                    ++dropExtendByBlacklist;
+                    extendDimDroppedMask |= curRefinedDimMask;
                     continue;
                 }
                 size_t p1 = 0;
                 size_t p2 = 0;
-                if (!apeCheckActionRefinementLikeJava(activity, child, refined, ttsA, ttsB, &upperBounds, &p1,
-                                                      &p2)) {
+                if (!apeCheckActionRefinementLikeJava(
+                        activity, child, refined, branchATransitions, branchBTransitions,
+                        &upperBounds, &p1, &p2)) {
+                    ++dropExtendByActionCheck;
+                    extendDimDroppedMask |= curRefinedDimMask;
                     continue;
                 }
-                if (!evalApeGuiTreeNamingBlacklist(guiTreeBlacklistCheckHashes, child)) {
+                if (!apeCheckPredicateLikeJava(child)) {
+                    ++dropExtendByActionCheck;
+                    extendDimDroppedMask |= curRefinedDimMask;
                     continue;
                 }
                 const std::string cfp = child->fingerprintString();
                 if (!acceptedFp.insert(cfp).second) {
+                    ++dropExtendByDupFp;
+                    extendDimDroppedMask |= curRefinedDimMask;
                     continue;
                 }
                 CandidateEval ev;
@@ -5611,7 +5833,13 @@ namespace {
                 ev.partitionTotal = p1 + p2;
                 ev.anchorIdx = pIdx;
                 ev.refinedNamer = refined;
+                ev.originalNameletNamer = anchorNl ? anchorNl->getNamerPtr() : nullptr;
                 ev.useApeJavaStyleComparator = true;
+                ev.actionRefineSourceStateHash = actionPredicateSourceStateHash;
+                ev.actionRefineSourceXml = xmlA;
+                if (!branchATransitions.empty()) {
+                    ev.actionRefineResolvedNodeStableIds = branchATransitions.back().resolvedNodeStableIds;
+                }
                 {
                     const auto &nmls = ev.naming->getNamelets();
                     if (!nmls.empty()) {
@@ -5621,18 +5849,120 @@ namespace {
                 accepted.push_back(std::move(ev));
                 break;
             }
+            BDLOG("ape naming: action_refinement_gate_stats activity=%s srcKey=%lu act=%lu acceptedNow=%zu "
+                  "replace(null=%zu blk=%zu check=%zu dup=%zu) "
+                  "extend(null=%zu blk=%zu check=%zu dup=%zu) "
+                  "extend(tried=%zu triedDimMask=0x%x droppedDimMask=0x%x)",
+                  activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                  (unsigned long)dominantActionHash, acceptedFp.size(), dropReplaceByNull,
+                  dropReplaceByBlacklist, dropReplaceByActionCheck, dropReplaceByDupFp, dropExtendByNull,
+                  dropExtendByBlacklist, dropExtendByActionCheck, dropExtendByDupFp, extendTried,
+                  extendDimTriedMask, extendDimDroppedMask);
+            BDLOG("ape naming: action_refinement_gate_detail activity=%s srcKey=%lu act=%lu "
+                  "upperBounds.extend=%zu acceptedFp.size=%zu branchA.transitions=%zu branchB.transitions=%zu",
+                  activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                  (unsigned long)dominantActionHash, upperBounds.size(), acceptedFp.size(),
+                  branchATransitions.size(), branchBTransitions.size());
         };
 
         auto tryApeStateRefinement = [&]() {
             if (!haveXmlBranches || branchAXml.empty() || branchBXml.empty() || !nondetSrcState) {
+                BDLOG("ape naming: skip state refinement activity=%s reason=missing_branches_or_source "
+                      "haveBranches=%d aEmpty=%d bEmpty=%d hasSrc=%d srcKey=%lu act=%lu",
+                      activity.c_str(), haveXmlBranches ? 1 : 0, branchAXml.empty() ? 1 : 0,
+                      branchBXml.empty() ? 1 : 0, nondetSrcState ? 1 : 0,
+                      (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
-            if (apeIsTopNamingEquivalentXmlPair(activity, branchAXml.back(), branchBXml.back())) {
+            const gui_tree::GUITreePtr *snapBackA =
+                (!branchATransitions.empty()) ? &branchATransitions.back().sourceGuiSnapshot : nullptr;
+            const gui_tree::GUITreePtr *snapBackB =
+                (!branchBTransitions.empty()) ? &branchBTransitions.back().sourceGuiSnapshot : nullptr;
+            uintptr_t topH1 = 0;
+            uintptr_t topH2 = 0;
+            bool topHashReady = false;
+            {
+                naming::NamingPtr top = apeBuildTopNamingForEquivalence();
+                if (top &&
+                    apeStateHashFromXmlWithNaming(activity, branchAXml.back(), top, &topH1, 0, nullptr,
+                                                  snapBackA) &&
+                    apeStateHashFromXmlWithNaming(activity, branchBXml.back(), top, &topH2, 0, nullptr,
+                                                  snapBackB)) {
+                    topHashReady = true;
+                }
+            }
+            if (apeIsTopNamingEquivalentXmlPair(activity, branchAXml.back(), branchBXml.back(), snapBackA,
+                                                snapBackB)) {
+                // NamingFactory.stateRefinement: log top equivalence, then optional isomorphic (same early return).
+                BDLOG("ape naming: two GUI trees are top naming equivalent (NamingFactory.stateRefinement) "
+                      "activity=%s srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                      (unsigned long)dominantActionHash);
+                if (apeAreGuiTreesIsomorphicFromXmlLikeJava(activity, branchAXml.back(), snapBackA, branchBXml.back(),
+                                                            snapBackB)) {
+                    BDLOG("ape naming: two GUI trees are top naming equivalent and isomorphic "
+                          "(NamingFactory.stateRefinement) activity=%s srcKey=%lu act=%lu",
+                          activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                          (unsigned long)dominantActionHash);
+                }
+                BDLOG("ape naming: skip state refinement activity=%s reason=top_naming_equivalent "
+                      "srcKey=%lu act=%lu",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                      (unsigned long)dominantActionHash);
+                // Diagnostic: help distinguish legitimate top-equivalence (different XMLs that
+                // collapse under TYPE-only top naming) from the degenerate case where both
+                // branches captured the exact same source snapshot (pair input is identical).
+                const bool xmlsIdentical = branchAXml.back() == branchBXml.back();
+                const void *snapAPtr = snapBackA ? static_cast<const void *>(snapBackA->get()) : nullptr;
+                const void *snapBPtr = snapBackB ? static_cast<const void *>(snapBackB->get()) : nullptr;
+                BDLOG("ape naming: top_naming_equivalent details activity=%s srcKey=%lu act=%lu "
+                      "topHashReady=%d topH1=%zu topH2=%zu xmlALen=%zu xmlBLen=%zu "
+                      "xmlsIdentical=%d snapSameObj=%d snapA=%p snapB=%p",
+                      activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                      (unsigned long)dominantActionHash, topHashReady ? 1 : 0,
+                      topH1, topH2, branchAXml.back().size(), branchBXml.back().size(),
+                      xmlsIdentical ? 1 : 0,
+                      (snapAPtr && snapAPtr == snapBPtr) ? 1 : 0, snapAPtr, snapBPtr);
                 return;
             }
-            const std::string &xmlA = branchAXml.front();
-            const std::string &xmlB = branchBXml.front();
+            const std::string &xmlA = branchAXml.back();
+            const std::string &xmlB = branchBXml.back();
+            std::vector<gui_tree::GUITreePtr> stateRefineSnaps1;
+            std::vector<gui_tree::GUITreePtr> stateRefineSnaps2;
+            stateRefineSnaps1.reserve(branchATransitions.size());
+            for (const auto &st : branchATransitions) {
+                stateRefineSnaps1.push_back(st.sourceGuiSnapshot);
+            }
+            stateRefineSnaps2.reserve(branchBTransitions.size());
+            for (const auto &st : branchBTransitions) {
+                stateRefineSnaps2.push_back(st.sourceGuiSnapshot);
+            }
+            const std::vector<gui_tree::GUITreePtr> *stateSnaps1Ptr =
+                (stateRefineSnaps1.size() == branchAXml.size()) ? &stateRefineSnaps1 : nullptr;
+            const std::vector<gui_tree::GUITreePtr> *stateSnaps2Ptr =
+                (stateRefineSnaps2.size() == branchBXml.size()) ? &stateRefineSnaps2 : nullptr;
+            const NondetActionRefineTransitionContext stateTransCtx =
+                buildNondetActionRefineTransitionContext(branchATransitions, branchBTransitions,
+                                                         _apeTreeTransitionLog);
+            const uintptr_t stateActionPredicateSourceStateHash = stateTransCtx.actionPredicateSourceStateHash;
             std::unordered_set<std::string> acceptedFp;
+            size_t dropReplaceByNull = 0;
+            size_t dropReplaceByBlacklist = 0;
+            size_t dropReplaceByStateCheck = 0;
+            size_t dropReplaceByDupFp = 0;
+            size_t dropResolveParent = 0;
+            size_t dropParentIdx = 0;
+            size_t dropCurNamer = 0;
+            size_t dropExtendByNull = 0;
+            size_t dropExtendByBlacklist = 0;
+            size_t dropExtendByStateCheck = 0;
+            size_t dropExtendByDupFp = 0;
+            // P0-2: type-dimension trace — OR of refined->typeDimensionMask() for every lattice
+            // candidate tried vs every one dropped. Lets a 0-accepted outcome be classified by
+            // dimension coverage (Type / Text / Index / …) without re-running refine.
+            uint32_t extendDimTriedMask = 0;
+            uint32_t extendDimDroppedMask = 0;
+            size_t extendTried = 0;
             // Java stateRefinement: optional replaceLast(last, …) with sortedAbove(parent of last).
             if (enableReplacingNamelet && cur->hasChild()) {
                 naming::NameletPtr lastNl = cur->getLastNamelet();
@@ -5659,22 +5989,28 @@ namespace {
                             }
                             naming::NamingPtr child = naming::NamingFactory::replaceLast(cur, lastNl, refined);
                             if (!child || !child->hasChild()) {
+                                ++dropReplaceByNull;
                                 continue;
                             }
                             if (blk.count(child->fingerprintString()) != 0) {
+                                ++dropReplaceByBlacklist;
                                 continue;
                             }
                             size_t p1 = 0;
                             size_t p2 = 0;
                             if (!apeCheckStateRefinementLikeJava(activity, child, refined, branchAXml, branchBXml,
-                                                                 &upperRepl, &p1, &p2)) {
+                                                                 &upperRepl, &p1, &p2, stateSnaps1Ptr,
+                                                                 stateSnaps2Ptr)) {
+                                ++dropReplaceByStateCheck;
                                 continue;
                             }
-                            if (!evalApeGuiTreeNamingBlacklist(guiTreeBlacklistCheckHashes, child)) {
+                            if (!apeCheckPredicateLikeJava(child)) {
+                                ++dropReplaceByStateCheck;
                                 continue;
                             }
                             const std::string cfp = child->fingerprintString();
                             if (!acceptedFp.insert(cfp).second) {
+                                ++dropReplaceByDupFp;
                                 continue;
                             }
                             const auto &cn = cur->getNamelets();
@@ -5688,13 +6024,21 @@ namespace {
                             ev.partitionTotal = p1 + p2;
                             ev.anchorIdx = anchorIdx;
                             ev.refinedNamer = refined;
+                            ev.originalNameletNamer = lastNl ? lastNl->getNamerPtr() : nullptr;
                             ev.useApeJavaStyleComparator = true;
+                            ev.actionRefineSourceStateHash = stateActionPredicateSourceStateHash;
+                            ev.actionRefineSourceXml = xmlA;
+                            if (!branchATransitions.empty()) {
+                                ev.actionRefineResolvedNodeStableIds =
+                                    branchATransitions.back().resolvedNodeStableIds;
+                            }
                             {
                                 const auto &nmls = ev.naming->getNamelets();
                                 if (!nmls.empty()) {
                                     ev.updatedNameletExpr = nmls.back()->getExprString();
                                 }
                             }
+                            ev.registerApeSourceDivergentPredicate = true;
                             accepted.push_back(std::move(ev));
                             break;
                         }
@@ -5721,27 +6065,33 @@ namespace {
                 if (!tw) {
                     continue;
                 }
+                std::string candidateTargetXPathName;
+                naming::NamerPtr candidateTargetNamer;
+                const std::vector<int> candidateStableIds =
+                    apeResolveStableIdsForTargetWidgetLikeJava(nondetSrcState, tw);
+                if (!apeResolveTargetXPathNameLikeJava(activity, cur, xmlA, candidateStableIds,
+                                                       &candidateTargetXPathName, &candidateTargetNamer, snapBackA) ||
+                    !apeResolveTargetXPathNameLikeJava(activity, cur, xmlB, candidateStableIds,
+                                                       &candidateTargetXPathName, &candidateTargetNamer, snapBackB)) {
+                    ++dropResolveParent;
+                    continue;
+                }
                 size_t pIdx = 0;
                 std::string wxp;
-                std::string targetXp;
-                naming::NamerPtr targetNam;
-                if (!apeResolveTargetXPathNameLikeJava(activity, cur, nondetSrcState, tw, xmlA, &targetXp,
-                                                       &targetNam, nullptr)) {
-                    continue;
-                }
-                if (!targetNam) {
-                    continue;
-                }
-                if (!apeResolveParentNameletAndWidgetXPath(activity, cur, targetXp, *targetNam, xmlA, xmlB, &pIdx,
-                                                           &wxp, nullptr, nullptr)) {
+                if (!apeResolveParentNameletAndWidgetXPath(activity, cur, candidateTargetXPathName,
+                                                           candidateTargetNamer, xmlA, xmlB, &pIdx, &wxp, snapBackA,
+                                                           snapBackB)) {
+                    ++dropResolveParent;
                     continue;
                 }
                 if (pIdx >= cur->getNamelets().size()) {
+                    ++dropParentIdx;
                     continue;
                 }
                 std::vector<naming::NamerPtr> upperBounds;
                 naming::NamerPtr curNam = cur->getNamelets()[pIdx]->getNamerPtr();
                 if (!curNam) {
+                    ++dropCurNamer;
                     continue;
                 }
                 for (const naming::NamerPtr &refined : lat.sortedAbove(curNam)) {
@@ -5758,25 +6108,39 @@ namespace {
                     if (skipByUpper) {
                         continue;
                     }
+                    const uint32_t curRefinedDimMask = refined->typeDimensionMask();
+                    ++extendTried;
+                    extendDimTriedMask |= curRefinedDimMask;
                     naming::NamingPtr child =
                         naming::NamingFactory::extendUnderNamelet(cur, pIdx, wxp, refined);
                     if (!child) {
+                        ++dropExtendByNull;
+                        extendDimDroppedMask |= curRefinedDimMask;
                         continue;
                     }
                     if (blk.count(child->fingerprintString()) != 0) {
+                        ++dropExtendByBlacklist;
+                        extendDimDroppedMask |= curRefinedDimMask;
                         continue;
                     }
                     size_t p1 = 0;
                     size_t p2 = 0;
                     if (!apeCheckStateRefinementLikeJava(activity, child, refined, branchAXml, branchBXml,
-                                                         &upperBounds, &p1, &p2)) {
+                                                         &upperBounds, &p1, &p2, stateSnaps1Ptr,
+                                                         stateSnaps2Ptr)) {
+                        ++dropExtendByStateCheck;
+                        extendDimDroppedMask |= curRefinedDimMask;
                         continue;
                     }
-                    if (!evalApeGuiTreeNamingBlacklist(guiTreeBlacklistCheckHashes, child)) {
+                    if (!apeCheckPredicateLikeJava(child)) {
+                        ++dropExtendByStateCheck;
+                        extendDimDroppedMask |= curRefinedDimMask;
                         continue;
                     }
                     const std::string cfp = child->fingerprintString();
                     if (!acceptedFp.insert(cfp).second) {
+                        ++dropExtendByDupFp;
+                        extendDimDroppedMask |= curRefinedDimMask;
                         continue;
                     }
                     CandidateEval ev;
@@ -5787,6 +6151,12 @@ namespace {
                     ev.partitionTotal = p1 + p2;
                     ev.anchorIdx = pIdx;
                     ev.refinedNamer = refined;
+                    {
+                        const auto &cnm = cur->getNamelets();
+                        if (pIdx < cnm.size() && cnm[pIdx]) {
+                            ev.originalNameletNamer = cnm[pIdx]->getNamerPtr();
+                        }
+                    }
                     ev.useApeJavaStyleComparator = true;
                     {
                         const auto &nmls = ev.naming->getNamelets();
@@ -5794,96 +6164,159 @@ namespace {
                             ev.updatedNameletExpr = nmls.back()->getExprString();
                         }
                     }
+                    ev.registerApeSourceDivergentPredicate = true;
                     accepted.push_back(std::move(ev));
                     break;
                 }
             }
+            BDLOG("ape naming: state_refinement_gate_stats activity=%s srcKey=%lu act=%lu "
+                "nameCandidates=%zu acceptedNow=%zu "
+                "replace(null=%zu blk=%zu check=%zu dup=%zu) "
+                "pre(resolveParent=%zu pIdx=%zu curNamer=%zu) "
+                "extend(null=%zu blk=%zu check=%zu dup=%zu) "
+                "extend(tried=%zu triedDimMask=0x%x droppedDimMask=0x%x)",
+                activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                (unsigned long)dominantActionHash, nameCandidates.size(), acceptedFp.size(),
+                dropReplaceByNull, dropReplaceByBlacklist, dropReplaceByStateCheck, dropReplaceByDupFp,
+                dropResolveParent, dropParentIdx, dropCurNamer,
+                dropExtendByNull, dropExtendByBlacklist, dropExtendByStateCheck, dropExtendByDupFp,
+                extendTried, extendDimTriedMask, extendDimDroppedMask);
         };
 
-        if (arFirst) {
-            tryApeActionRefinement();
-        } else {
-            tryApeStateRefinement();
-        }
-        if (accepted.empty()) {
-            if (arFirst) {
-                tryApeStateRefinement();
-            } else {
-                tryApeActionRefinement();
+        for (const auto &bp : branchPairs) {
+            branchAXml = bp.branchA;
+            branchBXml = bp.branchB;
+            branchATransitions = bp.branchATransitions;
+            branchBTransitions = bp.branchBTransitions;
+            brSharedSrcStateHash = bp.sourceStateHash;
+            haveXmlBranches = !branchAXml.empty() && !branchBXml.empty();
+            nondetSrcState.reset();
+            if (brSharedSrcStateHash != 0) {
+                auto itShared = stateByHash.find(brSharedSrcStateHash);
+                if (itShared != stateByHash.end() && itShared->second) {
+                    nondetSrcState = itShared->second;
+                }
             }
-        }
-        if (accepted.empty()) {
+            if (pair && pair->hasSourceStateKey && nondetSrcState) {
+                auto itB = _ape_state_keys_by_hash.find(nondetSrcState->hash());
+                bool keyOk = false;
+                if (itB != _ape_state_keys_by_hash.end()) {
+                    for (const naming::StateKey &k : itB->second) {
+                        if (k == pair->sourceStateKey) {
+                            keyOk = true;
+                            break;
+                        }
+                    }
+                }
+                if (!keyOk) {
+                    nondetSrcState.reset();
+                }
+            }
+            if (!nondetSrcState) {
+                BDLOG("ape naming: skip refine pair activity=%s reason=pair_source_state_unavailable "
+                      "srcState=%lu srcKey=%lu kA=%lu kB=%lu",
+                      activity.c_str(), (unsigned long)bp.sourceStateHash,
+                      (unsigned long)bp.sourceTransitionSeq, (unsigned long)bp.targetKeyA,
+                      (unsigned long)bp.targetKeyB);
+                continue;
+            }
+            guiTreeBlacklistCheckHashes.clear();
+            guiTreeBlacklistCheckHashes.push_back(nondetSrcState->hash());
             if (arFirst) {
                 tryApeActionRefinement();
+                if (accepted.empty()) {
+                    tryApeStateRefinement();
+                }
             } else {
                 tryApeStateRefinement();
+                if (accepted.empty()) {
+                    tryApeActionRefinement();
+                }
+            }
+            if (!accepted.empty()) {
+                if (!branchAXml.empty() && !branchBXml.empty()) {
+                    apeRefineNdBranchAXml = branchAXml.back();
+                    apeRefineNdBranchBXml = branchBXml.back();
+                    apeRefineNdSharedSrcStateHash = brSharedSrcStateHash;
+                }
+                break;
             }
         }
         filledViaApeJava = !accepted.empty();
 #endif
-        naming::NamingFactory::ActionRefinementOptions userOpts;
-        userOpts.max_steps = (_preference ? _preference->getApeNamingActionRefineHops() : 8);
-        userOpts.blacklist = &blk;
-        userOpts.choose_deepest_acceptable = false;
-        userOpts.evaluate_all_immediate_candidates = false;
-        userOpts.accept_predicate = {};
-        if (!filledViaApeJava) {
-            candidates = naming::NamingFactory::actionRefinementCandidatesWithOptions(cur, lat, userOpts);
-            const std::string curFp = cur->fingerprintString();
-            const int curFine = cur->getFineness();
-            for (const auto &cand : candidates) {
-                if (!cand) {
-                    continue;
-                }
-                CandidateEval e;
-                e.naming = cand;
-                e.finenessGain = cand->getFineness() - curFine;
-                e.strictFiner = e.finenessGain > 0;
-                e.fingerprintChanged = cand->fingerprintString() != curFp;
-                if (cand.get() == cur.get() || !e.strictFiner) {
-                    continue;
-                }
-                if (!evalApeGuiTreeNamingBlacklist(guiTreeBlacklistCheckHashes, cand)) {
-                    continue;
-                }
-                accepted.push_back(std::move(e));
-            }
-        } else {
-            candidates.clear();
-            candidates.reserve(accepted.size());
-            for (const auto &ev : accepted) {
-                candidates.push_back(ev.naming);
-            }
+        candidates.clear();
+        candidates.reserve(accepted.size());
+        for (const auto &ev : accepted) {
+            candidates.push_back(ev.naming);
         }
+        const int maxSteps = (_preference ? _preference->getApeNamingActionRefineHops() : 8);
         {
             const std::string curFpGather = cur ? cur->fingerprintString() : std::string("-");
             BDLOG(
                 "ape naming: refine gather-cands activity=%s pair=%p useBatchNonDet=%d nonDetPairs=%d "
                 "states=%zu srcKey=%lu act=%lu domTargets=%zu curFin=%d maxSteps=%d candCount=%zu cur_fp=%s "
                 "apeJavaRefine=%d",
-                activity.c_str(), static_cast<const void *>(pair), useBatchNonDet ? 1 : 0, nonDetPairs,
+                activity.c_str(), static_cast<const void *>(pair), pairScopedCall ? 1 : 0, nonDetPairs,
                 activityStateCount, (unsigned long)dominantSourceKeyHash,
                 (unsigned long)dominantActionHash, dominantPairTargets, cur ? cur->getFineness() : -1,
-                userOpts.max_steps, candidates.size(), curFpGather.c_str(),
+                maxSteps, candidates.size(), curFpGather.c_str(),
                 filledViaApeJava ? 1 : 0);
         }
         if (accepted.empty()) {
-            BDLOG("ape naming: skip refine activity=%s reason=no_accepted_candidates "
-                  "rawCandCount=%zu dominantPairTargets=%zu",
-                  activity.c_str(), candidates.size(), dominantPairTargets);
+            // Distinguish "candidates enumerated but none accepted" from "branch data was never
+            // usable so we couldn't enumerate". Only the former is a real no_accepted_candidates
+            const bool branchDataUsable =
+                !branchPairs.empty() &&
+                (!branchATransitions.empty() || !branchBTransitions.empty());
+            const ApeRefineFailReason reasonEmpty =
+                branchDataUsable ? ApeRefineFailReason::NoAcceptedCandidates
+                                 : ApeRefineFailReason::BranchPairsUnavailable;
+            const char *reasonOnEmptyStr =
+                (reasonEmpty == ApeRefineFailReason::BranchPairsUnavailable)
+                    ? "branch_pairs_unavailable"
+                    : "no_accepted_candidates";
+            BDLOG("ape naming: skip refine activity=%s reason=%s "
+                  "rawCandCount=%zu dominantPairTargets=%zu nonDetPairs=%d branchPairs=%zu "
+                  "haveXmlBranches=%d replayActive=%d arFirst=%d branchDataUsable=%d",
+                  activity.c_str(), reasonOnEmptyStr,
+                  candidates.size(), dominantPairTargets, nonDetPairs,
+                  branchPairs.size(), haveXmlBranches ? 1 : 0, replayActive ? 1 : 0, arFirst ? 1 : 0,
+                  branchDataUsable ? 1 : 0);
+            BDLOG("ape naming: no_accepted_candidates detail activity=%s srcKey=%lu act=%lu "
+                  "activityStates=%zu graphStatesInActivity=%zu blkSize=%zu "
+                  "branchATransitions=%zu branchBTransitions=%zu cur_fp=%s",
+                  activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                  (unsigned long)dominantActionHash, activityStateCount, graphStatesInActivity,
+                  blk.size(), branchATransitions.size(), branchBTransitions.size(),
+                  cur ? cur->fingerprintString().c_str() : "-");
+            if (outFailReason) {
+                *outFailReason = reasonEmpty;
+            }
             return false;
         }
-        std::sort(accepted.begin(), accepted.end(), [&](const CandidateEval &a, const CandidateEval &b) {
+        std::stable_sort(accepted.begin(), accepted.end(), [&](const CandidateEval &a, const CandidateEval &b) {
             if (a.useApeJavaStyleComparator && b.useApeJavaStyleComparator) {
                 if (a.partitionTotal != b.partitionTotal) {
                     return a.partitionTotal < b.partitionTotal;
                 }
-                const auto &cn = cur->getNamelets();
-                if (a.anchorIdx < cn.size() && b.anchorIdx < cn.size() && cn[a.anchorIdx] && cn[b.anchorIdx]) {
-                    const int c0 =
-                        naming::compareNamer(cn[a.anchorIdx]->getNamer(), cn[b.anchorIdx]->getNamer());
-                    if (c0 != 0) {
-                        return c0 < 0;
+                {
+                    // NamingFactory.comparator: NamerComparator on originalNamelet, then on updatedNamelet.
+                    if (a.originalNameletNamer && b.originalNameletNamer) {
+                        const int c0 = naming::compareNamer(*a.originalNameletNamer, *b.originalNameletNamer);
+                        if (c0 != 0) {
+                            return c0 < 0;
+                        }
+                    } else {
+                        const auto &cn = cur->getNamelets();
+                        if (a.anchorIdx < cn.size() && b.anchorIdx < cn.size() && cn[a.anchorIdx] &&
+                            cn[b.anchorIdx]) {
+                            const int c0 = naming::compareNamer(cn[a.anchorIdx]->getNamer(),
+                                                                cn[b.anchorIdx]->getNamer());
+
+                            if (c0 != 0) {
+                                return c0 < 0;
+                            }
+                        }
                     }
                 }
                 if (a.refinedNamer && b.refinedNamer) {
@@ -5895,11 +6328,7 @@ namespace {
                 if (a.updatedNameletExpr != b.updatedNameletExpr) {
                     return a.updatedNameletExpr < b.updatedNameletExpr;
                 }
-                const int lex = compareNamingLexicographicForApeFilter(a.naming, b.naming);
-                if (lex != 0) {
-                    return lex < 0;
-                }
-                return a.naming->fingerprintString() < b.naming->fingerprintString();
+                return false;
             }
             if (a.finenessGain != b.finenessGain) {
                 return a.finenessGain < b.finenessGain;
@@ -5910,14 +6339,67 @@ namespace {
             }
             return a.naming->fingerprintString() < b.naming->fingerprintString();
         });
-        naming::NamingPtr next = accepted.front().naming;
+        const naming::NamingPtr curPar = cur ? cur->getParent() : nullptr;
+        auto isSupportedRefineRelation = [&](const naming::NamingPtr &cand, bool *outDirect,
+                                             bool *outSibling) -> bool {
+            const naming::NamingPtr candPar = cand ? cand->getParent() : nullptr;
+            const bool direct = (cand && candPar.get() == cur.get());
+            const bool sibling = (cand && cur && curPar && candPar && curPar.get() == candPar.get());
+            if (outDirect) {
+                *outDirect = direct;
+            }
+            if (outSibling) {
+                *outSibling = sibling;
+            }
+            return direct || sibling;
+        };
+        const bool allApeJavaComparator =
+            !accepted.empty() &&
+            std::all_of(accepted.begin(), accepted.end(),
+                        [](const CandidateEval &ev) { return ev.useApeJavaStyleComparator; });
+        naming::NamingPtr next = nullptr;
+        bool refineSiblingReplace = false;
+        size_t skippedUnsupportedRelation = 0;
+        size_t pickedEvalIndex = 0;
+        if (allApeJavaComparator) {
+            pickedEvalIndex = 0;
+            next = accepted.front().naming;
+            bool isDirect = false;
+            bool isSibling = false;
+            (void)isSupportedRefineRelation(next, &isDirect, &isSibling);
+            refineSiblingReplace = isSibling;
+        } else {
+            for (size_t i = 0; i < accepted.size(); ++i) {
+                const CandidateEval &ev = accepted[i];
+                bool isDirect = false;
+                bool isSibling = false;
+                if (isSupportedRefineRelation(ev.naming, &isDirect, &isSibling)) {
+                    next = ev.naming;
+                    refineSiblingReplace = isSibling;
+                    pickedEvalIndex = i;
+                    break;
+                }
+                ++skippedUnsupportedRelation;
+            }
+        }
+        if (!next) {
+            BDLOG("ape naming: skip refine activity=%s reason=unsupported_refine_relation srcKey=%lu act=%lu "
+                  "accepted=%zu skipped=%zu",
+                  activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                  (unsigned long)dominantActionHash, accepted.size(), skippedUnsupportedRelation);
+            if (outFailReason) {
+                *outFailReason = ApeRefineFailReason::UnsupportedRefineRelation;
+            }
+            return false;
+        }
+        const naming::NamingPtr nextPar = next ? next->getParent() : nullptr;
         BLOG("ape naming: refine-candidates activity=%s total=%zu accepted=%zu pickedFineGain=%d",
-             activity.c_str(), candidates.size(), accepted.size(), accepted.front().finenessGain);
+             activity.c_str(), candidates.size(), accepted.size(),
+             accepted[pickedEvalIndex].finenessGain);
         {
             static std::atomic<uint64_t> g_refine_pick_seq{0};
             const uint64_t pickN = ++g_refine_pick_seq;
             if (pickN <= 16 || (pickN % 512) == 0) {
-                const naming::NamingPtr nextPar = next ? next->getParent() : nullptr;
                 int top3Direct = 0;
                 const size_t lim = std::min<size_t>(accepted.size(), 3);
                 for (size_t i = 0; i < lim; ++i) {
@@ -8119,23 +8601,48 @@ namespace {
         bucket.push_back(key);
     }
 
-    bool Model::tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out) const {
+    bool Model::tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out, const std::string &hintActivity,
+                                  uintptr_t hintKeyHash) const {
         auto it = _ape_state_keys_by_hash.find(stateHash);
         if (it == _ape_state_keys_by_hash.end() || it->second.empty()) {
             return false;
         }
-        if (it->second.size() != 1) {
+        const auto &bucket = it->second;
+        if (bucket.size() == 1) {
+            if (out != nullptr) {
+                *out = bucket.front();
+            }
+            return true;
+        }
+        if (hintActivity.empty() && hintKeyHash == 0) {
+            return false;
+        }
+        size_t matchCount = 0;
+        const naming::StateKey *picked = nullptr;
+        for (const naming::StateKey &k : bucket) {
+            if (!hintActivity.empty() &&
+                naming::StateKey::canonicalActivityString(k.activity()) != hintActivity) {
+                continue;
+            }
+            if (hintKeyHash != 0 && k.hash() != hintKeyHash) {
+                continue;
+            }
+            ++matchCount;
+            picked = &k;
+        }
+        if (matchCount != 1 || picked == nullptr) {
             return false;
         }
         if (out != nullptr) {
-            *out = it->second.front();
+            *out = *picked;
         }
         return true;
     }
 
-    bool Model::tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash) const {
+    bool Model::tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash, const std::string &hintActivity,
+                                      uintptr_t hintKeyHash) const {
         naming::StateKey k = naming::StateKey::fromFallbackXmlStringHash("", 0);
-        if (!tryGetApeStateKey(stateHash, &k)) {
+        if (!tryGetApeStateKey(stateHash, &k, hintActivity, hintKeyHash)) {
             return false;
         }
         if (outKeyHash != nullptr) {
