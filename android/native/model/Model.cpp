@@ -6426,385 +6426,64 @@ namespace {
         ctx.stateCountAtLastNamingRefinement = activityStateCount;
         ctx.nonDetPairsAtLastNamingRefinement = nonDetPairs;
         ctx.triggerSourceKeyHash = xmlSpaceTriggerSourceKeyHash;
-        ctx.triggerSourceKeyHashOriginal = dominantSourceKeyHash;
-        ctx.triggerSourceKeyExact = (pair && pair->hasSourceStateKey);
-        if (ctx.triggerSourceKeyExact) {
+        ctx.triggerSourceKeyExact = false;
+        ctx.triggerSourceKey = naming::StateKey::fromParts("", nullptr, {});
+        if (pair && pair->hasSourceStateKey) {
+            ctx.triggerSourceKeyExact = true;
             ctx.triggerSourceKey = pair->sourceStateKey;
-        } else {
-            ctx.triggerSourceKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+        } else if (nondetSrcState) {
+            naming::StateKey recoveredSourceKey = naming::StateKey::fromParts("", nullptr, {});
+            if (tryGetApeStateKey(nondetSrcState->hash(), &recoveredSourceKey, actKey,
+                                  dominantSourceKeyHash) &&
+                recoveredSourceKey.activity() == actKey &&
+                recoveredSourceKey.hash() == dominantSourceKeyHash) {
+                ctx.triggerSourceKeyExact = true;
+                ctx.triggerSourceKey = recoveredSourceKey;
+            }
+        }
+        if (!ctx.triggerSourceKeyExact) {
+            for (auto it = _apeTransitionLog.rbegin(); it != _apeTransitionLog.rend(); ++it) {
+                if (!it->valid || !it->hasSourceStateKey) {
+                    continue;
+                }
+                if (it->sourceActivity != actKey || it->sourceKeyHash != dominantSourceKeyHash) {
+                    continue;
+                }
+                ctx.triggerSourceKeyExact = true;
+                ctx.triggerSourceKey = it->sourceStateKey;
+                break;
+            }
+        }
+        if (!ctx.triggerSourceKeyExact) {
+            BDLOG("ape naming: skip refine activity=%s reason=trigger source statekey unrecoverable srcKey=%lu act=%lu",
+                  activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                  (unsigned long)dominantActionHash);
+            if (outFailReason) {
+                *outFailReason = ApeRefineFailReason::Other;
+            }
+            return false;
         }
         ctx.triggerActionHash = dominantActionHash;
         ctx.triggerTargetCountAtRefine = dominantPairTargets;
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-        {
-            auto hasXml = [&](uintptr_t sh) -> bool {
-                auto itXml = _apeStateXmlByStateHash.find(sh);
-                return itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty();
-            };
-            std::vector<std::vector<uintptr_t>> predParts;
-            constexpr size_t kMaxSourcePartitionRepr = 2;
-            constexpr size_t kMaxTargetPartitionParts = 4; // total target partitions (each by one tkh)
-            constexpr size_t kMaxTargetPartitionReprPerKey = 2;
-            bool builtFromEvidence = false;
-            if (dominantSourceKeyHash != 0 && dominantActionHash != 0) {
-                const ApePairKey triggerPairKey{dominantSourceKeyHash, dominantActionHash};
-                auto itPool = _apeEvidencePools.find(triggerPairKey);
-                if (itPool != _apeEvidencePools.end()) {
-                    std::vector<uintptr_t> partA;
-                    partA.reserve(kMaxSourcePartitionRepr);
-                    std::unordered_set<uintptr_t> seenSrc;
-                    seenSrc.reserve(8);
-                    struct TargetBucket {
-                        int count{0};
-                        std::vector<uintptr_t> repr;
-                    };
-                    std::unordered_map<uintptr_t, TargetBucket> buckets;
-                    buckets.reserve(8);
-
-                    itPool->second.forEach([&](const ApeEvidenceSample &s) {
-                        if (!s.valid) {
-                            return;
-                        }
-                        if (partA.size() < kMaxSourcePartitionRepr && hasXml(s.sourceStateHash)) {
-                            if (seenSrc.insert(s.sourceStateHash).second) {
-                                partA.push_back(s.sourceStateHash);
-                            }
-                        }
-                        if (dominantTargetKeyHashes.count(s.targetKeyHash) == 0) {
-                            return;
-                        }
-                        auto &b = buckets[s.targetKeyHash];
-                        b.count++;
-                        if (b.repr.size() < kMaxTargetPartitionReprPerKey && hasXml(s.targetStateHash)) {
-                            bool dup = false;
-                            for (uintptr_t h : b.repr) {
-                                if (h == s.targetStateHash) {
-                                    dup = true;
-                                    break;
-                                }
-                            }
-                            if (!dup) {
-                                b.repr.push_back(s.targetStateHash);
-                            }
-                        }
-                    });
-
-                    if (partA.size() >= 1) {
-                        predParts.push_back(std::move(partA));
-                    }
-
-                    size_t targetPartitionsAdded = 0;
-                    std::vector<std::pair<uintptr_t, int>> targetOrder;
-                    targetOrder.reserve(buckets.size());
-                    for (const auto &kv : buckets) {
-                        if (!kv.second.repr.empty()) {
-                            targetOrder.emplace_back(kv.first, kv.second.count);
-                        }
-                    }
-                    std::sort(targetOrder.begin(), targetOrder.end(),
-                              [](const auto &a, const auto &b) {
-                                  return a.second > b.second;
-                              });
-                    for (const auto &tc : targetOrder) {
-                        if (targetPartitionsAdded >= kMaxTargetPartitionParts) {
-                            break;
-                        }
-                        auto itB = buckets.find(tc.first);
-                        if (itB == buckets.end() || itB->second.repr.empty()) {
-                            continue;
-                        }
-                        predParts.push_back(itB->second.repr);
-                        ++targetPartitionsAdded;
-                    }
-
-                    builtFromEvidence = predParts.size() >= 2;
-                }
-            }
-
-            if (!builtFromEvidence) {
-                predParts.clear();
-                auto stateHashesMatchActivity = [&](uintptr_t sh) -> bool {
-                    auto itS = stateByHash.find(sh);
-                    if (itS == stateByHash.end() || !itS->second) {
-                        return false;
-                    }
-                    auto ap = itS->second->getActivityString();
-                    const std::string a =
-                        (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                    return a == actKey;
-                };
-                std::vector<uintptr_t> partA;
-                if (dominantSourceKeyHash != 0) {
-                    auto itSrcPart = stateHashesByKeyHash.find(dominantSourceKeyHash);
-                    if (itSrcPart != stateHashesByKeyHash.end()) {
-                        for (uintptr_t sh : itSrcPart->second) {
-                            if (!hasXml(sh) || !stateHashesMatchActivity(sh)) {
-                                continue;
-                            }
-                            partA.push_back(sh);
-                            if (partA.size() >= kMaxSourcePartitionRepr) break;
-                        }
-                    }
-                }
-                if (partA.size() >= 1) {
-                    predParts.push_back(std::move(partA));
-                }
-
-                size_t targetPartitionsAdded = 0;
-                for (uintptr_t tkh : dominantTargetKeyHashes) {
-                    if (targetPartitionsAdded >= kMaxTargetPartitionParts) {
-                        break;
-                    }
-                    std::vector<uintptr_t> partT;
-                    auto itTgtPart = stateHashesByKeyHash.find(tkh);
-                    if (itTgtPart != stateHashesByKeyHash.end()) {
-                        for (uintptr_t sh : itTgtPart->second) {
-                            if (!hasXml(sh) || !stateHashesMatchActivity(sh)) {
-                                continue;
-                            }
-                            partT.push_back(sh);
-                            if (partT.size() >= kMaxTargetPartitionReprPerKey) break;
-                        }
-                    }
-                    if (!partT.empty()) {
-                        predParts.push_back(std::move(partT));
-                        ++targetPartitionsAdded;
-                    }
-                }
-            }
-
-            if (dominantActionHash != 0) {
-                // Java AssertActionDivergent2 partitions "resolved nodes" by the Name generated from @next.
-                // Native does not store ModelAction.resolvedNodes directly, so we approximate them by:
-                // 1) find the action target widget (matching dominantActionHash) for each source state;
-                // 2) in the rebuilt GUI tree, collect all nodes whose bounds match that widget bounds;
-                // 3) group collected nodes by their node name under @next.
-                //
-                // This is a closer analog to Java GUITree.pickNodes(action) than using one node position
-                // per source state.
-                std::unordered_map<std::string, std::vector<std::pair<uintptr_t, size_t>>> partsByName;
-                // Java AssertActionDivergent2 is built from a single GUI tree's action.getResolvedNodes().
-                // For full semantic alignment, only use one representative source tree in this predicate.
-                constexpr size_t kMaxSrcForActionPred = 1;
-                // No resolved-nodes truncation: keep all nodes matching the action target Name.
-                constexpr size_t kMaxResolvedNodesPerSource = 4096;
-
-                // dominantActionHash in native may include source-state hash, so matching it verbatim
-                // across other source states could under-collect resolved nodes.
-                // Extract a more stable identity (action type + target widget hash) from the first
-                // state where the full hash matches, then match by that identity for other states.
-                // Prefer evidence-driven source trees: those that actually executed (sourceKeyHash, actionSig).
-                std::vector<uintptr_t> actionPredSourceStateHashes;
-                actionPredSourceStateHashes.reserve(4);
-                {
-                    const ApePairKey triggerPairKey{dominantSourceKeyHash, dominantActionHash};
-                    auto itPool = _apeEvidencePools.find(triggerPairKey);
-                    if (itPool != _apeEvidencePools.end()) {
-                        std::unordered_set<uintptr_t> seen;
-                        seen.reserve(8);
-                        itPool->second.forEach([&](const ApeEvidenceSample &s) {
-                            if (actionPredSourceStateHashes.size() >= 4) {
-                                return;
-                            }
-                            if (!s.valid || !hasXml(s.sourceStateHash)) {
-                                return;
-                            }
-                            if (seen.insert(s.sourceStateHash).second) {
-                                actionPredSourceStateHashes.push_back(s.sourceStateHash);
-                            }
-                        });
-                    }
-                }
-                if (actionPredSourceStateHashes.empty()) {
-                    actionPredSourceStateHashes = triggerSourceStateHashesForReplay;
-                }
-
-                ActionType dominantActionType = ActionType::NOP;
-                uintptr_t dominantTargetWidgetHash = 0;
-                bool hasDominantActionIdentity = false;
-                for (uintptr_t repSh : actionPredSourceStateHashes) {
-                    auto itRepSh = stateByHash.find(repSh);
-                    if (itRepSh == stateByHash.end() || !itRepSh->second) {
-                        continue;
-                    }
-                    const StatePtr &repSp = itRepSh->second;
-                    for (const auto &a : repSp->getActions()) {
-                        auto asa = std::dynamic_pointer_cast<ActivityStateAction>(a);
-                        if (!asa || asa->hash() != dominantActionHash) {
-                            continue;
-                        }
-                        dominantActionType = asa->getActionType();
-                        if (asa->getTarget()) {
-                            dominantTargetWidgetHash = asa->getTarget()->hash();
-                            hasDominantActionIdentity = true;
-                        }
-                        break;
-                    }
-                    if (hasDominantActionIdentity) {
-                        break;
-                    }
-                }
-
-                size_t actionPredAdded = 0;
-                for (uintptr_t sh : actionPredSourceStateHashes) {
-                    if (actionPredAdded >= kMaxSrcForActionPred) {
-                        break;
-                    }
-                    auto itSpLookup = stateByHash.find(sh);
-                    if (itSpLookup == stateByHash.end() || !itSpLookup->second) {
-                        continue;
-                    }
-                    const StatePtr &sp = itSpLookup->second;
-
-                    // Locate the specific action target widget for @dominantActionHash.
-                    WidgetPtr targetWidget;
-                    for (const auto &a : sp->getActions()) {
-                        auto asa = std::dynamic_pointer_cast<ActivityStateAction>(a);
-                        if (!asa) {
-                            continue;
-                        }
-                        bool match = false;
-                        if (hasDominantActionIdentity && asa->getTarget()) {
-                            match = (asa->getActionType() == dominantActionType &&
-                                     asa->getTarget()->hash() == dominantTargetWidgetHash);
-                        } else {
-                            match = (asa->hash() == dominantActionHash);
-                        }
-                        if (!match) {
-                            continue;
-                        }
-                        targetWidget = asa->getTarget();
-                        break;
-                    }
-                    if (!targetWidget || !targetWidget->getBounds()) {
-                        continue;
-                    }
-                    const Rect targetRect = *targetWidget->getBounds();
-
-                    auto itXml = _apeStateXmlByStateHash.find(sh);
-                    if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
-                        continue;
-                    }
-
-                    std::string pkg;
-                    std::string cls;
-                    naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
-                    gui_tree::GUITreeBuildResult built =
-                        gui_tree::GUITreeFactory::buildFromXml(itXml->second, pkg, cls);
-                    if (!built.tree || !built.dom) {
-                        continue;
-                    }
-                    std::vector<gui_tree::GUITreeNode *> po;
-                    collectGUITreeNodesPreOrder(built.tree->getRootNode(), &po);
-                    if (po.empty()) {
-                        continue;
-                    }
-
-                    // Java's resolvedNodes are selected by action target Name computed before refinement
-                    // (i.e., under @cur). To align more closely, rebuild once under @cur to derive a stable
-                    // targetNameCurXPath, pick resolved node indices by (bounds match AND targetNameCur),
-                    // then rebuild under @next and group those same indices by their new Name.
-                    if (!naming::NamingFactory::rebuildTree(cur, *built.tree, built.dom)) {
-                        continue;
-                    }
-
-                    std::string targetNameCurXPath;
-                    // More strict: derive the action target Name under @cur from the specific targetWidget
-                    // (when widget<->preorder index mapping is aligned). Fallback to bounds-match.
-                    {
-                        const WidgetPtrVec &ws = sp->getWidgets();
-                        if (ws.size() == po.size()) {
-                            for (size_t i = 0; i < ws.size(); ++i) {
-                                if (ws[i] == targetWidget) {
-                                    if (i < po.size() && po[i]) {
-                                        const naming::NamePtr nm = po[i]->getXPathName();
-                                        if (nm) {
-                                            targetNameCurXPath = nm->toXPath();
-                                        }
-                                    }
-                                    break;
-                                }
-                            }
-                        }
-                        // Fallback: derive the target Name under @cur from a node whose bounds match.
-                        // This still yields the correct Name for resolved-nodes selection (we only use Name
-                        // equality afterwards, not bounds).
-                        if (targetNameCurXPath.empty()) {
-                            for (size_t i = 0; i < po.size(); ++i) {
-                                const auto *node = po[i];
-                                if (!node) continue;
-                                if (!(node->getBounds() == targetRect)) continue;
-                                const naming::NamePtr nm = node->getXPathName();
-                                if (!nm) continue;
-                                targetNameCurXPath = nm->toXPath();
-                                if (!targetNameCurXPath.empty()) {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    // Strict mode: if we cannot derive the target Name under @cur,
-                    // skip this source state for action partitions.
-                    if (targetNameCurXPath.empty()) {
-                        continue;
-                    }
-
-                    std::vector<size_t> resolvedIdx;
-                    resolvedIdx.reserve(kMaxResolvedNodesPerSource);
-                    for (size_t i = 0; i < po.size(); ++i) {
-                        const auto *node = po[i];
-                        if (!node) continue;
-                        const naming::NamePtr nm = node->getXPathName();
-                        if (!nm || nm->toXPath() != targetNameCurXPath) {
-                            continue;
-                        }
-                        // Java includes all nodes with the same Name; no extra bounds constraint.
-                        resolvedIdx.push_back(i);
-                    }
-
-                    if (resolvedIdx.empty()) {
-                        continue;
-                    }
-
-                    // Rebuild with @next for grouping into partitions.
-                    if (!naming::NamingFactory::rebuildTree(next, *built.tree, built.dom)) {
-                        continue;
-                    }
-
-                    size_t insertedAny = 0;
-                    for (size_t idx : resolvedIdx) {
-                        if (idx >= po.size() || !po[idx]) {
-                            continue;
-                        }
-                        const naming::NamePtr nm = po[idx]->getXPathName();
-                        if (!nm) {
-                            continue;
-                        }
-                        const std::string nameXPath = nm->toXPath();
-                        auto &vec = partsByName[nameXPath];
-                        vec.push_back({sh, idx});
-                        insertedAny++;
-                    }
-                    if (insertedAny > 0) {
-                        ++actionPredAdded;
-                    }
-                }
-
-                if (partsByName.size() >= 2) {
-                    std::vector<std::vector<std::pair<uintptr_t, size_t>>> actionPredParts;
-                    actionPredParts.reserve(partsByName.size());
-                    for (auto &kv : partsByName) {
-                        if (!kv.second.empty()) {
-                            actionPredParts.push_back(std::move(kv.second));
-                        }
-                    }
-                }
-            }
-        }
-#endif
         ctx.triggerTargetKeyHashes = std::move(xmlSpaceTriggerTargetKeyHashes);
+        if (pickedEvalIndex < accepted.size()) {
+            const CandidateEval &picked = accepted[pickedEvalIndex];
+            if (!picked.actionRefineSourceXml.empty() &&
+                !picked.actionRefineResolvedNodeStableIds.empty()) {
+                addApeActionRefinementPredicate(activity, picked.actionRefineSourceStateHash,
+                                                picked.actionRefineSourceXml,
+                                                picked.actionRefineResolvedNodeStableIds,
+                                                picked.naming);
+            }
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+            if (picked.registerApeSourceDivergentPredicate &&
+                !apeRefineNdBranchAXml.empty() && !apeRefineNdBranchBXml.empty()) {
+                addApeSourceDivergentPredicate(activity, apeRefineNdBranchAXml, apeRefineNdBranchBXml,
+                                               apeRefineNdSharedSrcStateHash);
+            }
+#endif
+        }
         {
-            const naming::NamingPtr nextPar = next ? next->getParent() : nullptr;
             if (next && nextPar.get() != cur.get()) {
                 auto apeSnipFp = [](const naming::NamingPtr &p) -> std::string {
                     if (!p) {
