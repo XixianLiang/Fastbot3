@@ -6400,6 +6400,7 @@ namespace {
             static std::atomic<uint64_t> g_refine_pick_seq{0};
             const uint64_t pickN = ++g_refine_pick_seq;
             if (pickN <= 16 || (pickN % 512) == 0) {
+                const naming::NamingPtr nextPar = next ? next->getParent() : nullptr;
                 int top3Direct = 0;
                 const size_t lim = std::min<size_t>(accepted.size(), 3);
                 for (size_t i = 0; i < lim; ++i) {
@@ -6516,21 +6517,39 @@ namespace {
                     sCur.c_str(), sNext.c_str(), sPar.c_str());
             }
         }
-        if (ctx.triggerSourceKeyExact) {
-            _apeStateNamingManager->updateNamingWithStateKey(
-                actKey, naming::NamingUpdateKind::Refine, cur, next, ctx.triggerSourceKey);
-        } else {
-            _ape_correctness_counters.naming_update_by_hash++;
-            _apeStateNamingManager->updateNamingWithStateHash(
-                actKey, naming::NamingUpdateKind::Refine, cur, next, ctx.triggerSourceKeyHash);
-        }
+        const naming::NamingUpdateKind refineUpdateKind =
+            refineSiblingReplace ? naming::NamingUpdateKind::Abstract : naming::NamingUpdateKind::Refine;
+        _apeStateNamingManager->updateNamingWithStateKey(
+            actKey, refineUpdateKind, cur, next, ctx.triggerSourceKey);
         invalidateApeGraphStateKeyDedupMap();
+        bool rebuiltViaHistory = apeLocalRebuildFromHistory(actKey);
         std::vector<uintptr_t> repKeyHashes;
         std::unordered_set<uintptr_t> focusOldKeyHashes;
         std::unordered_set<uintptr_t> affectedTrees;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
         if (ctx.triggerSourceKeyHash != 0) {
-            // Q8/P0: build affected set from naming mismatch (oldH != newH) instead of only trigger bucket.
+            uintptr_t triggerParentKeyHash = 0;
+            if (refineSiblingReplace && curPar && nondetSrcState) {
+                auto itSrcXml = _apeStateXmlByStateHash.find(nondetSrcState->hash());
+                if (itSrcXml != _apeStateXmlByStateHash.end() && !itSrcXml->second.empty()) {
+                    gui_tree::GUITreePtr trigSnap = this->apeLatestGUITreeSnapshot(nondetSrcState->hash());
+                    const gui_tree::GUITreePtr *trigSnapPtr = trigSnap ? &trigSnap : nullptr;
+                    (void)apeStateHashFromXmlWithNaming(activity, itSrcXml->second, curPar, &triggerParentKeyHash,
+                                                        0, nullptr, trigSnapPtr);
+                }
+            }
+            auto isInAffectedSet = [&](const std::string &xml, uintptr_t oldKeyHash,
+                                       uintptr_t stateHashForXml) -> bool {
+                if (refineSiblingReplace && curPar && triggerParentKeyHash != 0) {
+                    uintptr_t oldParentH = 0;
+                    gui_tree::GUITreePtr affSnap = this->apeLatestGUITreeSnapshot(stateHashForXml);
+                    const gui_tree::GUITreePtr *affSnapPtr = affSnap ? &affSnap : nullptr;
+                    return apeStateHashFromXmlWithNaming(activity, xml, curPar, &oldParentH, 0, nullptr,
+                                                         affSnapPtr) &&
+                           oldParentH == triggerParentKeyHash;
+                }
+                return oldKeyHash == ctx.triggerSourceKeyHash;
+            };
             for (const auto &kv : _apeStateXmlByStateHash) {
                 const uintptr_t sh = kv.first;
                 const std::string &xml = kv.second;
@@ -6553,10 +6572,13 @@ namespace {
                 }
                 uintptr_t oldH = 0;
                 uintptr_t newH = 0;
-                if (!apeStateHashFromXmlWithTwoNamings(activity, xml, cur, &oldH, next, &newH)) {
+                gui_tree::GUITreePtr pairSnap = this->apeLatestGUITreeSnapshot(sh);
+                const gui_tree::GUITreePtr *pairSnapPtr = pairSnap ? &pairSnap : nullptr;
+                if (!apeStateHashFromXmlWithTwoNamings(activity, xml, cur, &oldH, next, &newH, pairSnapPtr)) {
                     continue;
-                }
-                if (oldH != newH) {
+                }    
+                const bool inAffected = isInAffectedSet(xml, oldH, sh);
+                if (!inAffected && oldH != newH) {
                     ctx.oldKeyHashToNewKeyHashes[oldH].insert(newH);
                     ctx.oldKeyHashToObservationCount[oldH]++;
                     focusOldKeyHashes.insert(oldH);
@@ -6565,32 +6587,36 @@ namespace {
             }
         }
 #endif
-        repKeyHashes.reserve(8);
-        if (!focusOldKeyHashes.empty()) {
-            for (uintptr_t h : focusOldKeyHashes) {
-                repKeyHashes.push_back(h);
-                if (repKeyHashes.size() >= 8) {
-                    break;
+        if (!rebuiltViaHistory) {
+            repKeyHashes.reserve(8);
+            if (!focusOldKeyHashes.empty()) {
+                for (uintptr_t h : focusOldKeyHashes) {
+                    repKeyHashes.push_back(h);
+                    if (repKeyHashes.size() >= 8) {
+                        break;
+                    }
                 }
+            } else if (ctx.triggerSourceKeyHash != 0) {
+                repKeyHashes.push_back(ctx.triggerSourceKeyHash);
             }
-        } else if (ctx.triggerSourceKeyHash != 0) {
-            repKeyHashes.push_back(ctx.triggerSourceKeyHash);
+            if (!repKeyHashes.empty()) {
+                rebuildApeStateRepresentativesForKeyHashes(activity, cur, repKeyHashes, 1);
+            }
+            if (!focusOldKeyHashes.empty()) {
+                remapApeTransitionAggregationForActivity(activity, cur, next, &focusOldKeyHashes);
+            }
+            pruneStaleApeStatesForActivity(actKey, ctx.previousNamingFingerprintBeforeRefine, nullptr);
         }
-        if (!repKeyHashes.empty()) {
-            rebuildApeStateRepresentativesForKeyHashes(activity, cur, repKeyHashes, 1);
-        }
-        if (!focusOldKeyHashes.empty()) {
-            remapApeTransitionAggregationForActivity(activity, cur, next, &focusOldKeyHashes);
-        }
-        pruneStaleApeStatesForActivity(actKey, ctx.previousNamingFingerprintBeforeRefine,
-                                       affectedTrees.empty() ? nullptr : &affectedTrees);
         BLOG("ape naming: refine activity=%s", activity.c_str());
         {
             const std::string nextFpOk = next ? next->fingerprintString() : std::string("-");
-            BDLOG("ape naming: refine success activity=%s nextFin=%d focusOldKeys=%zu affectedTrees=%zu "
-                  "repKeys=%zu next_fp=%s",
-                  activity.c_str(), next ? next->getFineness() : -1, focusOldKeyHashes.size(),
-                  affectedTrees.size(), repKeyHashes.size(), nextFpOk.c_str());
+            BDLOG("ape naming: refine success activity=%s nextFin=%d rebuilt=%d focusOldKeys=%zu "
+                  "affectedTrees=%zu repKeys=%zu next_fp=%s",
+                  activity.c_str(), next ? next->getFineness() : -1, rebuiltViaHistory ? 1 : 0,
+                  focusOldKeyHashes.size(), affectedTrees.size(), repKeyHashes.size(), nextFpOk.c_str());
+        }
+        if (outFailReason) {
+            *outFailReason = ApeRefineFailReason::None;
         }
         return true;
     }
@@ -6653,6 +6679,7 @@ namespace {
                 for (const auto &entry : bucket) {
                     if (entry.key == apeKey) {
                         _ape_correctness_counters.graph_dedup_exact_hit++;
+                        agent->setCurrentStateRecovered(true);
                         _graph->recordStateVisit(entry.state, built);
                         canonical = entry.state;
                         deduped = true;
@@ -6674,8 +6701,9 @@ namespace {
             if (haveApeKey) {
                 recordApeStateKey(canonical, apeKey);
             }
-            if (_preference->useApeNamingCandidateTransitionReplay()) {
-                _apeStateXmlByStateHash[canonical->hash()] = xml;
+            _apeStateXmlByStateHash[canonical->hash()] = xml;
+            if (elem) {
+                _apeStateElementByStateHash[canonical->hash()] = elem;
             }
         };
 
@@ -6693,15 +6721,21 @@ namespace {
             if (xml.empty()) {
                 continue;
             }
-            naming::StateKey storedKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
-            if (!tryGetApeStateKey(stateHash, &storedKey)) {
+            naming::StateKey storedKey = naming::StateKey::fromParts("", nullptr, {});
+            if (!tryGetApeStateKey(stateHash, &storedKey, actKey)) {
                 continue;
             }
             if (storedKey.activity() != actKey) {
                 continue;
             }
             uintptr_t oldH = 0;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+            gui_tree::GUITreePtr rbSnap = apeLatestGUITreeSnapshot(stateHash);
+            const gui_tree::GUITreePtr *rbSnapPtr = rbSnap ? &rbSnap : nullptr;
+            if (!apeStateHashFromXmlWithNaming(rawActivity, xml, oldNaming, &oldH, 0, nullptr, rbSnapPtr)) {
+#else
             if (!apeStateHashFromXmlWithNaming(rawActivity, xml, oldNaming, &oldH)) {
+#endif
                 continue;
             }
             if (keyHashSet.count(oldH) == 0) {
@@ -6790,7 +6824,7 @@ namespace {
             std::vector<Rect> bounds;
             bool ready{false};
             bool hasStateKey{false};
-            naming::StateKey stateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+            naming::StateKey stateKey = naming::StateKey::fromParts("", nullptr, {});
         };
 
         std::unordered_map<uintptr_t, RemapTreeCacheEntry> treeCache;
@@ -6809,13 +6843,18 @@ namespace {
                 return it->second.ready;
             }
             RemapTreeCacheEntry entry;
-            entry.built = gui_tree::GUITreeFactory::buildFromXml(xml, pkg, cls);
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+            entry.built =
+                buildGuitreePreferApeSnapshotAndDomXml(xml, pkg, cls, apeLatestGUITreeSnapshot(stateHash));
+#else
+            entry.built = buildGUITreeFromCachedXmlPreferElement(xml, pkg, cls);
+#endif
             if (!entry.built.tree || !entry.built.dom) {
                 treeCache.emplace(stateHash, std::move(entry));
                 *out = &treeCache.find(stateHash)->second;
                 return false;
             }
-            if (!naming::NamingFactory::rebuildTree(toNaming, *entry.built.tree, entry.built.dom)) {
+            if (!safeRebuildTree(toNaming, *entry.built.tree, entry.built.dom)) {
                 treeCache.emplace(stateHash, std::move(entry));
                 *out = &treeCache.find(stateHash)->second;
                 return false;
@@ -6948,7 +6987,9 @@ namespace {
                     continue;
                 }
                 uintptr_t h = 0;
-                if (apeStateHashFromXmlWithNaming(rawActivity, kv.second, fromNaming, &h) && h != 0) {
+                gui_tree::GUITreePtr snap = apeLatestGUITreeSnapshot(kv.first);
+                const gui_tree::GUITreePtr *fnSnapPtr = snap ? &snap : nullptr;
+                if (apeStateHashFromXmlWithNaming(rawActivity, kv.second, fromNaming, &h, 0, nullptr, fnSnapPtr) && h != 0) {
                     fromNamingKeyHashCache.emplace(kv.first, h);
                 }
             }
@@ -6966,11 +7007,13 @@ namespace {
                     return (it != fromNamingKeyHashCache.end()) ? it->second : storedKeyHash;
                 };
                 const uintptr_t srcXml = xmlKeyForState(slot.sourceStateHash, slot.sourceKeyHash);
-                const uintptr_t tgtXml = xmlKeyForState(slot.targetStateHash, slot.targetKeyHash);
-                const bool inFocus = (focusOldKeyHashes->count(srcXml) != 0 ||
-                                      focusOldKeyHashes->count(tgtXml) != 0);
+                const bool inFocus = (focusOldKeyHashes->count(srcXml) != 0);
                 if (!inFocus) {
-                    apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot, nullptr);
+                    const std::string *slotSrcXmlSnapshot = slot.sourceXmlSnapshot.empty()
+                                                                ? nullptr
+                                                                : &slot.sourceXmlSnapshot;
+                    apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot,
+                                       slotSrcXmlSnapshot);
                     continue;
                 }
             }
@@ -7003,9 +7046,9 @@ namespace {
             slot.actionHash = newActionHash;
             // Try to preserve exact StateKey after naming remap (avoid hash-only refine/rollback).
             slot.hasSourceStateKey = false;
-            slot.sourceStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+            slot.sourceStateKey = naming::StateKey::fromParts("", nullptr, {});
             slot.hasTargetStateKey = false;
-            slot.targetStateKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+            slot.targetStateKey = naming::StateKey::fromParts("", nullptr, {});
             {
                 RemapTreeCacheEntry *entry = nullptr;
                 if (getTreeEntry(oldSrcStateHash, itSx->second, &entry) && entry && entry->built.tree) {
@@ -7039,7 +7082,11 @@ namespace {
             // Re-add into aggregation under the new key space.
             apePairAggAdd(slot);
             if (slot.valid) {
-                apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot, nullptr);
+                const std::string *slotSrcXmlSnapshot = slot.sourceXmlSnapshot.empty()
+                                                            ? nullptr
+                                                            : &slot.sourceXmlSnapshot;
+                apeEvidencePoolAdd(ApePairKey{slot.sourceKeyHash, slot.actionHash}, slot,
+                                   slotSrcXmlSnapshot);
             }
         }
 #endif
@@ -7052,106 +7099,135 @@ namespace {
 
     bool Model::coarsenActivityApeNamingIfNeeded(const std::string &activity) {
         const std::string actKey = naming::StateKey::canonicalActivityString(activity);
-        auto it = _apeNamingContext.find(actKey);
-        if (it == _apeNamingContext.end()) {
-            BDLOG("ape naming: coarsen skip activity=%s reason=no_ape_naming_context", activity.c_str());
+        ApeNamingAbstractionContext &ctx = _apeNamingContext[actKey];
+        naming::ActivityNamingManager &mgr2 = _apeStateNamingManager->activityManager();
+        naming::NamingPtr mgrCur = mgr2.getNaming(actKey);
+        if (!mgrCur || !mgrCur->getParent()) {
+            const char *detail = "missing_manager";
+            int fineness = -1;
+            const char *hasParent = "0";
+            if (mgrCur) {
+                detail = "at_root_no_parent";
+                fineness = mgrCur->getFineness();
+                hasParent = mgrCur->getParent() ? "1" : "0";
+            }
+            BDLOG("ape naming: coarsen skip activity=%s reason=missing_naming reason_detail=%s "
+                  "mgrCur=%p hasParent=%s fineness=%d",
+                  activity.c_str(), detail, static_cast<const void *>(mgrCur.get()), hasParent,
+                  fineness);
             return false;
         }
-        ApeNamingAbstractionContext &ctx = it->second;
-        naming::ActivityNamingManager &mgr2 = _apeStateNamingManager->activityManager();
-        naming::NamingPtr cur = mgr2.getNaming(actKey);
-        naming::NamingPtr prev = ctx.previousNamingBeforeRefine;
-        if (!cur || !prev) {
-            BDLOG("ape naming: coarsen skip activity=%s reason=missing_naming cur=%p prev=%p",
-                  activity.c_str(), static_cast<const void *>(cur.get()),
-                  static_cast<const void *>(prev.get()));
-            return false;
+        bool namingIndexWarmedThisCall = false;
+        std::unordered_set<uintptr_t> totalNewKeys;
+        for (const auto &p : ctx.oldKeyHashToNewKeyHashes) {
+            totalNewKeys.insert(p.second.begin(), p.second.end());
         }
         size_t affectedStateObservations = 0;
         for (const auto &p : ctx.oldKeyHashToObservationCount) {
             affectedStateObservations += p.second;
         }
-        std::unordered_set<uintptr_t> totalNewKeys;
-        bool overSplit = false;
-        for (const auto &p : ctx.oldKeyHashToNewKeyHashes) {
-            totalNewKeys.insert(p.second.begin(), p.second.end());
-            if (p.second.size() > static_cast<size_t>(BetaMaxSplitCount)) {
-                overSplit = true;
+        
+        constexpr int affectedThreshold = 8;
+        for (naming::NamingPtr tn = mgrCur; tn && tn->getParent(); tn = tn->getParent()) {
+            naming::NamingPtr rollbackFrom = tn;
+            const naming::NamingPtr targetParentNaming = tn->getParent();
+            naming::NamingPtr rollbackTo = targetParentNaming;
+            const int targetThreshold = apeMaxStatesForRefinementThreshold(tn);
+            uintptr_t triggerSource = 0;
+            if (ctx.triggerSourceKeyHash != 0 && tn->fingerprintString() == mgrCur->fingerprintString()) {
+                triggerSource = ctx.triggerSourceKeyHash;
             }
-        }
-        // Java batchAbstract-inspired global rollback gates:
-        // 1) affected old states threshold; 2) resulting refined targets threshold by fineness.
-        const int affectedThreshold = 8;
-        const int totalTypes = static_cast<int>(naming::namerTypesUsed().size());
-        const int fineness = cur->getFineness();
-        const int shift = std::max(0, totalTypes - fineness);
-        const int targetThreshold = std::min(8, std::max(1, 2 << shift));
-        const bool overAffected = affectedStateObservations > static_cast<size_t>(affectedThreshold);
-        const bool overTargets = totalNewKeys.size() > static_cast<size_t>(targetThreshold);
-        // Java batchAbstract filterTargets-like gate: focus on trigger source-key bucket.
-        const uintptr_t triggerSource = ctx.triggerSourceKeyHash;
-        size_t filteredAffected = 0;
-        size_t filteredTargets = 0;
-        // optimization 4 (align Java): recompute affectedStates/targets.size with the same
-        // originState.equals(oldState) filtering semantics used by optimization 3.
+            size_t filteredAffected = 0;
+            size_t filteredTargets = 0;
+            std::unordered_set<uintptr_t> filteredAffectedStateHashes;
+            // optimization 4 (align Java): recompute affectedStates/targets.size with the same
+            // originState.equals(oldState) filtering semantics used by optimization 3.
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-        {
             bool computed = false;
-            if (triggerSource != 0) {
+            if (triggerSource == 0) {
+                continue;
+            }
+            {
+                std::unordered_set<std::string> subtreeFingerprints;
+                collectNamingSubtreeFingerprints(tn, &subtreeFingerprints);
+                std::vector<StatePtr> indexedCandidates;
+                if (_graph) {
+                    _graph->apeCollectStatesByNamingFingerprints(subtreeFingerprints,
+                                                                 &indexedCandidates);
+                    if (indexedCandidates.empty() && _graph->stateSize() > 0 &&
+                        !namingIndexWarmedThisCall) {
+                        warmApeNamingGraphIndex();
+                        namingIndexWarmedThisCall = true;
+                        _graph->apeCollectStatesByNamingFingerprints(subtreeFingerprints,
+                                                                     &indexedCandidates);
+                    }
+                }
+                const bool useNamingIndex = !indexedCandidates.empty();
                 std::unordered_set<uintptr_t> distinctTargetKeys;
-                std::unordered_set<uintptr_t> affectedStateHashesForPrune;
-                for (const auto &sp : getGraph()->getStates()) {
+                auto considerState = [&](const StatePtr &sp) {
                     if (!sp) {
-                        continue;
+                        return;
                     }
                     auto apBa = sp->getActivityString();
                     const std::string aBa = (apBa && apBa.get())
                                                 ? naming::StateKey::canonicalActivityString(*apBa)
                                                 : std::string();
                     if (aBa != actKey) {
-                        continue;
+                        return;
                     }
                     const uintptr_t ghBa = sp->hash();
+                    if (useNamingIndex) {
+                        naming::StateKey stateSk = naming::StateKey::fromParts("", nullptr, {});
+                        if (!tryGetApeStateKey(ghBa, &stateSk, actKey)) {
+                            return;
+                        }
+                        if (subtreeFingerprints.find(stateSk.namingFingerprint()) ==
+                            subtreeFingerprints.end()) {
+                            return;
+                        }
+                    }
                     uintptr_t storedKeyH = 0;
-                    const bool haveStoredApeKey = tryGetApeStateKeyHash(ghBa, &storedKeyH);
+                    const bool haveStoredApeKey = tryGetApeStateKeyHash(ghBa, &storedKeyH, actKey);
                     const uintptr_t khBa = haveStoredApeKey ? storedKeyH : ghBa;
 
-                    // Approximate Java targetStates membership by checking whether this state belongs to
-                    // targetNaming (`cur`) key space (i.e., its StateKey under `cur` is in `totalNewKeys`).
                     auto itXml = _apeStateXmlByStateHash.find(ghBa);
                     const bool haveXml = (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty());
-                    // optimization 6: AssertStatesFewerThan.eval() skips missing XML.
-                    // To keep gate/affected aligned with predicate inputs, exclude states without XML.
                     if (!haveXml) {
-                        continue;
+                        return;
                     }
                     uintptr_t tgtKeyHash = 0;
                     uintptr_t oldH = 0;
-                    apeStateKeyPairFromXmlCoarsenPath(activity, itXml->second, cur, &tgtKeyHash, prev, &oldH);
-
-                    if (!totalNewKeys.empty()) {
-                        if (tgtKeyHash == 0 || totalNewKeys.count(tgtKeyHash) == 0) {
-                            continue;
-                        }
-                    }
+                    apeStateKeyPairFromXmlCoarsenPath(activity, itXml->second, tn,
+                                                      &tgtKeyHash, targetParentNaming, &oldH);
 
                     const bool affectedBa = (oldH == triggerSource);
 
                     if (affectedBa) {
                         filteredAffected++;
-                        affectedStateHashesForPrune.insert(ghBa);
-                        // Java targets = GUITreeBuilder.getStateKey(targetNaming, tree) for all trees in affected states.
+                        filteredAffectedStateHashes.insert(ghBa);
                         if (tgtKeyHash != 0) {
                             distinctTargetKeys.insert(tgtKeyHash);
                         } else if (haveStoredApeKey) {
                             distinctTargetKeys.insert(khBa);
                         }
                     }
+                };
+                if (useNamingIndex) {
+                    for (const auto &sp : indexedCandidates) {
+                        considerState(sp);
+                    }
+                } else {
+                    for (const auto &sp : getGraph()->getStates()) {
+                        considerState(sp);
+                    }
                 }
                 filteredTargets = distinctTargetKeys.size();
-                computed = true;
             }
-            if (!computed) {
+#else
+            if (triggerSource == 0) {
+                continue;
+            }
+            {
                 auto itFiltered = ctx.oldKeyHashToNewKeyHashes.find(triggerSource);
                 if (itFiltered != ctx.oldKeyHashToNewKeyHashes.end()) {
                     auto itCnt = ctx.oldKeyHashToObservationCount.find(triggerSource);
@@ -7159,383 +7235,57 @@ namespace {
                     filteredTargets = itFiltered->second.size();
                 }
             }
-        }
-#else
-        {
-            auto itFiltered = ctx.oldKeyHashToNewKeyHashes.find(triggerSource);
-            if (itFiltered != ctx.oldKeyHashToNewKeyHashes.end()) {
-                auto itCnt = ctx.oldKeyHashToObservationCount.find(triggerSource);
-                filteredAffected = (itCnt == ctx.oldKeyHashToObservationCount.end()) ? 0 : itCnt->second;
-                filteredTargets = itFiltered->second.size();
-            }
-        }
+        
 #endif
-
-        const bool overFilteredAffected = filteredAffected > static_cast<size_t>(affectedThreshold);
-        const bool overFilteredTargets = filteredTargets > static_cast<size_t>(targetThreshold);
-
-        // Pair-driven effectiveness check: if trigger source is observed but still unsplit
-        // and trigger targets remain divergent after refinement, rollback.
-        bool unresolvedTriggerPair = false;
-        size_t postRefineMaxFanoutForAction = 0;
-        auto itFiltered = ctx.oldKeyHashToNewKeyHashes.find(triggerSource);
-        if (triggerSource != 0 && itFiltered != ctx.oldKeyHashToNewKeyHashes.end()) {
-            const bool sourceSplit = itFiltered->second.size() > 1;
-            std::unordered_set<uintptr_t> mappedTargetUnion;
-            size_t coveredOldTargets = 0;
-            for (auto oldT : ctx.triggerTargetKeyHashes) {
-                auto itOld = ctx.oldKeyHashToNewKeyHashes.find(oldT);
-                if (itOld == ctx.oldKeyHashToNewKeyHashes.end()) {
-                    continue;
-                }
-                coveredOldTargets++;
-                mappedTargetUnion.insert(itOld->second.begin(), itOld->second.end());
+            const bool overFilteredAffected = filteredAffected > static_cast<size_t>(affectedThreshold);
+            const bool overFilteredTargets = filteredTargets > static_cast<size_t>(targetThreshold);
+            const bool shouldRollback = overFilteredAffected || overFilteredTargets;
+            if (!shouldRollback) {
+                continue;
             }
-            const size_t minEvidence = std::min<size_t>(ctx.triggerTargetCountAtRefine, 2);
-            if (!sourceSplit && coveredOldTargets >= minEvidence && mappedTargetUnion.size() >= minEvidence) {
-                unresolvedTriggerPair = true;
-            }
-        }
-        // Action-level transition-sample check (Java checkActionRefinement approximation):
-        // estimate post-refine fan-out via old->new key mapping evidence.
-        if (ctx.triggerActionHash != 0 && ctx.triggerSourceKeyHash != 0) {
-            auto itSrcMap = ctx.oldKeyHashToNewKeyHashes.find(ctx.triggerSourceKeyHash);
-            if (itSrcMap != ctx.oldKeyHashToNewKeyHashes.end() && !itSrcMap->second.empty()) {
-                std::unordered_set<uintptr_t> mappedTargetUnion;
-                size_t coveredOldTargets = 0;
-                for (auto oldT : ctx.triggerTargetKeyHashes) {
-                    auto itOld = ctx.oldKeyHashToNewKeyHashes.find(oldT);
-                    if (itOld == ctx.oldKeyHashToNewKeyHashes.end()) {
-                        continue;
-                    }
-                    coveredOldTargets++;
-                    mappedTargetUnion.insert(itOld->second.begin(), itOld->second.end());
-                }
-                postRefineMaxFanoutForAction = mappedTargetUnion.size();
-                const size_t minEvidence = std::min<size_t>(ctx.triggerTargetCountAtRefine, 2);
-                // Evidence guard: only fail when source and targets both have enough remap evidence.
-                if (ctx.triggerTargetCountAtRefine > 0 &&
-                    itSrcMap->second.size() >= minEvidence &&
-                    coveredOldTargets >= minEvidence &&
-                    postRefineMaxFanoutForAction >= ctx.triggerTargetCountAtRefine) {
-                    unresolvedTriggerPair = true;
-                }
-            }
-        }
-        const bool hasTriggerSource = (triggerSource != 0);
-        // When originState is available, align batchAbstract rollback gate to Java:
-        // rollback only if (affectedStates.size > affectedThreshold) OR (targets.size > threshold).
-        bool shouldRollback = false;
-        if (hasTriggerSource) {
-            shouldRollback = overFilteredAffected || overFilteredTargets || unresolvedTriggerPair;
-        } else {
-            shouldRollback = overSplit || overAffected || overTargets;
-        }
-        if (!shouldRollback && shouldLogApeDiagSample(std::string("coarsen_gate_no_rollback#") + actKey, 10)) {
-            BLOG("ape naming: coarsen-gate activity=%s rollback=0 hasTriggerSource=%d triggerSource=%lu "
-                 "overSplit=%d overAffected=%d overTargets=%d overFilteredAffected=%d overFilteredTargets=%d "
-                 "unresolvedTriggerPair=%d affected=%zu totalNew=%zu filteredAffected=%zu filteredTargets=%zu "
-                 "triggerTargets=%zu postFanout=%zu targetThreshold=%d",
-                 activity.c_str(), hasTriggerSource ? 1 : 0, (unsigned long)triggerSource,
-                 overSplit ? 1 : 0, overAffected ? 1 : 0, overTargets ? 1 : 0,
-                 overFilteredAffected ? 1 : 0, overFilteredTargets ? 1 : 0,
-                 unresolvedTriggerPair ? 1 : 0, affectedStateObservations, totalNewKeys.size(),
-                 filteredAffected, filteredTargets, ctx.triggerTargetCountAtRefine,
-                 postRefineMaxFanoutForAction, targetThreshold);
-        }
-        if (shouldRollback) {
-            std::string fpFiner = cur->fingerprintString();
-            std::unordered_set<uintptr_t> affectedStateHashesForBlacklist;
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-            // Compute affected state-hash set with the same filtering semantics as batchAbstract
-            // (Java filterTargets(originState.equals(oldState))).
-            for (const auto &kv : _apeStateXmlByStateHash) {
-                const uintptr_t ghBa = kv.first;
-                const std::string &xml = kv.second;
-                if (xml.empty()) {
-                    continue;
-                }
-                naming::StateKey storedKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                if (!tryGetApeStateKey(ghBa, &storedKey)) {
-                    continue;
-                }
-                if (storedKey.activity() != actKey) {
-                    continue;
-                }
-                uintptr_t tgtKeyHash = 0;
-                uintptr_t prevKeyHash = 0;
-                apeStateKeyPairFromXmlCoarsenPath(activity, xml, cur, &tgtKeyHash, prev, &prevKeyHash);
-                if (!totalNewKeys.empty() && totalNewKeys.count(tgtKeyHash) == 0) {
-                    continue;
-                }
-
-                bool affectedBa = false;
-                if (triggerSource != 0) {
-                    affectedBa = (prevKeyHash == triggerSource);
-                } else {
-                    // Fallback when triggerSource is missing: use old->new mapping evidence.
-                    uintptr_t khBaXml = (prevKeyHash != 0) ? prevKeyHash : storedKey.hash();
-                    for (const auto &p : ctx.oldKeyHashToNewKeyHashes) {
-                        if (p.first == khBaXml) {
-                            affectedBa = true;
-                            break;
-                        }
-                        for (uintptr_t nh : p.second) {
-                            if (nh == khBaXml) {
-                                affectedBa = true;
-                                break;
-                            }
-                        }
-                        if (affectedBa) {
-                            break;
-                        }
-                    }
-                }
-                if (affectedBa) {
-                    affectedStateHashesForBlacklist.insert(ghBa);
-                }
-            }
-#endif
-            apeBlacklistFinerNamingOnRollback(activity, cur, ctx, affectedStateHashesForBlacklist);
+            naming::Nameing rollbackFrom = tn;
+            naming::NamingPtr rollbackTo = targetParentNaming;
+            std::string fpFiner = rollbackFrom->fingerprintString();
+            std::unordered_set<uintptr_t> affectedStateHashesForBlacklist = filteredAffectedStateHashes;
+            apeBlacklistFinerNamingOnRollback(activity, rollbackFrom, ctx, affectedStateHashesForBlacklist);
             {
                 static std::atomic<uint64_t> g_coarsen_chain{0};
                 const uint64_t cn = ++g_coarsen_chain;
                 if (cn <= 10 || (cn % 128) == 0) {
                     BDLOG(
-                        "ape naming: chain coarsen rollback Abstract update act=%s cur=%p prev=%p "
+                        "ape naming: chain coarsen rollback Abstract update act=%s rollbackFrom=%p rollbackTo=%p "
                         "trigExact=%d trigSrcH=%lu",
-                        actKey.c_str(), static_cast<const void *>(cur.get()),
-                        static_cast<const void *>(prev.get()), ctx.triggerSourceKeyExact ? 1 : 0,
+                        actKey.c_str(), static_cast<const void *>(rollbackFrom.get()),
+                        static_cast<const void *>(rollbackTo.get()),
+                        ctx.triggerSourceKeyExact ? 1 : 0,
                         static_cast<unsigned long>(ctx.triggerSourceKeyHash));
                 }
             }
-            if (ctx.triggerSourceKeyExact) {
-                _apeStateNamingManager->updateNamingWithStateKey(
-                    actKey, naming::NamingUpdateKind::Abstract, cur, prev, ctx.triggerSourceKey);
-            } else {
-                _apeStateNamingManager->updateNamingWithStateHash(
-                    actKey, naming::NamingUpdateKind::Abstract, cur, prev, ctx.triggerSourceKeyHash);
-            }
+            _apeStateNamingManager->updateNamingWithStateKey(
+                actKey, naming::NamingUpdateKind::Abstract, rollbackFrom, rollbackTo,
+                ctx.triggerSourceKey);
             invalidateApeGraphStateKeyDedupMap();
-            // removeConflictPredicates(aligned): only evaluate constraints whose predicates intersect affectedGUITrees.
-            // For now we approximate affectedGUITrees as affected state-hashes (when available under pugixml build).
-            std::unordered_set<uintptr_t> affectedStateHashesForPrune;
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-            // We approximate affectedGUITrees using exactly the GUI-tree XML entries we cache for predicate eval.
-            // This better matches Java's affectedGUITrees set fed into removeConflictPredicates.
-            for (const auto &kv : _apeStateXmlByStateHash) {
-                const uintptr_t ghBa = kv.first;
-                const std::string &xml = kv.second;
-                if (xml.empty()) {
-                    continue;
-                }
-                naming::StateKey storedKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
-                if (!tryGetApeStateKey(ghBa, &storedKey)) {
-                    continue;
-                }
-                if (storedKey.activity() != actKey) {
-                    continue;
-                }
-
-                uintptr_t tgtKeyHash = 0;
-                uintptr_t prevKeyHash = 0;
-                apeStateKeyPairFromXmlCoarsenPath(activity, xml, cur, &tgtKeyHash, prev, &prevKeyHash);
-                if (!totalNewKeys.empty() && totalNewKeys.count(tgtKeyHash) == 0) {
-                    continue;
-                }
-
-                bool affectedBa = false;
-                if (triggerSource != 0) {
-                    affectedBa = (prevKeyHash == triggerSource);
-                } else {
-                    // Fallback when triggerSource is missing: match against old->new mapping evidence.
-                    uintptr_t khBaXml = (prevKeyHash != 0) ? prevKeyHash : storedKey.hash();
-                    for (const auto &p : ctx.oldKeyHashToNewKeyHashes) {
-                        if (p.first == khBaXml) {
-                            affectedBa = true;
-                            break;
-                        }
-                        for (uintptr_t nh : p.second) {
-                            if (nh == khBaXml) {
-                                affectedBa = true;
-                                break;
-                            }
-                        }
-                        if (affectedBa) {
-                            break;
-                        }
-                    }
-                }
-
-                if (affectedBa) {
-                    affectedStateHashesForPrune.insert(ghBa);
-                }
-            }
-#endif
-            {
-                // NamingFactory.batchAbstract: after rollback to targetParentNaming, add AssertStatesFewerThan
-                // (threshold from finer targetNaming fineness; trees = affected in rollback bucket).
-                std::vector<uintptr_t> batchAbstractHashes;
-                batchAbstractHashes.reserve(64);
-                // Align Java "distinct StateKeys" nature: keep one representative state hash per APE key hash.
-                std::unordered_set<uintptr_t> seenApeKeyHashes;
-                const uintptr_t originOldKeyHash = ctx.triggerSourceKeyHash;
-                // Java AssertStatesFewerThan stops once distinct StateKeys size > threshold.
-                const int totalTypesBa = static_cast<int>(naming::namerTypesUsed().size());
-                const int shiftBa = std::max(0, totalTypesBa - cur->getFineness());
-                const int thrBa = std::min(8, std::max(1, 2 << shiftBa));
-                // thrBa is also passed into AssertStatesFewerThan below.
-                // Fallback（当我们无法基于 XML 计算 oldState 时）沿用优化 2：
-                // keep only target (new) key hashes remapped from the trigger source bucket.
-                std::unordered_set<uintptr_t> allowedNewKeyHashes;
-                if (originOldKeyHash != 0) {
-                    auto itNew = ctx.oldKeyHashToNewKeyHashes.find(originOldKeyHash);
-                    if (itNew != ctx.oldKeyHashToNewKeyHashes.end()) {
-                        // Strict originState semantics (Java filterTargets):
-                        // if a new key hash remaps from multiple different old key hashes, we cannot
-                        // guarantee it came from the originState bucket => drop it to avoid false affected.
-                        std::unordered_map<uintptr_t, size_t> newKeyToOldCount;
-                        for (const auto &p : ctx.oldKeyHashToNewKeyHashes) {
-                            for (uintptr_t nh : p.second) {
-                                newKeyToOldCount[nh]++;
-                            }
-                        }
-                        for (uintptr_t nh : itNew->second) {
-                            if (newKeyToOldCount[nh] == 1) {
-                                allowedNewKeyHashes.insert(nh);
-                            }
-                        }
-                    }
-                }
-                for (const auto &sp : getGraph()->getStates()) {
-                    if (!sp) {
-                        continue;
-                    }
-                    auto apBa = sp->getActivityString();
-                    const std::string aBa = (apBa && apBa.get())
-                                                ? naming::StateKey::canonicalActivityString(*apBa)
-                                                : std::string();
-                    if (aBa != actKey) {
-                        continue;
-                    }
-                    const uintptr_t ghBa = sp->hash();
-                    uintptr_t kBaH = 0;
-                    const bool haveStoredApeKey = tryGetApeStateKeyHash(ghBa, &kBaH);
-                    const uintptr_t khBa = haveStoredApeKey ? kBaH : ghBa;
-                    // Optimization 5: AssertStatesFewerThan distinct-key must match Java,
-                    // i.e. distinct StateKeys computed under `prev` (targetParentNaming).
-                    // Default to stored APE key hash; if we can rebuild oldState under `prev`,
-                    // we'll overwrite this with `oldState.hash()` in XML-space.
-                    uintptr_t dedupKey = khBa;
-                    // Keep batchAbstract `affectedStates` consistent with rollback gate (optimization 4):
-                    // approximate Java `targetStates` membership by checking whether this concrete state belongs
-                    // to `targetNaming` (`cur`) key space, i.e. StateKey under `cur` is within `totalNewKeys`.
-                    uintptr_t tgtKeyHashForMembership = 0;
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-                    {
-                        auto itXml = _apeStateXmlByStateHash.find(ghBa);
-                        const bool haveXml = (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty());
-                        if (haveXml) {
-                            uintptr_t tgtH = 0;
-                            if (apeStateHashFromXmlWithNaming(activity, itXml->second, cur, &tgtH)) {
-                                tgtKeyHashForMembership = tgtH;
-                            }
-                        }
-                    }
-#else
-                    tgtKeyHashForMembership = dedupKey;
-#endif
-                    if (!totalNewKeys.empty() &&
-                        (tgtKeyHashForMembership == 0 || totalNewKeys.count(tgtKeyHashForMembership) == 0)) {
-                        continue;
-                    }
-                    bool affectedBa = false;
-
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-                    if (originOldKeyHash != 0) {
-                        // Java filterTargets(originState.equals(oldState)):
-                        // recompute oldState under prev using cached XML.
-                        auto itXml = _apeStateXmlByStateHash.find(ghBa);
-                        if (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty()) {
-                            uintptr_t oldH = 0;
-                            if (apeStateHashFromXmlWithNaming(activity, itXml->second, prev, &oldH)) {
-                                dedupKey = oldH;
-                                affectedBa = (oldH == originOldKeyHash);
-                            }
-                        }
-                    } else
-#endif
-                    {
-                        // Fallback（当 originOldKeyHash 不可用 / 或无 pugixml 时）沿用优化 2：
-                        // match against stored APE key hash using old->new mapping evidence.
-                        if (!haveStoredApeKey) {
-                            continue;
-                        }
-                        // Remap khBa to XML-space for consistent comparison with
-                        // ctx.oldKeyHashToNewKeyHashes / allowedNewKeyHashes (both XML-space).
-                        uintptr_t khBaXml = khBa;
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-                        {
-                            auto itXml2 = _apeStateXmlByStateHash.find(ghBa);
-                            if (itXml2 != _apeStateXmlByStateHash.end() && !itXml2->second.empty()) {
-                                uintptr_t xmH = 0;
-                                if (apeStateHashFromXmlWithNaming(activity, itXml2->second, prev, &xmH) &&
-                                    xmH != 0) {
-                                    khBaXml = xmH;
-                                    dedupKey = xmH;
-                                }
-                            }
-                        }
-#endif
-                        if (!allowedNewKeyHashes.empty()) {
-                            // Prefer strict "new target key hashes only" semantics.
-                            affectedBa = allowedNewKeyHashes.count(khBaXml) != 0;
-                        } else {
-                            for (const auto &p : ctx.oldKeyHashToNewKeyHashes) {
-                                if (p.first == khBaXml) {
-                                    affectedBa = true;
-                                    break;
-                                }
-                                for (uintptr_t nh : p.second) {
-                                    if (nh == khBaXml) {
-                                        affectedBa = true;
-                                        break;
-                                    }
-                                }
-                                if (affectedBa) {
-                                    break;
-                                }
-                            }
-                        }
-                    }
-                    if (!affectedBa) continue;
-
-                    if (seenApeKeyHashes.insert(dedupKey).second) {
-                        batchAbstractHashes.push_back(ghBa);
-                        // Early stop when distinct-count would already fail predicate.
-                        if (seenApeKeyHashes.size() > static_cast<size_t>(thrBa)) {
-                            break;
-                        }
-                    }
-                }
-                (void)batchAbstractHashes;
-            }
+            std::unordered_set<uintptr_t> affectedStateHashsForPrune = filteredAffectedStateHashes;
+            constexpr bool rebuiltViaHistory = false;
             std::vector<uintptr_t> repKeyHashes;
             std::unordered_set<uintptr_t> focusOldKeyHashes;
-            // Q8 (local remap): cur is in refined key space; use observed old-new mismatch
-            // to identify which refined key hashes should be remapped back.
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-            if (!affectedStateHashesForPrune.empty()) {
-                for (uintptr_t sh : affectedStateHashesForPrune) {
+            if (!rebuiltViaHistory && !filteredAffectedStateHashes.empty()) {
+                for (uintptr_t sh : affectedStateHashsForPrune) {
                     auto itXml = _apeStateXmlByStateHash.find(sh);
                     if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
                         continue;
                     }
                     uintptr_t oldH = 0;
                     uintptr_t newH = 0;
-                    if (!apeStateHashFromXmlWithNaming(activity, itXml->second, cur, &oldH) ||
-                        !apeStateHashFromXmlWithNaming(activity, itXml->second, prev, &newH)) {
-                        continue;
+                    if (!apeStateHashFromXmlWithTwoNamings(activity, itXml->second, rollbackFrom, &oldH,
+                                                           rollbackTo, &newH)) {
+                        gui_tree::GUITreePtr pairSnap = apeLatestGUITreeSnapshot(sh);
+                        const gui_tree::GUITreePtr *pairSnapPtr = pairSnap ? &pairSnap : nullptr;
+                        if (!apeStateHashFromXmlWithTwoNamings(activity, itXml->second, rollbackFrom, &oldH,
+                                                               rollbackTo, &newH, pairSnapPtr)) {
+                            continue;
+                        }
                     }
                     if (oldH != newH) {
                         focusOldKeyHashes.insert(oldH);
@@ -7543,68 +7293,63 @@ namespace {
                 }
             }
 #endif
-            repKeyHashes.reserve(8);
-            for (uintptr_t h : focusOldKeyHashes) {
-                repKeyHashes.push_back(h);
-                if (repKeyHashes.size() >= 8) {
-                    break;
+            if (!rebuiltViaHistory) {
+                repKeyHashes.reserve(8);
+                if (!focusOldKeyHashes.empty()) {
+                    for (uintptr_t h : focusOldKeyHashes) {
+                        repKeyHashes.push_back(h);
+                        if (repKeyHashes.size() >= 8) {
+                            break;
+                        }
+                    }
+                } else if (ctx.triggerSourceKeyHash != 0) {
+                    repKeyHashes.push_back(ctx.triggerSourceKeyHash);
                 }
+                if (!repKeyHashes.empty()) {
+                    rebuildApeStateRepresentativesForKeyHashes(activity, rollbackFrom, repKeyHashes, 1);
+                }
+                if (!focusOldKeyHashes.empty()) {
+                    remapApeTransitionAggregationForActivity(activity, rollbackFrom, rollbackTo,
+                                                             &focusOldKeyHashes);
+                }
+                pruneStaleApeStatesForActivity(actKey, fpFiner, nullptr);
             }
-            if (!repKeyHashes.empty()) {
-                rebuildApeStateRepresentativesForKeyHashes(activity, cur, repKeyHashes, 1);
+            if (!affectedStateHashsForPrune.empty()) {
+                removeConflictingApeActionRefinementPredicates(activity, rollbackTo,
+                                                               &affectedStateHashsForPrune);
+                removeConflictingApeSourceDivergentPredicates(activity, rollbackTo,
+                                                              &affectedStateHashsForPrune);
+                removeConflictingApeStatesFewerThanPredicates(activity, rollbackTo,
+                                                              &affectedStateHashsForPrune);
+                addApeStatesFewerThanPredicate(activity, affectedStateHashsForPrune, targetThreshold);
             }
-            if (!focusOldKeyHashes.empty()) {
-                remapApeTransitionAggregationForActivity(activity, cur, prev, &focusOldKeyHashes);
-            }
-            pruneStaleApeStatesForActivity(actKey, fpFiner,
-                                           affectedStateHashesForPrune.empty() ? nullptr
-                                                                               : &affectedStateHashesForPrune);
             _apeNamingCoarseningBlacklist.insert(std::make_pair(actKey, fpFiner));
-            if (ctx.triggerSourceKeyHashOriginal != 0 || ctx.triggerActionHash != 0) {
-                _apeRefinePairBlacklist[actKey].insert(
-                    ApePairKey{ctx.triggerSourceKeyHashOriginal, ctx.triggerActionHash});
-            }
             apeCapApeNamingCoarsenAndRefineBlacklists();
-            BLOG("ape naming: coarsen activity=%s rollback split=%d overAffected=%d overTargets=%d "
-                "overFilteredAffected=%d overFilteredTargets=%d unresolvedTriggerPair=%d "
-                "affectedStates=%zu totalNew=%zu filteredAffected=%zu filteredTargets=%zu triggerTargets=%zu postFanout=%zu "
-                "targetThreshold=%d triggerSource=%lu fp=%s",
-                activity.c_str(), overSplit ? 1 : 0, overAffected ? 1 : 0, overTargets ? 1 : 0,
-                overFilteredAffected ? 1 : 0, overFilteredTargets ? 1 : 0, unresolvedTriggerPair ? 1 : 0,
-                affectedStateObservations, totalNewKeys.size(), filteredAffected, filteredTargets,
-                ctx.triggerTargetCountAtRefine,
-                postRefineMaxFanoutForAction, targetThreshold, (unsigned long)triggerSource,
-                fpFiner.c_str());
+            BDLOG("ape naming: coarsen activity=%s rollback overFilteredAffected=%d overFilteredTargets=%d "
+                  "affectedStates=%zu totalNew=%zu filteredAffected=%zu filteredTargets=%zu rebuilt=%d "
+                  "targetThreshold=%d triggerSource=%lu fp=%s",
+                  activity.c_str(), overFilteredAffected ? 1 : 0, overFilteredTargets ? 1 : 0,
+                  affectedStateObservations, totalNewKeys.size(), filteredAffected, filteredTargets,
+                  rebuiltViaHistory ? 1 : 0, targetThreshold, (unsigned long)triggerSource,
+                  fpFiner.c_str());
             ctx.oldKeyHashToNewKeyHashes.clear();
             ctx.oldKeyHashToObservationCount.clear();
             ctx.previousNamingBeforeRefine = nullptr;
             ctx.previousNamingFingerprintBeforeRefine.clear();
             ctx.triggerSourceKeyHash = 0;
-            ctx.triggerSourceKeyHashOriginal = 0;
             ctx.triggerSourceKeyExact = false;
-            ctx.triggerSourceKey = naming::StateKey::fromFallbackXmlStringHash("", 0);
+            ctx.triggerSourceKey = naming::StateKey::fromParts("", nullptr, {});
             ctx.triggerActionHash = 0;
             ctx.triggerTargetKeyHashes.clear();
             ctx.triggerTargetCountAtRefine = 0;
             ctx.stateCountAtLastNamingRefinement = getApeStateCountByActivityAndNamingFingerprint(
-                actKey, prev ? prev->fingerprintString() : std::string());
+                actKey, rollbackTo ? rollbackTo->fingerprintString() : std::string());
             ApeActivityRebuildStats &st = _apeRebuildStatsByActivity[actKey];
             ++st.consecutiveRollbacks;
-            (void)apeLocalRebuildFromHistoryIfNeeded(actKey, "rollback");
-            
             return true;
         }
         _apeRebuildStatsByActivity[actKey].consecutiveRollbacks = 0;
-        BDLOG(
-            "ape naming: coarsen keep refinement activity=%s rollback=0 triggerSource=%lu "
-            "overSplit=%d overAffected=%d overTargets=%d overFilteredAffected=%d overFilteredTargets=%d "
-            "unresolvedTriggerPair=%d affectedObs=%zu totalNewKeys=%zu filteredAffected=%zu filteredTargets=%zu "
-            "triggerTargets=%zu postFanout=%zu targetThreshold=%d fineness=%d",
-            activity.c_str(), (unsigned long)triggerSource, overSplit ? 1 : 0, overAffected ? 1 : 0,
-            overTargets ? 1 : 0, overFilteredAffected ? 1 : 0, overFilteredTargets ? 1 : 0,
-            unresolvedTriggerPair ? 1 : 0, affectedStateObservations, totalNewKeys.size(), filteredAffected,
-            filteredTargets, ctx.triggerTargetCountAtRefine, postRefineMaxFanoutForAction, targetThreshold,
-            fineness);
+        BDLOG("ape naming: coarsen keep refinement activity=%s rollback=0", activity.c_str());
         return false;
     }
 
