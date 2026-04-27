@@ -1914,7 +1914,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4261709, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4270900, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -2604,7 +2604,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             }
 
             if (_apeStateNamingManager) {
-                naming::ActivityNamingManager mgrGate = _apeStateNamingManager->activityManager();
+                naming::ActivityNamingManager &mgrGate = _apeStateNamingManager->activityManager();
                 naming::NamingPtr curGate = mgrGate.getNaming(actKeyCollected);
                 if (!curGate || !curGate->getParent()) {
                     BDLOG("ape naming: under-abstracted-check activity=%s rollbacks=0 changed=0 "
@@ -2987,7 +2987,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         naming::NameletPtr parNL = anchorNL->getParent();
                         if (parNL && parNL->getNamerPtr()) {
                             std::vector<naming::NamerPtr> upperRepl;
-                            for (const naming::NamerPtr refined : lat.sortedAbove(parNL->getNamerPtr())) {
+                            for (const naming::NamerPtr &refined : lat.sortedAbove(parNL->getNamerPtr())) {
                                 if (!refined) {
                                     continue;
                                 }
@@ -3016,7 +3016,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     }
                 }
 
-                for (const naming::NamerPtr refined : lat.sortedAbove(curNam)) {
+                for (const naming::NamerPtr &refined : lat.sortedAbove(curNam)) {
                     if (!refined) {
                         continue;
                     }
@@ -4144,7 +4144,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
 
         auto &dq = _apeGuiTreeSnapshotsByStateHash[stateHash];
         dq.push_back(std::move(copy));
-        while (!dq.empty() && dq.size() > kMaxApeGuiTreeSnapshotsPerState) {
+        while (dq.size() > kMaxApeGuiTreeSnapshotsPerState) {
             if (_apeStateNamingManager && dq.front()) {
                 _apeStateNamingManager->releaseTreeCache(*dq.front());
             }
@@ -4764,7 +4764,7 @@ namespace {
                 continue;
             }
             const naming::NamingPtr nPred = namingForRollbackPredicateEval(built.tree);
-            if (!safeRebuildTree(nPred, *built.tree, built.dom)) {
+            if (!nPred || !safeRebuildTree(nPred, *built.tree, built.dom)) {
                 continue;
             }
             std::vector<gui_tree::GUITreeNode *> po;
@@ -5091,7 +5091,7 @@ namespace {
                 if (te.sourceKeyHash != srcKeyHash || te.actionHash != actionHash || te.actionIdentity == 0) {
                     continue;
                 }
-                if (te.transitionSeq > maxSeq) {
+                if (te.transitionSeq >= maxSeq) {
                     maxSeq = te.transitionSeq;
                     resolved = te.actionIdentity;
                 }
@@ -5611,7 +5611,7 @@ namespace {
             const std::vector<int> &resolvedIdsB =
                 branchBTransitions.empty() ? kEmptyResolvedIds : branchBTransitions.back().resolvedNodeStableIds;
             if (!apeResolveTargetXPathNameLikeJava(activity, cur, xmlA, resolvedIdsA, &targetXPathName,
-                                                   &targetNameNamer, snapXmlA) ||
+                                                   &targetNameNamer, snapXmlA) &&
                 !apeResolveTargetXPathNameLikeJava(activity, cur, xmlB, resolvedIdsB, &targetXPathName,
                                                    &targetNameNamer, snapXmlB)) {
                 BDLOG("ape naming: skip action refinement activity=%s reason=target_name_unresolved "
@@ -6574,7 +6574,7 @@ namespace {
                     continue;
                 }    
                 const bool inAffected = isInAffectedSet(xml, oldH, sh);
-                if (!inAffected && oldH != newH) {
+                if (inAffected && oldH != newH) {
                     ctx.oldKeyHashToNewKeyHashes[oldH].insert(newH);
                     ctx.oldKeyHashToObservationCount[oldH]++;
                     focusOldKeyHashes.insert(oldH);
@@ -7040,6 +7040,7 @@ namespace {
             slot.sourceKeyHash = newSrcKeyHash;
             slot.targetKeyHash = newTgtKeyHash;
             slot.actionHash = newActionHash;
+            slot.actionIdentity = 0;
             // Try to preserve exact StateKey after naming remap (avoid hash-only refine/rollback).
             slot.hasSourceStateKey = false;
             slot.sourceStateKey = naming::StateKey::fromParts("", nullptr, {});
@@ -7125,9 +7126,7 @@ namespace {
         
         constexpr int affectedThreshold = 8;
         for (naming::NamingPtr tn = mgrCur; tn && tn->getParent(); tn = tn->getParent()) {
-            naming::NamingPtr rollbackFrom = tn;
             const naming::NamingPtr targetParentNaming = tn->getParent();
-            naming::NamingPtr rollbackTo = targetParentNaming;
             const int targetThreshold = apeMaxStatesForRefinementThreshold(tn);
             uintptr_t triggerSource = 0;
             if (ctx.triggerSourceKeyHash != 0 && tn->fingerprintString() == mgrCur->fingerprintString()) {
@@ -7139,7 +7138,6 @@ namespace {
             // optimization 4 (align Java): recompute affectedStates/targets.size with the same
             // originState.equals(oldState) filtering semantics used by optimization 3.
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-            bool computed = false;
             if (triggerSource == 0) {
                 continue;
             }
@@ -7235,10 +7233,13 @@ namespace {
 #endif
             const bool overFilteredAffected = filteredAffected > static_cast<size_t>(affectedThreshold);
             const bool overFilteredTargets = filteredTargets > static_cast<size_t>(targetThreshold);
+            
             const bool shouldRollback = overFilteredAffected || overFilteredTargets;
             if (!shouldRollback) {
                 continue;
             }
+            naming::NamingPtr rollbackFrom = tn;
+            naming::NamingPtr rollbackTo = targetParentNaming;
             std::string fpFiner = rollbackFrom->fingerprintString();
             std::unordered_set<uintptr_t> affectedStateHashesForBlacklist = filteredAffectedStateHashes;
             apeBlacklistFinerNamingOnRollback(activity, rollbackFrom, ctx, affectedStateHashesForBlacklist);
@@ -7272,14 +7273,13 @@ namespace {
                     }
                     uintptr_t oldH = 0;
                     uintptr_t newH = 0;
-                    if (!apeStateHashFromXmlWithTwoNamings(activity, itXml->second, rollbackFrom, &oldH,
-                                                           rollbackTo, &newH)) {
-                        gui_tree::GUITreePtr pairSnap = apeLatestGuiTreeSnapshot(sh);
-                        const gui_tree::GUITreePtr *pairSnapPtr = pairSnap ? &pairSnap : nullptr;
-                        if (!apeStateHashFromXmlWithTwoNamings(activity, itXml->second, rollbackFrom, &oldH,
-                                                               rollbackTo, &newH, pairSnapPtr)) {
-                            continue;
-                        }
+                    gui_tree::GUITreePtr rbSnap = this->apeLatestGuiTreeSnapshot(sh);
+                    const gui_tree::GUITreePtr *rbSnapPtr = rbSnap ? &rbSnap : nullptr;
+                    if (!apeStateHashFromXmlWithNaming(activity, itXml->second, rollbackFrom, &oldH, 0, nullptr,
+                                                       rbSnapPtr) ||
+                        !apeStateHashFromXmlWithNaming(activity, itXml->second, rollbackTo, &newH, 0, nullptr,
+                                                       rbSnapPtr)) {
+                        continue;
                     }
                     if (oldH != newH) {
                         focusOldKeyHashes.insert(oldH);
