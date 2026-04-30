@@ -41,6 +41,62 @@ namespace {
         return c;
     }
 
+    std::string summarizeStateWidgets(const State &s, size_t limit = 3) {
+        std::ostringstream oss;
+        size_t n = 0;
+        for (const auto &w : s.getWidgets()) {
+            if (!w) {
+                continue;
+            }
+            if (n != 0) {
+                oss << " | ";
+            }
+            oss << "#" << n << "=" << w->getClass() << ":" << w->getResourceID();
+            ++n;
+            if (n >= limit) {
+                break;
+            }
+        }
+        if (n == 0) {
+            return std::string("(empty)");
+        }
+        if (s.getWidgets().size() > n) {
+            oss << " | ... total=" << s.getWidgets().size();
+        }
+        return oss.str();
+    }
+
+    std::string summarizeStateActions(const State &s, size_t limit = 3) {
+        std::ostringstream oss;
+        size_t n = 0;
+        for (const auto &a : s.getActions()) {
+            if (!a) {
+                continue;
+            }
+            if (n != 0) {
+                oss << " | ";
+            }
+            const WidgetPtr tgt = a->getTarget();
+            oss << "#" << n << "=" << static_cast<int>(a->getActionType()) << ":";
+            if (tgt) {
+                oss << tgt->getClass() << ":" << tgt->getResourceID();
+            } else {
+                oss << "(no-target)";
+            }
+            ++n;
+            if (n >= limit) {
+                break;
+            }
+        }
+        if (n == 0) {
+            return std::string("(empty)");
+        }
+        if (s.getActions().size() > n) {
+            oss << " | ... total=" << s.getActions().size();
+        }
+        return oss.str();
+    }
+
 } // namespace
 
     State::State()
@@ -508,12 +564,26 @@ namespace {
         // Same state hash (e.g. APE) but UI widget count changed: per-widget hash refill cannot align.
         if (hasNoDetail() && this->_widgets.size() != copy->_widgets.size()) {
             const size_t nwWas = this->_widgets.size();
+            const std::string canonWidgetSummary = summarizeStateWidgets(*this);
+            const std::string freshWidgetSummary = summarizeStateWidgets(*copy);
+            const std::string canonActionSummary = summarizeStateActions(*this);
+            const std::string freshActionSummary = summarizeStateActions(*copy);
             this->_widgets = copy->_widgets;
             this->_mergedWidgets = copy->_mergedWidgets;
             _hasNoDetail = false;
             BDLOG(
                 "fillDetails: widget list resync from fresh (count mismatch) from=%s nw_was=%zu nw_fresh=%zu",
                 fromTag, nwWas, copy->_widgets.size());
+            BDLOG(
+                "fillDetails: mismatch details from=%s canonId=%d freshId=%d act=%s/%s "
+                "stateHash=%" PRIuPTR "/%" PRIuPTR " actions=%zu/%zu",
+                fromTag, getIdi(), copy->getIdi(), actCanon.c_str(), actFresh.c_str(),
+                static_cast<uintptr_t>(stCanon), static_cast<uintptr_t>(stFresh),
+                this->_actions.size(), copy->_actions.size());
+            BDLOG("fillDetails: mismatch widgets canon=%s fresh=%s",
+                canonWidgetSummary.c_str(), freshWidgetSummary.c_str());
+            BDLOG("fillDetails: mismatch actions canon=%s fresh=%s",
+                canonActionSummary.c_str(), freshActionSummary.c_str());
             return;
         }
 

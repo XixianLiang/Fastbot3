@@ -30,6 +30,7 @@
 #include <atomic>
 #include <deque>
 #include <limits>
+#include <sstream>
 #include <set>
 #include <unordered_map>
 #include <unordered_set>
@@ -53,6 +54,70 @@ namespace {
     std::atomic<uint64_t> g_select_namelet_single_non_base{0};
     std::atomic<uint64_t> g_rebuild_resolve_nondet{0};
     std::atomic<uint64_t> g_rebuild_evaluate_sentinel_null{0};
+
+    std::string summarizeTreeNodesForRebuildLog(const gui_tree::GUITree &tree, size_t limit = 4) {
+        const auto &root = tree.getRootNodePtr();
+        if (!root) {
+            return std::string("root=(null)");
+        }
+        std::ostringstream oss;
+        oss << "root=" << root->getClassName() << ":" << root->getResourceId()
+            << " children=" << root->getChildren().size();
+        std::deque<gui_tree::GUITreeNodePtr> q;
+        q.push_back(root);
+        size_t emitted = 0;
+        while ((!q.empty()) && emitted < limit) {
+            gui_tree::GUITreeNodePtr cur = q.front();
+            q.pop_front();
+            if (!cur) {
+                continue;
+            }
+            if (emitted == 0) {
+                oss << " nodes=";
+            } else {
+                oss << " | ";
+            }
+            oss << "#" << emitted << "=" << cur->getClassName() << ":" << cur->getResourceId();
+            naming::NamePtr xpathName = cur->getXPathName();
+            oss << " xpath=" << (xpathName ? xpathName->toXPath() : "(null)");
+            oss << " namelet=" << (cur->getCurrentNamelet() ? cur->getCurrentNamelet()->getExprString() : "(null)");
+            ++emitted;
+            for (const auto &child : cur->getChildren()) {
+                if (child) {
+                    q.push_back(child);
+                }
+            }
+        }
+
+        return oss.str();
+    }
+
+    size_t collectAllNodes(const gui_tree::GUITree &tree, std::vector<gui_tree::GUITreeNodePtr> *out) {
+        if (!out) {
+            return 0;
+        }
+        out->clear();
+        const auto &root = tree.getRootNodePtr();
+        if (!root) {
+            return 0;
+        }
+        std::deque<gui_tree::GUITreeNodePtr> q;
+        q.push_back(root);
+        while (!q.empty()) {
+            gui_tree::GUITreeNodePtr cur = q.front();
+            q.pop_front();
+            if (!cur) {
+                continue;
+            }
+            out->push_back(cur);
+            for (const auto &child : cur->getChildren()) {
+                if (child) {
+                    q.push_back(child);
+                }
+            }
+        }
+        return out->size();
+    }
 
     bool isActionTypeDefaultRootShaped(const NamingPtr &naming) {
         if (!naming) {
@@ -89,9 +154,40 @@ namespace {
         }
     }
 
-    NamingPtr findExistingChildNaming(const NameletPtr &parentNamelet, const std::string &expr,
-                                      const NamerPtr &finer) {
-        if (!parentNamelet || !finer) {
+    void logCacheChildParentMismatch(const char *kind, const NamingPtr &base,
+                                     const NamingPtr &cached, const NamingPtr &cachedPar,
+                                     const NameletPtr &parentNamelet, const std::string &expr,
+                                     const NamerPtr &finer) {
+        static std::atomic<uint64_t> g_cacheChildParentMismatch_lattice{0};
+        static std::atomic<uint64_t> g_cacheChildParentMismatch_widget{0};
+        uint64_t ud = 0;
+        if (kind && std::string(kind) == "lattice") {
+            ud = ++g_cacheChildParentMismatch_lattice;
+        } else {
+            ud = ++g_cacheChildParentMismatch_widget;
+        }
+        // Keep early evidence dense, then sample to avoid log flooding after fix is stable.
+        if (!(ud <= 40 || (ud % 200) == 0)) {
+            return;
+        }
+        BDLOG(
+            "ape naming diag [cacheChildParentMismatch][%s] seq=%llu base=%p "
+            "cached=%p cachedPar=%p parentNamelet=%p expr=%s finerMask=%u baseFp=%s "
+            "cachedFp=%s",
+            kind ? kind : "widget", static_cast<unsigned long long>(ud),
+            static_cast<const void *>(base.get()),
+            static_cast<const void *>(cached.get()),
+            static_cast<const void *>(cachedPar.get()),
+            static_cast<const void *>(parentNamelet.get()), expr.c_str(),
+            finer ? static_cast<unsigned>(finer->typeDimensionMask()) : 0u,
+            base ? base->fingerprintString().c_str() : "-",
+            cached ? cached->fingerprintString().c_str() : "-");
+    }
+
+    NamingPtr findExistingChildNaming(const NamingPtr &base, const NameletPtr &parentNamelet,
+                                      const std::string &expr, const NamerPtr &finer,
+                                      const char *kind) {
+        if (!base || !parentNamelet || !finer) {
             return nullptr;
         }
         for (const auto &kv : parentNamelet->getChildNamings()) {
@@ -105,7 +201,14 @@ namespace {
             }
             // child reuse is keyed by equivalent namer behavior, not pointer identity.
             if (ch->getExprString() == expr && compareNamer(*chNamer, *finer) == 0) {
-                return kv.second;
+                const NamingPtr &cached = kv.second;
+                const NamingPtr cachedPar = cached ? cached->getParent() : nullptr;
+                if (cachedPar == base) {
+                    return cached;
+                }
+                // Root-cause fix: never reuse a child naming attached to a different base/parent chain.
+                logCacheChildParentMismatch(kind, base, cached, cachedPar, parentNamelet, expr, finer);
+                return nullptr;
             }
         }
         return nullptr;
@@ -150,7 +253,7 @@ namespace {
         }
         debugAssertRefinesTo(parentNamelet, finer);
         const std::string &expr = parentNamelet->getExprString();
-        if (NamingPtr cached = findExistingChildNaming(parentNamelet, expr, finer)) {
+        if (NamingPtr cached = findExistingChildNaming(base, parentNamelet, expr, finer, "lattice")) {
             return cached;
         }
         NameletPtr probe = std::make_shared<Namelet>(expr, finer);
@@ -174,7 +277,8 @@ namespace {
             return nullptr;
         }
         debugAssertRefinesTo(parentNamelet, finer);
-        if (NamingPtr cached = findExistingChildNaming(parentNamelet, widgetExpr, finer)) {
+        if (NamingPtr cached =
+                findExistingChildNaming(base, parentNamelet, widgetExpr, finer, "widget")) {
             return cached;
         }
         NameletPtr probe = std::make_shared<Namelet>(widgetExpr, finer);
@@ -362,6 +466,17 @@ namespace {
         if (!naming || !dom) {
             return false;
         }
+        static std::atomic<uint64_t> g_rebuild_tree_diag{0};
+        const uint64_t seq = ++g_rebuild_tree_diag;
+        const bool shouldLog = (seq <= 80 || (seq % 400) == 0);
+        std::vector<gui_tree::GUITreeNodePtr> allNodesBefore;
+        if (shouldLog) {
+            collectAllNodes(tree, &allNodesBefore);
+            BLOG("naming rebuild: enter seq=%llu namingFp=%s totalNodes=%zu names=%zu groups=%zu xpaths=%zu %s",
+                 static_cast<unsigned long long>(seq), naming->fingerprintString().c_str(), allNodesBefore.size(),
+                 tree.getCurrentNames().size(), tree.getCurrentNodeGroups().size(), tree.getCurrentXPaths().size(),
+                 summarizeTreeNodesForRebuildLog(tree).c_str());
+        }
         Naming::NamingResult r = evaluateNaming(naming, tree, dom);
         if (resolveNonDeterminism(r)) {
             const uint64_t c = ++g_rebuild_resolve_nondet;
@@ -384,9 +499,109 @@ namespace {
                 }
             }
         }
+        if (shouldLog) {
+            size_t groupedNodeCount = 0;
+            std::unordered_set<gui_tree::GUITreeNode *> groupedNodes;
+            for (const auto &group : r.node_groups) {
+                for (const auto &np : group) {
+                    if (!np) {
+                        continue;
+                    }
+                    groupedNodes.insert(np.get());
+                    ++groupedNodeCount;
+                }
+            }
+            // Validate that evaluated node groups refer to nodes owned by this tree.
+            std::unordered_set<gui_tree::GUITreeNode *> ownedNodes;
+            ownedNodes.reserve(allNodesBefore.size());
+            for (const auto &n : allNodesBefore) {
+                if (n) {
+                    ownedNodes.insert(n.get());
+                }
+            }
+
+            size_t foreign = 0;
+            std::ostringstream foreignSummary;
+            for (gui_tree::GUITreeNode *p : groupedNodes) {
+                if (!p || ownedNodes.count(p) != 0) {
+                    continue;
+                }
+                if (foreign < 3) {
+                    if (foreign != 0) {
+                        foreignSummary << " | ";
+                    }
+                    foreignSummary << p->getClassName() << ":" << p->getResourceId()
+                                   << " bounds=" << p->getBounds().toString()
+                                   << " xpath=" << (p->getXPathName() ? p->getXPathName()->toXPath() : "(null)");
+                }
+                ++foreign;
+            }
+
+            size_t staleBefore = 0;
+            std::ostringstream staleSummary;
+            for (const auto &node : allNodesBefore) {
+                if (!node || groupedNodes.count(node.get()) != 0) {
+                    continue;
+                }
+                if (node->getXPathName() || node->getCurrentNamelet()) {
+                    if (staleBefore < 3) {
+                        if (staleBefore != 0) {
+                            staleSummary << " | ";
+                        }
+                        staleSummary << node->getClassName() << ":" << node->getResourceId()
+                                     << " xpath=" << (node->getXPathName() ? node->getXPathName()->toXPath() : "(null)")
+                                     << " namelet="
+                                     << (node->getCurrentNamelet() ? node->getCurrentNamelet()->getExprString() : "(null)");
+                    }
+                    ++staleBefore;
+                }
+            }
+            BLOG("naming rebuild: evaluate seq=%llu resultNames=%zu resultGroups=%zu groupedNodes=%zu staleBefore=%zu staleSummary=%s",
+                 static_cast<unsigned long long>(seq), r.names.size(), r.node_groups.size(), groupedNodeCount,
+                 staleBefore, staleBefore ? staleSummary.str().c_str() : "(none)");
+            if (foreign != 0) {
+                BLOG("naming rebuild: foreign nodes seq=%llu foreign=%zu foreignSummary=%s",
+                     static_cast<unsigned long long>(seq), foreign, foreignSummary.str().c_str());
+            }
+        }
 
         tree.setCurrentNaming(naming, std::move(r.names), std::move(r.node_groups));
         syncNodesAfterRebuild(tree, node_to_namelet);
+        if (shouldLog) {
+            std::vector<gui_tree::GUITreeNodePtr> allNodesAfter;
+            collectAllNodes(tree, &allNodesAfter);
+            size_t staleAfter = 0;
+            std::ostringstream staleSummaryAfter;
+            std::unordered_set<gui_tree::GUITreeNode *> groupedNodes;
+            for (const auto &group : tree.getCurrentNodeGroups()) {
+                for (const auto &np : group) {
+                    if (np) {
+                        groupedNodes.insert(np.get());
+                    }
+                }
+            }
+            for (const auto &node : allNodesAfter) {
+                if (!node || groupedNodes.count(node.get()) != 0) {
+                    continue;
+                }
+                if (node->getXPathName() || node->getCurrentNamelet()) {
+                    if (staleAfter < 3) {
+                        if (staleAfter != 0) {
+                            staleSummaryAfter << " | ";
+                        }
+                        staleSummaryAfter << node->getClassName() << ":" << node->getResourceId()
+                                          << " xpath=" << (node->getXPathName() ? node->getXPathName()->toXPath() : "(null)")
+                                          << " namelet="
+                                          << (node->getCurrentNamelet() ? node->getCurrentNamelet()->getExprString() : "(null)");
+                    }
+                    ++staleAfter;
+                }
+            }
+            BLOG("naming rebuild: exit seq=%llu totalNodes=%zu names=%zu groups=%zu xpaths=%zu staleAfter=%zu staleSummary=%s %s",
+                 static_cast<unsigned long long>(seq), allNodesAfter.size(), tree.getCurrentNames().size(),
+                 tree.getCurrentNodeGroups().size(), tree.getCurrentXPaths().size(), staleAfter,
+                 staleAfter ? staleSummaryAfter.str().c_str() : "(none)", summarizeTreeNodesForRebuildLog(tree).c_str());
+        }
         return true;
     }
 

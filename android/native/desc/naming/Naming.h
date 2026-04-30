@@ -130,9 +130,9 @@ namespace naming {
 
         std::map<NamingEdge, std::shared_ptr<Naming>> children_{};
         std::string fingerprint_cached_{};
-        // cache NamingResult per GUITree instance.
+        // Cache NamingResult by stable GUITree instance id (not pointer address).
         mutable std::mutex naming_cache_mu_;
-        mutable std::unordered_map<const gui_tree::GUITree *, NamingResult> tree_to_naming_result_;
+        mutable std::unordered_map<int, NamingResult> tree_to_naming_result_;
     };
 
     using NamingPtr = std::shared_ptr<Naming>;

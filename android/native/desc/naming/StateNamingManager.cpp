@@ -29,6 +29,7 @@
 #include <cassert>
 #include <atomic>
 #include <cinttypes>
+#include <functional>
 #include <set>
 #include <string>
 #include <vector>
@@ -53,6 +54,9 @@ namespace {
     std::atomic<uint64_t> g_sh_null_arg{0};
 
     std::atomic<uint64_t> g_tt_dom_entries{0};
+    std::atomic<uint64_t> g_tt_const_entries{0};
+    std::atomic<uint64_t> g_tt_const_shadow_multi_hop{0};
+    std::atomic<uint64_t> g_tt_const_shadow_mismatch{0};
     std::atomic<uint64_t> g_tt_rebuild_failed{0};
     std::atomic<uint64_t> g_tt_zero_hash{0};
     std::atomic<uint64_t> g_tt_no_successor{0};
@@ -93,6 +97,13 @@ namespace {
         return s.substr(0, 200) + std::string("...");
     }
 
+    uintptr_t namingFpHash(const NamingPtr &n) {
+        if (!n) {
+            return 0;
+        }
+        return static_cast<uintptr_t>(std::hash<std::string>{}(n->fingerprintString()));
+    }
+
     size_t namingParentHopCount(const NamingPtr &n) {
         size_t h = 0;
         for (NamingPtr x = n; x; x = x->getParent()) {
@@ -107,6 +118,8 @@ namespace {
             return;
         }
         const NamingPtr new_parent = new_n ? new_n->getParent() : nullptr;
+        const NamingPtr old_parent = old_n ? old_n->getParent() : nullptr;
+        const int sibling = (old_parent && new_parent && old_parent == new_parent) ? 1 : 0;
         const int direct = (old_n && new_parent && new_parent == old_n) ? 1 : 0;
         int old_strict_anc_new = 0;
         if (old_n && new_n) {
@@ -117,19 +130,24 @@ namespace {
                 }
             }
         }
+        const uintptr_t old_fp_h = namingFpHash(old_n);
+        const uintptr_t new_fp_h = namingFpHash(new_n);
+        const uintptr_t par_fp_h = namingFpHash(new_parent);
         int par_fp_eq_old_fp = 0;
         if (old_n && new_parent) {
             par_fp_eq_old_fp = (old_n->fingerprintString() == new_parent->fingerprintString()) ? 1 : 0;
         }
         BDLOG(
             "state naming refine_not_child detail seq=%llu act=%s old=%p new=%p new_parent=%p "
-            "direct_old_eq_parent=%d old_hops=%zu new_hops=%zu par_hops=%zu old_anc_new=%d "
+            "direct_old_eq_parent=%d sibling_share_parent=%d old_hops=%zu new_hops=%zu par_hops=%zu "
+            "old_anc_new=%d old_fp_h=%" PRIuPTR " new_fp_h=%" PRIuPTR " par_fp_h=%" PRIuPTR " "
             "par_fp_eq_old_fp=%d parent_fp=%s old_fp=%s new_fp=%s",
             static_cast<unsigned long long>(seq), activity_key.c_str(),
             static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()),
-            static_cast<const void *>(new_parent.get()), direct, namingParentHopCount(old_n),
-            namingParentHopCount(new_n), namingParentHopCount(new_parent),
-            old_strict_anc_new, par_fp_eq_old_fp, namingFpSnippet(new_parent).c_str(),
+            static_cast<const void *>(new_parent.get()), direct, sibling,
+            namingParentHopCount(old_n), namingParentHopCount(new_n), namingParentHopCount(new_parent),
+            old_strict_anc_new, old_fp_h, new_fp_h, par_fp_h, par_fp_eq_old_fp,
+            namingFpSnippet(new_parent).c_str(),
             namingFpSnippet(old_n).c_str(), namingFpSnippet(new_n).c_str());
     }
 
@@ -251,12 +269,43 @@ namespace {
                 }
             }
         }
+        size_t first_mismatch_idx = 0;
+        bool has_mismatch = false;
+        bool size_is_plus_1 = (new_n && old_n) ? (nb == na + 1) : false;
+        int toNl_parent_exists = 0;
+        bool no_mismatch = false;
+
+        if (old_n && new_n) {
+            const auto &a = old_n->getNamelets();
+            const auto &b = new_n->getNamelets();
+            const size_t n = std::min(a.size(), b.size());
+            for (size_t i = 0; i < n; ++i) {
+                if (a[i] != b[i]) {
+                    has_mismatch = true;
+                    first_mismatch_idx = i;
+                    break;
+                }
+            }
+            if (!has_mismatch) {
+                // No mismatch in the overlapped region: the mismatch can only come from size difference.
+                no_mismatch = true;
+            }
+            if (size_is_plus_1) {
+                // inferRefineEdge's "append one Namelet" path uses new_n's last Namelet's parent.
+                const NameletPtr toNl = nb ? new_n->getNamelets().back() : nullptr;
+                if (toNl) {
+                    toNl_parent_exists = toNl->getParent() ? 1 : 0;
+                }
+            }
+        }
         BDLOG(
             "state naming refine_infer_edge_fail detail seq=%llu act=%s na=%zu nb=%zu same_prefix=%zu "
-            "direct_child=%d old_fp=%s new_fp=%s",
+            "direct_child=%d size_is_plus_1=%d no_mismatch=%d first_mismatch_idx=%zu toNl_parent_exists=%d "
+            "old_fp=%s new_fp=%s",
             static_cast<unsigned long long>(seq), activity_key.c_str(), na, nb, same_prefix,
-            isDirectChildOf(old_n, new_n) ? 1 : 0, namingFpSnippet(old_n).c_str(),
-            namingFpSnippet(new_n).c_str());
+            isDirectChildOf(old_n, new_n) ? 1 : 0, size_is_plus_1 ? 1 : 0,
+            no_mismatch ? 1 : 0, first_mismatch_idx, toNl_parent_exists,
+            namingFpSnippet(old_n).c_str(), namingFpSnippet(new_n).c_str());
     }
 
 } // namespace
@@ -294,6 +343,26 @@ namespace {
         }
 
         if (kind == NamingUpdateKind::Refine) {
+            {
+                static std::atomic<uint64_t> g_updateNaming_refine_entry_diag{0};
+                const uint64_t ud = ++g_updateNaming_refine_entry_diag;
+                if (ud <= 80 || (ud % 400) == 0) {
+                    const NamingPtr old_par = old_n ? old_n->getParent() : nullptr;
+                    const NamingPtr new_par = new_n ? new_n->getParent() : nullptr;
+                    const int direct_child = isDirectChildOf(old_n, new_n) ? 1 : 0;
+                    const int sibling_share_parent =
+                        (old_par && new_par && old_par == new_par) ? 1 : 0;
+                    BDLOG(
+                        "state naming diag [updateNaming-enter Refine] seq=%llu act=%s old=%p new=%p "
+                        "oldPar=%p newPar=%p direct_child=%d sibling_share_parent=%d oldFin=%d newFin=%d "
+                        "old_fp_h=%" PRIuPTR " new_fp_h=%" PRIuPTR,
+                        static_cast<unsigned long long>(ud), activity_key.c_str(),
+                        static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()),
+                        static_cast<const void *>(old_par.get()), static_cast<const void *>(new_par.get()),
+                        direct_child, sibling_share_parent, old_n->getFineness(),
+                        new_n->getFineness(), namingFpHash(old_n), namingFpHash(new_n));
+                }
+            }
             if (!isDirectChildOf(old_n, new_n)) {
                 const uint64_t c = ++g_u_refine_not_direct_child;
                 logStateNamingSample("update_refine_not_direct_child", c);
@@ -365,6 +434,27 @@ namespace {
             return;
         }
         if (kind == NamingUpdateKind::Refine) {
+            {
+                static std::atomic<uint64_t> g_updateNamingWithStateKey_refine_entry_diag{0};
+                const uint64_t ud = ++g_updateNamingWithStateKey_refine_entry_diag;
+                if (ud <= 80 || (ud % 400) == 0) {
+                    const NamingPtr old_par = old_n ? old_n->getParent() : nullptr;
+                    const NamingPtr new_par = new_n ? new_n->getParent() : nullptr;
+                    const int direct_child = isDirectChildOf(old_n, new_n) ? 1 : 0;
+                    const int sibling_share_parent =
+                        (old_par && new_par && old_par == new_par) ? 1 : 0;
+                    BDLOG(
+                        "state naming diag [updateNamingWithStateKey-enter Refine] seq=%llu act=%s sk_h=%"
+                        PRIuPTR " old=%p new=%p oldPar=%p newPar=%p direct_child=%d sibling_share_parent=%d "
+                        "oldFin=%d newFin=%d old_fp_h=%" PRIuPTR " new_fp_h=%" PRIuPTR,
+                        static_cast<unsigned long long>(ud), activity_key.c_str(),
+                        static_cast<uintptr_t>(state_key.hash()),
+                        static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()),
+                        static_cast<const void *>(old_par.get()), static_cast<const void *>(new_par.get()),
+                        direct_child, sibling_share_parent, old_n->getFineness(),
+                        new_n->getFineness(), namingFpHash(old_n), namingFpHash(new_n));
+                }
+            }
             const uint64_t s = ++g_chain_wsk_refine_enter;
             if (namingChainTraceLog(s)) {
                 const NamingPtr nnpar = new_n->getParent();
@@ -633,30 +723,60 @@ namespace {
     }
 
     NamingPtr StateNamingManager::treeToNaming(const gui_tree::GUITree &tree) {
+        const uint64_t entrySeq = ++g_tt_const_entries;
         NamingPtr source = activity_mgr_->getNaming(activityKeyFromTree(tree));
         if (!source) {
             return NamingFactory::defaultRootNaming();
         }
-        // Iterative edge walk with loop guard.
+        // Without a DOM we cannot rebuild the tree under each successor naming, so only resolve
+        // the edge represented by the tree's current StateKey. The DOM overload handles multi-hop.
         const uintptr_t h = StateKey::hashFromGUITree(tree);
         if (h == 0) {
             return source;
         }
         StateKey state = StateKey::fromGUITree(tree);
+        NamingPtr next = getNamingByStateKey(source, state);
+        const NamingPtr oneHop = next ? next : source;
+
+        // Diagnostic-only shadow walk: keep previous multi-hop behavior as an observer so we can
+        // verify whether one-hop resolution truncates reachable successors.
+        NamingPtr shadow = source;
         std::set<NamingPtr, std::owner_less<NamingPtr>> visited;
-        visited.insert(source);
+        visited.insert(shadow);
+        uint64_t shadowHops = 0;
         while (true) {
-            NamingPtr next = getNamingByStateKey(source, state);
-            if (!next) {
+            NamingPtr shadowNext = getNamingByStateKey(shadow, state);
+            if (!shadowNext || visited.find(shadowNext) != visited.end()) {
                 break;
             }
-            if (visited.find(next) != visited.end()) {
-                break;
-            }
-            visited.insert(next);
-            source = next;
+            visited.insert(shadowNext);
+            shadow = shadowNext;
+            ++shadowHops;
         }
-        return source;
+        if (shadowHops > 1) {
+            ++g_tt_const_shadow_multi_hop;
+        }
+        if (shadow != oneHop) {
+            ++g_tt_const_shadow_mismatch;
+        }
+        if ((shadowHops > 1 || shadow != oneHop) &&
+            (entrySeq <= 40 || (entrySeq % 400) == 0)) {
+            const uint64_t mismatchCount = g_tt_const_shadow_mismatch.load(std::memory_order_relaxed);
+            const uint64_t multiHopCount =
+                g_tt_const_shadow_multi_hop.load(std::memory_order_relaxed);
+            BDLOG("state naming diag [tree_to_naming_const_shadow] seq=%llu activity=%s "
+                  "stateHash=%" PRIuPTR " oneHop=%p shadow=%p shadowHops=%llu mismatch=%d "
+                  "mismatchCount=%llu multiHopCount=%llu sourceFp=%s oneHopFp=%s shadowFp=%s",
+                  static_cast<unsigned long long>(entrySeq), activityKeyFromTree(tree).c_str(),
+                  static_cast<uintptr_t>(h), static_cast<const void *>(oneHop.get()),
+                  static_cast<const void *>(shadow.get()),
+                  static_cast<unsigned long long>(shadowHops), (shadow != oneHop) ? 1 : 0,
+                  static_cast<unsigned long long>(mismatchCount),
+                  static_cast<unsigned long long>(multiHopCount), namingFpSnippet(source).c_str(),
+                  namingFpSnippet(oneHop).c_str(), namingFpSnippet(shadow).c_str());
+        }
+
+        return oneHop;
     }
 
     NamingPtr StateNamingManager::treeToNaming(gui_tree::GUITree &tree,

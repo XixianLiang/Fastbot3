@@ -23,6 +23,7 @@
 #include "NamerType.h"
 #include "../gui_tree/GUITree.h"
 #include "../xpath/XPathNodeMapper.h"
+#include "../../utils.hpp"
 
 #include <algorithm>
 #include <deque>
@@ -181,6 +182,44 @@ namespace {
         NamingEvalGuard &operator=(const NamingEvalGuard &) = delete;
     };
 
+    bool namingResultBelongsToTree(const Naming::NamingResult &result, gui_tree::GUITree &tree,
+                                   size_t *foreignCount = nullptr) {
+        std::unordered_set<gui_tree::GUITreeNode *> owned;
+        std::deque<gui_tree::GUITreeNode *> q;
+        if (tree.getRootNode()) {
+            q.push_back(tree.getRootNode());
+        }
+        while (!q.empty()) {
+            gui_tree::GUITreeNode *cur = q.front();
+            q.pop_front();
+            if (!cur || !owned.insert(cur).second) {
+                continue;
+            }
+            for (const auto &ch : cur->getChildren()) {
+                if (ch) {
+                    q.push_back(ch.get());
+                }
+            }
+        }
+
+        size_t foreign = 0;
+        for (const auto &group : result.node_groups) {
+            for (const auto &n : group) {
+                if (!n) {
+                    continue;
+                }
+                if (owned.count(n.get()) == 0) {
+                    ++foreign;
+                }
+            }
+        }
+
+        if (foreignCount) {
+            *foreignCount = foreign;
+        }
+        return foreign == 0;
+    }
+
 }
 
     std::atomic<int> Naming::naming_counter_{0};
@@ -250,7 +289,7 @@ namespace {
 
     void Naming::releaseTreeCache(const gui_tree::GUITree &tree) const {
         std::lock_guard<std::mutex> lk(naming_cache_mu_);
-        tree_to_naming_result_.erase(&tree);
+        tree_to_naming_result_.erase(tree.getId());
     }
 
     std::shared_ptr<Namelet> Naming::getLastNamelet() const {
@@ -272,11 +311,21 @@ namespace {
 
     Naming::NamingResult Naming::namingInternal(
         gui_tree::GUITree &tree, const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) const {
+        static std::atomic<uint64_t> g_naming_internal_diag{0};
+        const uint64_t diagSeq = ++g_naming_internal_diag;
+        const bool shouldLog = (diagSeq <= 80 || (diagSeq % 400) == 0);
+        const int treeId = tree.getId();
         {
             std::lock_guard<std::mutex> lk(naming_cache_mu_);
-            auto itCached = tree_to_naming_result_.find(&tree);
+            auto itCached = tree_to_naming_result_.find(treeId);
             if (itCached != tree_to_naming_result_.end()) {
-                return itCached->second;
+                size_t foreignCached = 0;
+                if (namingResultBelongsToTree(itCached->second, tree, &foreignCached)) {
+                    return itCached->second;
+                }
+                BLOG("naming cache invalidated: foreign nodes in cached result namingFp=%s treeId=%d foreign=%zu",
+                     fingerprint_cached_.c_str(), treeId, foreignCached);
+                tree_to_naming_result_.erase(itCached);
             }
         }
         NamingResult out;
@@ -287,6 +336,25 @@ namespace {
         std::unordered_map<gui_tree::GUITreeNode *, gui_tree::GUITreeNodePtr> node_ref;
         node_to_namelets.reserve(256);
         node_ref.reserve(256);
+        std::unordered_set<gui_tree::GUITreeNode *> treeOwnedNodes;
+        std::deque<gui_tree::GUITreeNode *> ownedQ;
+        if (tree.getRootNode()) {
+            ownedQ.push_back(tree.getRootNode());
+        }
+        while (!ownedQ.empty()) {
+            gui_tree::GUITreeNode *cur = ownedQ.front();
+            ownedQ.pop_front();
+            if (!cur || !treeOwnedNodes.insert(cur).second) {
+                continue;
+            }
+            for (const auto &ch : cur->getChildren()) {
+                if (ch) {
+                    ownedQ.push_back(ch.get());
+                }
+            }
+        }
+        size_t foreignMatchedNodes = 0;
+        std::ostringstream foreignMatchedSummary;
 
         for (const auto &nl : namelets_) {
             if (!nl) continue;
@@ -294,9 +362,26 @@ namespace {
             for (const auto &nptr : matched) {
                 if (!nptr) continue;
                 gui_tree::GUITreeNode *raw = nptr.get();
+                if (treeOwnedNodes.count(raw) == 0) {
+                    if (foreignMatchedNodes < 3) {
+                        if (foreignMatchedNodes != 0) {
+                            foreignMatchedSummary << " | ";
+                        }
+                        foreignMatchedSummary << raw->getClassName() << ":" << raw->getResourceId()
+                                              << " bounds=" << raw->getBounds().toString()
+                                              << " expr=" << nl->getExprString();
+                    }
+                    ++foreignMatchedNodes;
+                }
                 node_ref.emplace(raw, nptr);
                 node_to_namelets[raw].push_back(nl);
             }
+        }
+        if (shouldLog) {
+            BLOG("naming internal: matched seq=%llu namingFp=%s ownedNodes=%zu matchedNodes=%zu foreignMatched=%zu foreignSummary=%s",
+                 static_cast<unsigned long long>(diagSeq), fingerprint_cached_.c_str(), treeOwnedNodes.size(),
+                 node_ref.size(), foreignMatchedNodes,
+                 foreignMatchedNodes ? foreignMatchedSummary.str().c_str() : "(none)");
         }
 
         std::vector<gui_tree::GUITreeNode *> bfs_nodes;
@@ -331,6 +416,17 @@ namespace {
             if (sel && sel->getNamerPtr()) {
                 node_to_namer[n] = &sel->getNamer();
             }
+        }
+        if (shouldLog) {
+            size_t foreignInNameletMap = 0;
+            for (const auto &kv : node_to_namelets) {
+                if (treeOwnedNodes.count(kv.first) == 0) {
+                    ++foreignInNameletMap;
+                }
+            }
+            BLOG("naming internal: namelet-map seq=%llu bfsNodes=%zu mapNodes=%zu foreignMapNodes=%zu",
+                 static_cast<unsigned long long>(diagSeq), bfs_nodes.size(), node_to_namelets.size(),
+                 foreignInNameletMap);
         }
         NamingEvalGuard namingEvalGuard(&node_to_namer);
 
@@ -404,9 +500,31 @@ namespace {
             out.node_groups.push_back(std::move(it->second.nodes));
             out.namelet_groups.push_back(std::move(it->second.namelets));
         }
+        if (shouldLog) {
+            size_t foreignOut = 0;
+            std::ostringstream foreignOutSummary;
+            for (const auto &group : out.node_groups) {
+                for (const auto &nptr : group) {
+                    if (!nptr || treeOwnedNodes.count(nptr.get()) != 0) {
+                        continue;
+                    }
+                    if (foreignOut < 3) {
+                        if (foreignOut != 0) {
+                            foreignOutSummary << " | ";
+                        }
+                        foreignOutSummary << nptr->getClassName() << ":" << nptr->getResourceId()
+                                          << " bounds=" << nptr->getBounds().toString();
+                    }
+                    ++foreignOut;
+                }
+            }
+            BLOG("naming internal: output seq=%llu groups=%zu names=%zu foreignOut=%zu foreignSummary=%s",
+                 static_cast<unsigned long long>(diagSeq), out.node_groups.size(), out.names.size(),
+                 foreignOut, foreignOut ? foreignOutSummary.str().c_str() : "(none)");
+        }
         {
             std::lock_guard<std::mutex> lk(naming_cache_mu_);
-            tree_to_naming_result_[&tree] = out;
+            tree_to_naming_result_[treeId] = out;
         }
         return out;
     }

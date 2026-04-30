@@ -32,6 +32,164 @@
 #include <sstream>
 namespace {
 using namespace fastbotx;
+uint64_t hashStringForLog(const std::string &value) {
+    return static_cast<uint64_t>(std::hash<std::string>{}(value));
+}
+
+std::string abbreviateTextForLog(const std::string &value, size_t limit = 24) {
+    if (value.size() <= limit) {
+        return value;
+    }
+    return value.substr(0, limit) + "...";
+}
+
+std::string summarizeElementForLog(const fastbotx::ElementPtr &element, size_t childLimit = 3) {
+    if (!element) {
+        return std::string("(null)");
+    }
+    std::ostringstream oss;
+    const RectPtr bounds = element->getBounds();
+    oss << "root=" << element->getClassname()
+        << ":" << element->getResourceID()
+        << " text=" << abbreviateTextForLog(element->getText());
+    if (bounds) {
+        oss << " bounds=[" << bounds->left << "," << bounds->top
+            << "]-[" << bounds->right << "," << bounds->bottom << "]";
+    } else {
+        oss << " bounds=(null)";
+    }
+    const auto &children = element->getChildren();
+    oss << " children=" << children.size();
+    size_t n = 0;
+    for (const auto &child : children) {
+        if (!child) {
+            continue;
+        }
+        oss << (n == 0 ? " childSummary=" : " | ");
+        oss << "#" << n << "=" << child->getClassname() << ":" << child->getResourceID();
+        ++n;
+        if (n >= childLimit) {
+            break;
+        }
+    }
+    if (children.size() > n) {
+        oss << " | ... total=" << children.size();
+    }
+    const auto &xpaths = element->getCurrentXPaths();
+    oss << " xpaths=" << xpaths.size();
+    const size_t lim = std::min<size_t>(xpaths.size(), xpathLimit);
+    for (size_t i = 0; i < lim; ++i) {
+        oss << (i == 0 ? " xpathSummary=" : " | ");
+        oss << "#" << i << "=" << xpaths[i];
+    }
+    if (xpaths.size() > lim) {
+        oss << " | ... total=" << xpaths.size();
+    return oss.str();
+}
+
+std::string summarizeGUITreeForLog(const fastbotx::gui_tree::GUITreePtr &tree, size_t childLimit = 3,
+                                   size_t xpathLimit = 3) {
+    if (!tree) {
+        return std::string("(null)");
+    }
+    std::ostringstream oss;
+    const auto &root = tree->getRootNodePtr();
+    if (!root) {
+        return std::string("root=(null)");
+    }
+    oss << "root=" << root->getClassName() << ":" << root->getResourceId()
+        << " text=" << abbreviateTextForLog(root->getText())
+        << " bounds=" << root->getBounds().toString()
+        << " children=" << root->getChildren().size();
+    size_t n = 0;
+    for (const auto &child : root->getChildren()) {
+        if (!child) {
+            continue;
+        }
+        oss << (n == 0 ? " childSummary=" : " | ");
+        oss << "#" << n << "=" << child->getClassName() << ":" << child->getResourceId();
+        ++n;
+        if (n >= childLimit) {
+            break;
+        }
+    }
+    if (root->getChildren().size() > n) {
+        oss << " | ... total=" << root->getChildren().size();
+    }
+    const auto &xpaths = tree->getCurrentXPaths();
+    oss << " xpaths=" << xpaths.size();
+    const size_t lim = std::min<size_t>(xpaths.size(), xpathLimit);
+    for (size_t i = 0; i < lim; ++i) {
+        oss << (i == 0 ? " xpathSummary=" : " | ");
+        oss << "#" << i << "=" << xpaths[i];
+    }
+    if (xpaths.size() > lim) {
+        oss << " | ... total=" << xpaths.size();
+    }
+    return oss.str();
+}
+
+std::string summarizeStateWidgetsForLog(const fastbotx::StatePtr &state, size_t limit = 3) {
+    if (!state) {
+        return std::string("(null)");
+    }
+    std::ostringstream oss;
+    size_t n = 0;
+    for (const auto &w : state->getWidgets()) {
+        if (!w) {
+            continue;
+        }
+        if (n != 0) {
+            oss << " | ";
+        }
+        oss << "#" << n << "=" << w->getClass() << ":" << w->getResourceID();
+        ++n;
+        if (n >= limit) {
+            break;
+        }
+    }
+    if (n == 0) {
+        return std::string("(empty)");
+    }
+    if (state->getWidgets().size() > n) {
+        oss << " | ... total=" << state->getWidgets().size();
+    }
+    return oss.str();
+}
+
+std::string summarizeStateActionsForLog(const fastbotx::StatePtr &state, size_t limit = 3) {
+    if (!state) {
+        return std::string("(null)");
+    }
+    std::ostringstream oss;
+    size_t n = 0;
+    for (const auto &a : state->getActions()) {
+        if (!a) {
+            continue;
+        }
+        if (n != 0) {
+            oss << " | ";
+        }
+        const auto tgt = a->getTarget();
+        oss << "#" << n << "=" << static_cast<int>(a->getActionType()) << ":";
+        if (tgt) {
+            oss << tgt->getClass() << ":" << tgt->getResourceID();
+        } else {
+            oss << "(no-target)";
+        }
+        ++n;
+        if (n >= limit) {
+            break;
+        }
+    }
+    if (n == 0) {
+        return std::string("(empty)");
+    }
+    if (state->getActions().size() > n) {
+        oss << " | ... total=" << state->getActions().size();
+    }
+    return oss.str();
+}
 /** Match buildApeStateKeyFromElementTree: parse XML to Element then buildFromElement (exclusion + attrs), else pugixml. */
 fastbotx::gui_tree::GUITreeBuildResult buildGuitreeFromCachedXmlPreferElement(const std::string &xml,
                                                                               const std::string &pkg,
@@ -667,8 +825,23 @@ namespace {
 using ApeHashCache = std::unordered_map<uintptr_t, uintptr_t>;
 bool safeRebuildTree(const fastbotx::naming::NamingPtr &nm, fastbotx::gui_tree::GUITree &tree,
                      const std::shared_ptr<fastbotx::gui_tree::XPathNodeMapper> &dom) {
-    // Fail-fast behavior: do not swallow naming/rebuild exceptions.
-    return fastbotx::naming::NamingFactory::rebuildTree(nm, tree, dom);
+    static std::atomic<uint64_t> g_rebuild_tree_seq{0};
+    const uint64_t seq = ++g_rebuild_tree_seq;
+    const bool shouldLog = (seq <= 80 || (seq % 400) == 0);
+    const fastbotx::gui_tree::GUITreePtr treeAlias(&tree, [](fastbotx::gui_tree::GUITree *) {});
+    const std::string beforeSummary = shouldLog ? summarizeGUITreeForLog(treeAlias) : std::string();
+    if (shouldLog) {
+        BLOG("ape rebuild: enter seq=%" PRIu64 " namingFp=%s treePtr=%p dom=%d %s",
+             seq, nm ? nm->fingerprintString().c_str() : "(null)", &tree, dom ? 1 : 0,
+             beforeSummary.c_str());
+    }
+
+    const bool ok = fastbotx::naming::NamingFactory::rebuildTree(nm, tree, dom);
+    if (shouldLog) {
+        BLOG("ape rebuild: exit seq=%" PRIu64 " ok=%d treePtr=%p %s",
+             seq, ok ? 1 : 0, &tree, summarizeGUITreeForLog(treeAlias).c_str());
+    }
+    return ok;
 }
 bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::string &xml,
                                     const fastbotx::naming::NamingPtr &naming,
@@ -680,6 +853,8 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
     if (!outHash || !naming || xml.empty()) {
         return false;
     }
+    static std::atomic<uint64_t> g_xml_hash_build{0};
+    const uint64_t seq = ++g_xml_hash_build;
     if (cache && cacheKey != 0) {
         auto itC = cache->find(cacheKey);
         if (itC != cache->end()) {
@@ -690,17 +865,42 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
     std::string pkg;
     std::string cls;
     naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
+    const bool usePreferSnapshot = (preferGuiSnapshot && *preferGuiSnapshot);
+    if (seq <= 40 || (seq % 400) == 0) {
+        BDLOG("ape xml hash: entry activity=%s seq=%" PRIu64
+              " xmlSig=%" PRIu64 " xmlLen=%zu namingFp=%s preferSnapshot=%d snapPtr=%p snapSummary=%s",
+              activity.c_str(), seq, hashStringForLog(xml), xml.size(),
+              naming->fingerprintString().c_str(), usePreferSnapshot ? 1 : 0,
+              usePreferSnapshot ? (*preferGuiSnapshot).get() : nullptr,
+              usePreferSnapshot ? summarizeGUITreeForLog(*preferGuiSnapshot).c_str() : "(null)");
+    }
     gui_tree::GUITreeBuildResult built =
-        (preferGuiSnapshot && *preferGuiSnapshot)
+        usePreferSnapshot
             ? buildGuitreeFromTransitionSourcePreferSnapshot(xml, pkg, cls, *preferGuiSnapshot)
             : buildGuitreeFromCachedXmlPreferElement(xml, pkg, cls);
+    if (seq <= 40 || (seq % 400) == 0) {
+        BDLOG("ape xml hash: tree stage=after_build activity=%s seq=%" PRIu64
+              " source=%s treePtr=%p dom=%d %s",
+              activity.c_str(), seq, usePreferSnapshot ? "prefer_snapshot" : "xml_only",
+              built.tree.get(), built.dom ? 1 : 0, summarizeGUITreeForLog(built.tree).c_str());
+    }
     if (!built.tree || !built.dom) {
         return false;
     }
     if (!safeRebuildTree(naming, *built.tree, built.dom)) {
         return false;
     }
+    if (seq <= 40 || (seq % 400) == 0) {
+        BLOG("ape xml hash: tree stage=after_rebuild activity=%s seq=%" PRIu64
+             " treePtr=%p namingFp=%s %s",
+             activity.c_str(), seq, built.tree.get(), naming->fingerprintString().c_str(),
+             summarizeGUITreeForLog(built.tree).c_str());
+    }
     *outHash = naming::StateKey::hashFromGUITree(*built.tree);
+    if (seq <= 40 || (seq % 400) == 0) {
+        BLOG("ape xml hash: exit activity=%s seq=%" PRIu64 " outHash=%" PRIuPTR,
+             activity.c_str(), seq, static_cast<uintptr_t>(*outHash));
+    }
     if (cache && cacheKey != 0) {
         (*cache)[cacheKey] = *outHash;
     }
@@ -1914,7 +2114,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4270900, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4292305, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -2157,7 +2357,22 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
         std::string activityStr = activityPtr ? *activityPtr : "";
         WidgetKeyMask mask = getActivityKeyMask(activityStr);
+        const std::string &xmlForLog = element->toXMLCached();
+        const uint64_t xmlSigForLog = hashStringForLog(xmlForLog);
         StatePtr state = StateFactory::createState(agent->getAlgorithmType(), activityPtr, element, mask);
+        static std::atomic<uint64_t> g_build_state_only{0};
+        const uint64_t n = ++g_build_state_only;
+        if (state && (n <= 20 || (n % 400) == 0)) {
+            BLOG("ape state build: buildStateOnly source activity=%s seq=%" PRIu64
+                 " elementPtr=%p xmlSig=%" PRIu64 " xmlLen=%zu %s",
+                 activityStr.c_str(), n, element.get(), xmlSigForLog, xmlForLog.size(),
+                 summarizeElementForLog(element).c_str());
+            BLOG("ape state build: buildStateOnly activity=%s stateHash=%" PRIuPTR
+                 " widgets=%zu actions=%zu widgetSummary=%s actionSummary=%s",
+                 activityStr.c_str(), static_cast<uintptr_t>(state->hash()), state->getWidgetSize(),
+                 state->getActions().size(), summarizeStateWidgetsForLog(state).c_str(),
+                 summarizeStateActionsForLog(state).c_str());
+        }
         return state;
     }
 
@@ -2851,11 +3066,38 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     return false;
                 }
 
+                std::string candidate_source = "unknown";
                 naming::NamingPtr cur = mgr.getNaming(actKey);
                 if (!cur) {
                     cur = naming::NamingFactory::defaultRootNaming();
                     if (!cur) {
                         return false;
+                    }
+                    candidate_source = "defaultRootNaming";
+                    {
+                        static std::atomic<uint64_t> g_updateNaming_defaultRoot_diag{0};
+                        const uint64_t ud = ++g_updateNaming_defaultRoot_diag;
+                        if (ud <= 20 || (ud % 200) == 0) {
+                            const naming::NamingPtr oldN = nullptr;
+                            const naming::NamingPtr newN = cur;
+                            const naming::NamingPtr oldPar = nullptr;
+                            const naming::NamingPtr newPar = newN ? newN->getParent() : nullptr;
+                            const int direct_child = 0;
+                            const int sibling_share_parent = 0;
+                            const std::string oldFp = "";
+                            const std::string newFp =
+                                newN ? newN->fingerprintString() : std::string("-");
+                            BDLOG(
+                                "ape naming diag [Model.updateNaming-enter Refine] seq=%llu act=%s "
+                                "old=%p new=%p oldPar=%p newPar=%p direct_child=%d sibling_share_parent=%d "
+                                "candidate_source=%s oldFin=%d newFin=%d old_fp=%s new_fp=%s",
+                                static_cast<unsigned long long>(ud), actKey.c_str(),
+                                static_cast<const void *>(oldN.get()), static_cast<const void *>(newN.get()),
+                                static_cast<const void *>(oldPar.get()), static_cast<const void *>(newPar.get()),
+                                direct_child, sibling_share_parent, candidate_source.c_str(),
+                                oldN ? oldN->getFineness() : -1, newN ? newN->getFineness() : -1,
+                                oldFp.c_str(), newFp.c_str());
+                        }
                     }
                     _apeStateNamingManager->updateNaming(actKey, naming::NamingUpdateKind::Refine, cur);
                     pruneDivergentApeStatesForActivity(actKey);
@@ -2973,6 +3215,56 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     }
 #endif
 
+                    bool rejectRefineCandidate = false;
+                    {
+                        const naming::NamingPtr oldN = cur;
+                        const naming::NamingPtr newN = child;
+                        const naming::NamingPtr oldPar = oldN ? oldN->getParent() : nullptr;
+                        const naming::NamingPtr newPar = newN ? newN->getParent() : nullptr;
+                        const int direct_child = (oldN && newPar && newPar == oldN) ? 1 : 0;
+                        const int sibling_share_parent =
+                            (oldPar && newPar && oldPar == newPar) ? 1 : 0;
+                        static std::atomic<uint64_t> g_updateNaming_refine_entry_diag{0};
+                        const uint64_t ud = ++g_updateNaming_refine_entry_diag;
+                        if (ud <= 80 || direct_child == 0) {
+                            const std::string oldFp = oldN ? oldN->fingerprintString() : std::string();
+                            const std::string newFp = newN ? newN->fingerprintString() : std::string();
+                            BLOG(
+                                "ape naming diag [Model.updateNaming-enter Refine] seq=%llu act=%s "
+                                "old=%p new=%p oldPar=%p newPar=%p direct_child=%d sibling_share_parent=%d "
+                                "candidate_source=%s oldFin=%d newFin=%d old_fp=%s new_fp=%s",
+                                static_cast<unsigned long long>(ud), actKey.c_str(),
+                                static_cast<const void *>(oldN.get()), static_cast<const void *>(newN.get()),
+                                static_cast<const void *>(oldPar.get()), static_cast<const void *>(newPar.get()),
+                                direct_child, sibling_share_parent, candidate_source.c_str(),
+                                oldN ? oldN->getFineness() : -1, newN ? newN->getFineness() : -1,
+                                oldFp.c_str(), newFp.c_str());
+                        }
+                        if (direct_child == 0 && candidate_source == "extendUnderNamelet") {
+                            static std::atomic<uint64_t> g_extend_parent_mismatch_diag{0};
+                            const uint64_t md = ++g_extend_parent_mismatch_diag;
+                            BLOG("ape naming diag [Model.extendUnderNamelet-parentMismatch] seq=%llu act=%s "
+                                 "old=%p new=%p oldPar=%p newPar=%p sibling_share_parent=%d oldFin=%d newFin=%d",
+                                 static_cast<unsigned long long>(md), actKey.c_str(),
+                                 static_cast<const void *>(oldN.get()),
+                                 static_cast<const void *>(newN.get()),
+                                 static_cast<const void *>(oldPar.get()),
+                                 static_cast<const void *>(newPar.get()),
+                                 sibling_share_parent, oldN ? oldN->getFineness() : -1,
+                                 newN ? newN->getFineness() : -1);
+                            static std::atomic<uint64_t> g_extend_parent_mismatch_reject_diag{0};
+                            const uint64_t rd = ++g_extend_parent_mismatch_reject_diag;
+                            BLOG("ape naming diag [Model.extendUnderNamelet-parentMismatch-reject] seq=%llu "
+                                 "act=%s old=%p new=%p",
+                                 static_cast<unsigned long long>(rd), actKey.c_str(),
+                                 static_cast<const void *>(oldN.get()),
+                                 static_cast<const void *>(newN.get()));
+                            rejectRefineCandidate = true;
+                        }
+                    }
+                    if (rejectRefineCandidate) {
+                        return false;
+                    }
                     _apeStateNamingManager->updateNaming(actKey, naming::NamingUpdateKind::Refine,
                                                          std::move(child));
                     invalidateApeGraphStateKeyDedupMap();
@@ -3006,6 +3298,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                                     continue;
                                 }
 
+                                candidate_source = "replaceLast";
                                 naming::NamingPtr child =
                                     naming::NamingFactory::replaceLast(cur, anchorNL, refined);
                                 if (acceptChild(std::move(child), refined)) {
@@ -3032,6 +3325,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         continue;
                     }
 
+                    candidate_source = "extendUnderNamelet";
                     naming::NamingPtr child =
                         naming::NamingFactory::extendUnderNamelet(cur, pIdx, wxp, refined);
                     if (acceptChild(std::move(child), refined)) {
@@ -3109,6 +3403,32 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             if (next->fingerprintString() == fpBefore) {
                 break;
             }
+            {
+                const naming::NamingPtr oldN = cur;
+                const naming::NamingPtr newN = next;
+                const naming::NamingPtr oldPar = oldN ? oldN->getParent() : nullptr;
+                const naming::NamingPtr newPar = newN ? newN->getParent() : nullptr;
+                const int direct_child = (oldN && newPar && newPar == oldN) ? 1 : 0;
+                const int sibling_share_parent =
+                    (oldPar && newPar && oldPar == newPar) ? 1 : 0;
+                static std::atomic<uint64_t> g_updateNaming_batch_refine_entry_diag{0};
+                const uint64_t ud = ++g_updateNaming_batch_refine_entry_diag;
+                if (ud <= 80 || direct_child == 0) {
+                    const std::string oldFp = oldN ? oldN->fingerprintString() : std::string();
+                    const std::string newFp = newN ? newN->fingerprintString() : std::string();
+                    const char *candidate_source = "actionRefinementBatch";
+                    BLOG(
+                        "ape naming diag [Model.batchUpdateNaming-enter Refine] seq=%llu act=%s outer=%d hops=%d "
+                        "old=%p new=%p oldPar=%p newPar=%p direct_child=%d sibling_share_parent=%d "
+                        "candidate_source=%s oldFin=%d newFin=%d old_fp=%s new_fp=%s",
+                        static_cast<unsigned long long>(ud), actKey.c_str(), outer, hopsClamped,
+                        static_cast<const void *>(oldN.get()), static_cast<const void *>(newN.get()),
+                        static_cast<const void *>(oldPar.get()), static_cast<const void *>(newPar.get()),
+                        direct_child, sibling_share_parent, candidate_source,
+                        oldN ? oldN->getFineness() : -1, newN ? newN->getFineness() : -1,
+                        oldFp.c_str(), newFp.c_str());
+                }
+            }
             _apeStateNamingManager->updateNaming(actKey, naming::NamingUpdateKind::Refine, next);
             invalidateApeGraphStateKeyDedupMap();
             pruneDivergentApeStatesForActivity(actKey);
@@ -3180,6 +3500,18 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         if (!tryGetApeStateKey(src->hash(), &srcKey, srcAct) ||
             !tryGetApeStateKey(tgt->hash(), &tgtKey, tgtAct)) {
             return;
+        }
+        if (src->getWidgetSize() != tgt->getWidgetSize()) {
+            BDLOG("ape transition: state size delta srcHash=%" PRIuPTR " tgtHash=%" PRIuPTR
+                  " srcWidgets=%zu tgtWidgets=%zu srcActions=%zu tgtActions=%zu "
+                  "srcWidgetSummary=%s tgtWidgetSummary=%s srcActionSummary=%s tgtActionSummary=%s",
+                  static_cast<uintptr_t>(src->hash()), static_cast<uintptr_t>(tgt->hash()),
+                  src->getWidgetSize(), tgt->getWidgetSize(),
+                  src->getActions().size(), tgt->getActions().size(),
+                  summarizeStateWidgetsForLog(src).c_str(),
+                  summarizeStateWidgetsForLog(tgt).c_str(),
+                  summarizeStateActionsForLog(src).c_str(),
+                  summarizeStateActionsForLog(tgt).c_str());
         }
         ApeTransitionEntry e;
         e.transitionSeq = ++_apeTransitionSeq;
@@ -4368,7 +4700,9 @@ namespace {
                 naming::NamingPtr cur = mgr.getNaming(actKey);
                 return cur ? cur : naming::NamingFactory::defaultRootNaming();
             }
-            naming::NamingPtr resolved = _apeStateNamingManager->treeToNaming(*built.tree);
+            naming::NamingPtr resolved = built.dom
+                ? _apeStateNamingManager->treeToNaming(*built.tree, built.dom)
+                : _apeStateNamingManager->treeToNaming(*built.tree);
             if (resolved) {
                 return resolved;
             }
@@ -4395,9 +4729,6 @@ namespace {
             return false;
         }
         const std::string actKey = naming::StateKey::canonicalActivityString(activity);
-#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-        return true;
-#else
         std::string pkg;
         std::string cls;
         naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
@@ -4448,7 +4779,7 @@ namespace {
                 std::unordered_set<uintptr_t> uniqueStates;
                 uniqueStates.reserve(pred.stateHashes.size());
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-                if (!pred.sourceTrees.empty()) {
+                if (!pred.sourceTrees.empty() && pred.sourceTrees.size() == pred.stateHashes.size()) {
                     for (const auto &sourceTree : pred.sourceTrees) {
                         gui_tree::GUITreeBuildResult built =
                             buildGuitreeFromSnapshotObjectOrCachedXml("", pkg, cls, sourceTree);
@@ -4596,7 +4927,6 @@ namespace {
             }
         }
         return true;
-#endif
     }
 
     void Model::addApeStatesFewerThanPredicate(const std::string &activity,
@@ -6358,6 +6688,52 @@ namespace {
         size_t skippedUnsupportedRelation = 0;
         size_t pickedEvalIndex = 0;
         if (allApeJavaComparator) {
+            // Diagnostic: when Java comparator mode is enabled, we still need to know whether
+            // accepted.front() actually forms a supported refine relation (direct child/sibling).
+            // Otherwise we may apply NamingUpdateKind::Refine even when relation is invalid.
+            static std::atomic<uint64_t> g_refine_all_java_diag{0};
+            const uint64_t dseq = ++g_refine_all_java_diag;
+            size_t directCnt = 0;
+            size_t siblingCnt = 0;
+            size_t unsupportedCnt = 0;
+            bool frontDirect = false;
+            bool frontSibling = false;
+            const auto snipFp = [](const naming::NamingPtr &p) -> std::string {
+                if (!p) {
+                    return std::string("-");
+                }
+                const std::string &s = p->fingerprintString();
+                return s.size() > 140 ? s.substr(0, 140) + std::string("...") : s;
+            };
+            for (const auto &ev : accepted) {
+                bool isDirect = false;
+                bool isSibling = false;
+                (void)isSupportedRefineRelation(ev.naming, &isDirect, &isSibling);
+                if (isDirect) {
+                    ++directCnt;
+                } else if (isSibling) {
+                    ++siblingCnt;
+                } else {
+                    ++unsupportedCnt;
+                }
+            }
+            const CandidateEval &frontEv = accepted.front();
+            (void)isSupportedRefineRelation(frontEv.naming, &frontDirect, &frontSibling);
+            if (dseq <= 20 || (dseq % 200) == 0) {
+                const naming::NamingPtr curParDiag = cur ? cur->getParent() : nullptr;
+                const naming::NamingPtr frontParDiag =
+                    frontEv.naming ? frontEv.naming->getParent() : nullptr;
+                BDLOG("ape naming diag [allApeJavaComparator] seq=%llu act=%s cur=%p curFp=%s curPar=%p "
+                      "front=%p front_fp=%s frontPar=%p frontUseJava=%d frontDirect=%d frontSibling=%d "
+                      "accepted=%zu direct=%zu sibling=%zu unsupported=%zu",
+                      static_cast<unsigned long long>(dseq), actKey.c_str(),
+                      static_cast<const void *>(cur.get()), snipFp(cur).c_str(),
+                      static_cast<const void *>(curParDiag.get()),
+                      static_cast<const void *>(frontEv.naming.get()), snipFp(frontEv.naming).c_str(),
+                      static_cast<const void *>(frontParDiag.get()),
+                      frontEv.useApeJavaStyleComparator ? 1 : 0, frontDirect ? 1 : 0, frontSibling ? 1 : 0,
+                      accepted.size(), directCnt, siblingCnt, unsupportedCnt);
+            }
             pickedEvalIndex = 0;
             next = accepted.front().naming;
             bool isDirect = false;
@@ -6463,6 +6839,26 @@ namespace {
         ctx.triggerActionHash = dominantActionHash;
         ctx.triggerTargetCountAtRefine = dominantPairTargets;
         ctx.triggerTargetKeyHashes = std::move(xmlSpaceTriggerTargetKeyHashes);
+        {
+            static std::atomic<uint64_t> g_refine_trigger_keyspace_diag{0};
+            const uint64_t n = ++g_refine_trigger_keyspace_diag;
+            if (n <= 120 || (n % 400) == 0) {
+                const uintptr_t triggerKeyHashFromStateKey =
+                    ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
+                BDLOG("ape naming: refine trigger keyspace seq=%" PRIu64
+                      " activity=%s trigHash(xmlSpace)=%lu trigHash(stateKey)=%lu equal=%d "
+                      "trigExact=%d srcHash(raw)=%lu srcHash(xmlspace)=%lu actHash=%lu",
+                      n, actKey.c_str(),
+                      static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                      static_cast<unsigned long>(triggerKeyHashFromStateKey),
+                      (ctx.triggerSourceKeyExact &&
+                       ctx.triggerSourceKeyHash == triggerKeyHashFromStateKey) ? 1 : 0,
+                      ctx.triggerSourceKeyExact ? 1 : 0,
+                      static_cast<unsigned long>(dominantSourceKeyHash),
+                      static_cast<unsigned long>(xmlSpaceTriggerSourceKeyHash),
+                      static_cast<unsigned long>(dominantActionHash));
+            }
+        }
         if (pickedEvalIndex < accepted.size()) {
             const CandidateEval &picked = accepted[pickedEvalIndex];
             if (!picked.actionRefineSourceXml.empty() &&
@@ -6515,6 +6911,28 @@ namespace {
         }
         const naming::NamingUpdateKind refineUpdateKind =
             refineSiblingReplace ? naming::NamingUpdateKind::Abstract : naming::NamingUpdateKind::Refine;
+        {
+            bool candDirect = false;
+            bool candSibling = false;
+            (void)isSupportedRefineRelation(next, &candDirect, &candSibling);
+            static std::atomic<uint64_t> g_refine_updatekind_diag{0};
+            const uint64_t ud = ++g_refine_updatekind_diag;
+            const naming::NamingPtr candPar = next ? next->getParent() : nullptr;
+            if (ud <= 30 || (ud % 300) == 0 ||
+                (refineUpdateKind == naming::NamingUpdateKind::Refine && !candDirect) ||
+                (refineUpdateKind == naming::NamingUpdateKind::Refine && candSibling)) {
+                BLOG(
+                    "ape naming diag [refineUpdateKind=%s] seq=%llu act=%s "
+                    "cur=%p next=%p nextPar=%p refineSiblingReplace=%d "
+                    "candDirect=%d candSibling=%d",
+                    refineUpdateKind == naming::NamingUpdateKind::Refine ? "Refine" : "Abstract",
+                    static_cast<unsigned long long>(ud), actKey.c_str(),
+                    static_cast<const void *>(cur.get()),
+                    static_cast<const void *>(next.get()),
+                    static_cast<const void *>(candPar.get()),
+                    refineSiblingReplace ? 1 : 0, candDirect ? 1 : 0, candSibling ? 1 : 0);
+            }
+        }
         _apeStateNamingManager->updateNamingWithStateKey(
             actKey, refineUpdateKind, cur, next, ctx.triggerSourceKey);
         invalidateApeGraphStateKeyDedupMap();
@@ -7247,13 +7665,36 @@ namespace {
                 static std::atomic<uint64_t> g_coarsen_chain{0};
                 const uint64_t cn = ++g_coarsen_chain;
                 if (cn <= 10 || (cn % 128) == 0) {
+                    const uintptr_t triggerKeyHashFromStateKey =
+                        ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
                     BDLOG(
                         "ape naming: chain coarsen rollback Abstract update act=%s rollbackFrom=%p rollbackTo=%p "
-                        "trigExact=%d trigSrcH=%lu",
+                        "trigExact=%d trigSrcH=%lu trigSrcH(stateKey)=%lu equal=%d",
                         actKey.c_str(), static_cast<const void *>(rollbackFrom.get()),
                         static_cast<const void *>(rollbackTo.get()),
                         ctx.triggerSourceKeyExact ? 1 : 0,
-                        static_cast<unsigned long>(ctx.triggerSourceKeyHash));
+                        static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                        static_cast<unsigned long>(triggerKeyHashFromStateKey),
+                        (ctx.triggerSourceKeyExact &&
+                         ctx.triggerSourceKeyHash == triggerKeyHashFromStateKey) ? 1 : 0);
+                }
+            }
+            {
+                static std::atomic<uint64_t> g_coarsen_trigger_keyspace_diag{0};
+                const uint64_t n = ++g_coarsen_trigger_keyspace_diag;
+                if (n <= 120 || (n % 400) == 0) {
+                    const uintptr_t triggerKeyHashFromStateKey =
+                        ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
+                    BLOG("ape naming: coarsen trigger keyspace seq=%" PRIu64
+                         " activity=%s triggerSource=%lu trigHash(ctx)=%lu trigHash(stateKey)=%lu equal=%d "
+                         "trigExact=%d filteredAffected=%zu filteredTargets=%zu thresholdA=%d thresholdT=%d",
+                         n, actKey.c_str(), static_cast<unsigned long>(triggerSource),
+                         static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                         static_cast<unsigned long>(triggerKeyHashFromStateKey),
+                         (ctx.triggerSourceKeyExact &&
+                          ctx.triggerSourceKeyHash == triggerKeyHashFromStateKey) ? 1 : 0,
+                         ctx.triggerSourceKeyExact ? 1 : 0,
+                         filteredAffected, filteredTargets, affectedThreshold, targetThreshold);
                 }
             }
             _apeStateNamingManager->updateNamingWithStateKey(
@@ -7302,10 +7743,9 @@ namespace {
                 if (!repKeyHashes.empty()) {
                     rebuildApeStateRepresentativesForKeyHashes(activity, rollbackFrom, repKeyHashes, 1);
                 }
-                if (!focusOldKeyHashes.empty()) {
-                    remapApeTransitionAggregationForActivity(activity, rollbackFrom, rollbackTo,
-                                                             &focusOldKeyHashes);
-                }
+                remapApeTransitionAggregationForActivity(
+                    activity, rollbackFrom, rollbackTo,
+                    focusOldKeyHashes.empty() ? nullptr : &focusOldKeyHashes);
                 pruneStaleApeStatesForActivity(actKey, fpFiner, nullptr);
             }
             if (!affectedStateHashsForPrune.empty()) {
