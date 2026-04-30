@@ -75,15 +75,6 @@ std::string summarizeElementForLog(const fastbotx::ElementPtr &element, size_t c
     if (children.size() > n) {
         oss << " | ... total=" << children.size();
     }
-    const auto &xpaths = element->getCurrentXPaths();
-    oss << " xpaths=" << xpaths.size();
-    const size_t lim = std::min<size_t>(xpaths.size(), xpathLimit);
-    for (size_t i = 0; i < lim; ++i) {
-        oss << (i == 0 ? " xpathSummary=" : " | ");
-        oss << "#" << i << "=" << xpaths[i];
-    }
-    if (xpaths.size() > lim) {
-        oss << " | ... total=" << xpaths.size();
     return oss.str();
 }
 
@@ -2114,7 +2105,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4292305, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4301709, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -7997,7 +7988,25 @@ namespace {
             }
             return xmlSnapshotMemo;
         };
+        static std::atomic<uint64_t> g_build_ape_statekey{0};
+        const uint64_t seq = ++g_build_ape_statekey;
+        const std::string &xmlForEntryLog = xmlSnapshotRef();
+        const uint64_t xmlSigForEntryLog = hashStringForLog(xmlForEntryLog);
+        if (seq <= 20 || (seq % 400) == 0) {
+            BDLOG("ape statekey: build source activity=%s seq=%" PRIu64
+                  " elementPtr=%p statePtr=%p stateHash=%" PRIuPTR
+                  " xmlSig=%" PRIu64 " xmlLen=%zu %s",
+                  activity.c_str(), seq, element.get(), stateForDynamicApply.get(),
+                  static_cast<uintptr_t>(stateForDynamicApply ? stateForDynamicApply->hash() : 0),
+                  xmlSigForEntryLog, xmlForEntryLog.size(), summarizeElementForLog(element).c_str());
+        }
         gui_tree::GUITreeBuildResult built = gui_tree::GUITreeFactory::buildFromElement(element, pkg, cls);
+        if (seq <= 20 || (seq % 400) == 0) {
+            BDLOG("ape statekey: tree stage=after_buildFromElement activity=%s seq=%" PRIu64
+                  " treePtr=%p dom=%d %s",
+                  activity.c_str(), seq, built.tree.get(), built.dom ? 1 : 0,
+                  summarizeGUITreeForLog(built.tree).c_str());
+        }
         if (!built.tree || !built.dom) {
 #if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
             gui_tree::GUITreePtr fbSnap;
@@ -8011,6 +8020,12 @@ namespace {
 #else
             built = buildGuitreeFromCachedXmlPreferElement(xmlSnapshotRef(), pkg, cls);
 #endif
+            if (seq <= 20 || (seq % 400) == 0) {
+                BDLOG("ape statekey: tree stage=after_fallback_build activity=%s seq=%" PRIu64
+                      " treePtr=%p dom=%d %s",
+                      activity.c_str(), seq, built.tree.get(), built.dom ? 1 : 0,
+                      summarizeGUITreeForLog(built.tree).c_str());
+            }
         }
         if (!built.tree || !built.dom) {
             return fail(ApeStateKeyBuildFailReason::BuildTreeOrDomFailed);
@@ -8029,6 +8044,12 @@ namespace {
             naming = _apeStateNamingManager->getNamingFixedPoint(actKey, *built.tree, built.dom, fpSteps);
             if (!naming) {
                 return fail(ApeStateKeyBuildFailReason::NoNaming);
+            }
+            if (seq <= 20 || (seq % 400) == 0) {
+                BDLOG("ape statekey: tree stage=after_getNamingFixedPoint activity=%s seq=%" PRIu64
+                      " treePtr=%p namingFp=%s %s",
+                      activity.c_str(), seq, built.tree.get(), naming->fingerprintString().c_str(),
+                      summarizeGUITreeForLog(built.tree).c_str());
             }
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
             const std::string fpAfter = naming->fingerprintString();
@@ -8051,6 +8072,12 @@ namespace {
                             return fail(ApeStateKeyBuildFailReason::NoNaming);
                         }
                     }
+                }
+                if (seq <= 20 || (seq % 400) == 0) {
+                    BDLOG("ape statekey: tree stage=after_refine_rebuild activity=%s seq=%" PRIu64
+                          " treePtr=%p namingFp=%s beforeFp=%s %s",
+                          activity.c_str(), seq, built.tree.get(), naming->fingerprintString().c_str(),
+                          fpBefore.c_str(), summarizeGUITreeForLog(built.tree).c_str());
                 }
                 // Recompute focusOldKeyHash in XML-space for affectedTrees comparison
                 // (apeStateHashFromXmlWithNaming uses buildFromXml which can differ from buildFromElement).
@@ -8137,6 +8164,12 @@ namespace {
             if (!safeRebuildTree(naming, *built.tree, built.dom)) {
                 return fail(ApeStateKeyBuildFailReason::RebuildTreeFailed);
             }
+            if (seq <= 20 || (seq % 400) == 0) {
+                BDLOG("ape statekey: tree stage=after_safeRebuildTree activity=%s seq=%" PRIu64
+                      " treePtr=%p namingFp=%s %s",
+                      activity.c_str(), seq, built.tree.get(), naming->fingerprintString().c_str(),
+                      summarizeGUITreeForLog(built.tree).c_str());
+            }
         }
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         if (wantApeRlIdentity) {
@@ -8188,6 +8221,137 @@ namespace {
             }
         }
 #endif
+        if (naming && built.tree) {
+            const std::string &xmlForCompare = xmlSnapshotRef();
+            if (!xmlForCompare.empty()) {
+                const uintptr_t elementPathHash = naming::StateKey::hashFromGUITree(*built.tree);
+                uintptr_t xmlPathHash = 0;
+                int hasCmpSnap = 0;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                gui_tree::GUITreePtr cmpSnap;
+                const gui_tree::GUITreePtr *cmpSnapPtr = nullptr;
+                if (stateForDynamicApply && stateForDynamicApply->hash() != 0) {
+                    cmpSnap = apeLatestGuiTreeSnapshot(stateForDynamicApply->hash());
+                    cmpSnapPtr = cmpSnap ? &cmpSnap : nullptr;
+                    hasCmpSnap = cmpSnap ? 1 : 0;
+                }
+                const bool haveXmlPathHash = apeStateHashFromXmlWithNaming(
+                    activity, xmlForCompare, naming, &xmlPathHash, 0, nullptr, cmpSnapPtr);
+#else
+                const bool haveXmlPathHash =
+                    apeStateHashFromXmlWithNaming(activity, xmlForCompare, naming, &xmlPathHash);
+#endif
+                // Low-frequency alignment probe: report element/xml hash pair even when equal,
+                // so we can compute mismatch rate from logs instead of only seeing failures.
+                static std::atomic<uint64_t> g_ape_hash_align_seq{0};
+                const uint64_t alignSeq = ++g_ape_hash_align_seq;
+                if (haveXmlPathHash && elementPathHash != 0 && xmlPathHash != 0 &&
+                    (alignSeq <= 120 || (alignSeq % 500) == 0)) {
+                    const uintptr_t stateHashForAlign =
+                        (stateForDynamicApply && stateForDynamicApply->hash() != 0)
+                            ? stateForDynamicApply->hash()
+                            : 0;
+                    BDLOG("ape statekey: element/xml hash align seq=%" PRIu64
+                          " activity=%s stateHash=%lu elementH=%lu xmlH=%lu equal=%d hasSnap=%d xmlLen=%zu",
+                          alignSeq, activity.c_str(), static_cast<unsigned long>(stateHashForAlign),
+                          static_cast<unsigned long>(elementPathHash),
+                          static_cast<unsigned long>(xmlPathHash),
+                          elementPathHash == xmlPathHash ? 1 : 0,
+                          hasCmpSnap, xmlForCompare.size());
+                }
+
+                if (haveXmlPathHash && elementPathHash != 0 && xmlPathHash != 0 &&
+                    elementPathHash != xmlPathHash) {
+                    gui_tree::GUITreeBuildResult xmlBuilt;
+#if defined(DYNAMIC_STATE_ABSTRACTION_ENABLED) && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                    xmlBuilt = (cmpSnapPtr && *cmpSnapPtr)
+                        ? buildGuitreeFromTransitionSourcePreferSnapshot(
+                            xmlForCompare, pkg, cls, *cmpSnapPtr)
+                        : buildGuitreeFromCachedXmlPreferElement(xmlForCompare, pkg, cls);
+#else
+                    xmlBuilt = buildGuitreeFromCachedXmlPreferElement(xmlForCompare, pkg, cls);
+#endif
+                    bool haveXmlTreeForDiff =
+                        xmlBuilt.tree && xmlBuilt.dom && safeRebuildTree(naming, *xmlBuilt.tree, xmlBuilt.dom);
+                    const auto &elementXPaths = built.tree->getCurrentXPaths();
+                    const std::vector<std::string> *xmlXPaths =
+                        haveXmlTreeForDiff ? &xmlBuilt.tree->getCurrentXPaths() : nullptr;
+                    const size_t elementXPathCount = elementXPaths.size();
+                    const size_t xmlXPathCount = xmlXPaths ? xmlXPaths->size() : 0;
+                    size_t diffIndex = 0;
+                    bool foundDiff = false;
+                    if (xmlXPaths) {
+                        const size_t lim = std::min(elementXPathCount, xmlXPathCount);
+                        for (; diffIndex < lim; ++diffIndex) {
+                            if (elementXPaths[diffIndex] != (*xmlXPaths)[diffIndex]) {
+                                foundDiff = true;
+                                break;
+                            }
+                        }
+                        if (!foundDiff && elementXPathCount != xmlXPathCount) {
+                            foundDiff = true;
+                        }
+                    }
+                    auto summarizeXPaths = [](const std::vector<std::string> &xpaths) -> std::string {
+                        if (xpaths.empty()) {
+                            return std::string("(empty)");
+                        }
+                        std::ostringstream oss;
+                        const size_t lim = std::min<size_t>(xpaths.size(), 3);
+                        for (size_t i = 0; i < lim; ++i) {
+                            if (i != 0) {
+                                oss << " | ";
+                            }
+                            oss << "#" << i << "=" << xpaths[i];
+                        }
+                        if (xpaths.size() > lim) {
+                            oss << " | ... total=" << xpaths.size();
+                        }
+                        return oss.str();
+                    };
+                    const uintptr_t stateHashForLog =
+                        (stateForDynamicApply && stateForDynamicApply->hash() != 0)
+                            ? stateForDynamicApply->hash()
+                            : 0;
+                    const std::string &fp = naming->fingerprintString();
+                    BDLOG("ape statekey: element/xml hash mismatch activity=%s stateHash=%lu "
+                          "elementH=%lu xmlH=%lu hasSnap=%d xmlLen=%zu elementPtr=%p "
+                          "statePtr=%p xmlSig=%" PRIu64 " %s namingFp=%s",
+                          activity.c_str(), static_cast<unsigned long>(stateHashForLog),
+                          static_cast<unsigned long>(elementPathHash),
+                          static_cast<unsigned long>(xmlPathHash), hasCmpSnap,
+                          xmlForCompare.size(), element.get(), stateForDynamicApply.get(),
+                          hashStringForLog(xmlForCompare), summarizeElementForLog(element).c_str(),
+                          fp.c_str());
+                    BDLOG("ape statekey: tree stage=mismatch_element_tree activity=%s stateHash=%lu "
+                          "treePtr=%p %s",
+                          activity.c_str(), static_cast<unsigned long>(stateHashForLog), built.tree.get(),
+                          summarizeGUITreeForLog(built.tree).c_str());
+                    if (xmlXPaths) {
+                        const std::string firstElementDiff =
+                            (foundDiff && diffIndex < elementXPathCount) ? elementXPaths[diffIndex]
+                                                                         : std::string("(none)");
+                        const std::string firstXmlDiff =
+                            (foundDiff && diffIndex < xmlXPathCount) ? (*xmlXPaths)[diffIndex]
+                                                                     : std::string("(none)");
+                        BDLOG("ape statekey: element/xml xpath diff activity=%s stateHash=%lu "
+                              "elementCount=%zu xmlCount=%zu diffIndex=%zu elementXPath=%s xmlXPath=%s",
+                              activity.c_str(), static_cast<unsigned long>(stateHashForLog),
+                              elementXPathCount, xmlXPathCount, diffIndex,
+                              firstElementDiff.c_str(), firstXmlDiff.c_str());
+                        BDLOG("ape statekey: element/xml xpath summary activity=%s stateHash=%lu "
+                              "element=%s xml=%s",
+                              activity.c_str(), static_cast<unsigned long>(stateHashForLog),
+                              summarizeXPaths(elementXPaths).c_str(),
+                              summarizeXPaths(*xmlXPaths).c_str());
+                    } else {
+                        BDLOG("ape statekey: element/xml xpath diff unavailable activity=%s stateHash=%lu "
+                              "xmlTreeReady=0",
+                              activity.c_str(), static_cast<unsigned long>(stateHashForLog));
+                    }
+                }
+            }
+        }
         naming::StateKey kNew = naming::StateKey::fromGUITree(*built.tree);
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         if (stateForDynamicApply) {
