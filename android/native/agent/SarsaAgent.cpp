@@ -592,6 +592,12 @@ namespace fastbotx {
                                  : (basePath + ModelStorageConstants::TempModelFileExtension);
         }
 
+        // Temporarily disable loading historical FBM data; keep save paths unchanged so
+        // current run can still build and persist a fresh model snapshot.
+        BLOG("SarsaAgent: skip loading historical fbm model temporarily: %s", this->_modelSavePath.c_str());
+        clearReuseModelOnLoadFailure();
+        return;
+
         BLOG("SarsaAgent: begin load model: %s", this->_modelSavePath.c_str());
 
         std::ifstream modelFile(modelFilePath, std::ios::binary | std::ios::in);

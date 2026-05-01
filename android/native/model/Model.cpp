@@ -2105,7 +2105,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4301709, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 4302315, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -2823,7 +2823,48 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
 
             bool changed = false;
             size_t rollbackCount = 0;
-            while (coarsenActivityApeNamingIfNeeded(activity)) {
+            while (true) {
+                {
+                    ApeNamingAbstractionContext &ctxProbe = _apeNamingContext[actKeyCollected];
+                    static std::atomic<uint64_t> g_coarsen_callsite_probe{0};
+                    const uint64_t cp = ++g_coarsen_callsite_probe;
+                    if (cp <= 240 || (cp % 600) == 0) {
+                        const uintptr_t triggerKeyHashFromStateKey =
+                            ctxProbe.triggerSourceKeyExact ? ctxProbe.triggerSourceKey.hash() : 0;
+                        BDLOG("ape naming BUG_PROBE [coarsen_callsite_ctx] seq=%llu activity=%s "
+                              "before_call=1 trigHashCtx=%lu trigExact=%d trigHashStateKey=%lu "
+                              "equalCtxVsStateKey=%d old2newSize=%zu oldObsSize=%zu rollbackCount=%zu "
+                              "lastRefineSeedSeq=%llu lastRefineSeedTrigHash=%lu",
+                              static_cast<unsigned long long>(cp), actKeyCollected.c_str(),
+                              static_cast<unsigned long>(ctxProbe.triggerSourceKeyHash),
+                              ctxProbe.triggerSourceKeyExact ? 1 : 0,
+                              static_cast<unsigned long>(triggerKeyHashFromStateKey),
+                              (ctxProbe.triggerSourceKeyExact &&
+                               ctxProbe.triggerSourceKeyHash == triggerKeyHashFromStateKey) ? 1 : 0,
+                              ctxProbe.oldKeyHashToNewKeyHashes.size(),
+                              ctxProbe.oldKeyHashToObservationCount.size(),
+                              rollbackCount,
+                              static_cast<unsigned long long>(ctxProbe.lastRefineSeedSeq),
+                              static_cast<unsigned long>(ctxProbe.lastRefineSeedTriggerHash));
+                    }
+                    if (ctxProbe.lastRefineSeedSeq == 0 || ctxProbe.triggerSourceKeyHash == 0) {
+                        static std::atomic<uint64_t> g_coarsen_skip_unseeded_ctx{0};
+                        const uint64_t su = ++g_coarsen_skip_unseeded_ctx;
+                        if (su <= 200 || (su % 600) == 0) {
+                            BDLOG("ape naming: coarsen skip activity=%s reason=unseeded_context "
+                                  "lastRefineSeedSeq=%llu trigHashCtx=%lu old2newSize=%zu oldObsSize=%zu",
+                                  actKeyCollected.c_str(),
+                                  static_cast<unsigned long long>(ctxProbe.lastRefineSeedSeq),
+                                  static_cast<unsigned long>(ctxProbe.triggerSourceKeyHash),
+                                  ctxProbe.oldKeyHashToNewKeyHashes.size(),
+                                  ctxProbe.oldKeyHashToObservationCount.size());
+                        }
+                        break;
+                    }
+                }
+                if (!coarsenActivityApeNamingIfNeeded(activity)) {
+                    break;
+                }
                 _apeEventCoarsenRollbackCount++;
                 rollbackCount++;
                 changed = true;
@@ -6792,6 +6833,21 @@ namespace {
         ctx.triggerSourceKeyHash = xmlSpaceTriggerSourceKeyHash;
         ctx.triggerSourceKeyExact = false;
         ctx.triggerSourceKey = naming::StateKey::fromParts("", nullptr, {});
+        {
+            static std::atomic<uint64_t> g_refine_trigger_source_init_probe{0};
+            const uint64_t rp = ++g_refine_trigger_source_init_probe;
+            if (rp <= 160 || (rp % 500) == 0) {
+                BDLOG("ape naming BUG_PROBE [refine_trigger_source_init] seq=%llu activity=%s "
+                      "dominantSourceHash=%lu xmlSpaceSourceHash=%lu pair=%p pairHasSourceKey=%d "
+                      "nondetSrcState=%p",
+                      static_cast<unsigned long long>(rp), actKey.c_str(),
+                      static_cast<unsigned long>(dominantSourceKeyHash),
+                      static_cast<unsigned long>(xmlSpaceTriggerSourceKeyHash),
+                      static_cast<const void *>(pair),
+                      (pair && pair->hasSourceStateKey) ? 1 : 0,
+                      static_cast<const void *>(nondetSrcState.get()));
+            }
+        }
         if (pair && pair->hasSourceStateKey) {
             ctx.triggerSourceKeyExact = true;
             ctx.triggerSourceKey = pair->sourceStateKey;
@@ -6818,6 +6874,25 @@ namespace {
                 break;
             }
         }
+        {
+            static std::atomic<uint64_t> g_refine_trigger_source_resolve_probe{0};
+            const uint64_t rp = ++g_refine_trigger_source_resolve_probe;
+            if (rp <= 200 || (rp % 500) == 0) {
+                const uintptr_t resolvedStateKeyHash =
+                    ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
+                BDLOG("ape naming BUG_PROBE [refine_trigger_source_resolve] seq=%llu activity=%s "
+                      "trigHashCtx=%lu trigExact=%d trigHashStateKey=%lu "
+                      "equalCtxVsStateKey=%d old2newSize=%zu oldObsSize=%zu",
+                      static_cast<unsigned long long>(rp), actKey.c_str(),
+                      static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                      ctx.triggerSourceKeyExact ? 1 : 0,
+                      static_cast<unsigned long>(resolvedStateKeyHash),
+                      (ctx.triggerSourceKeyExact &&
+                       ctx.triggerSourceKeyHash == resolvedStateKeyHash) ? 1 : 0,
+                      ctx.oldKeyHashToNewKeyHashes.size(),
+                      ctx.oldKeyHashToObservationCount.size());
+            }
+        }
         if (!ctx.triggerSourceKeyExact) {
             BDLOG("ape naming: skip refine activity=%s reason=trigger source statekey unrecoverable srcKey=%lu act=%lu",
                   activity.c_str(), (unsigned long)dominantSourceKeyHash,
@@ -6826,6 +6901,12 @@ namespace {
                 *outFailReason = ApeRefineFailReason::Other;
             }
             return false;
+        }
+        {
+            static std::atomic<uint64_t> g_refine_seed_seq{0};
+            const uint64_t s = ++g_refine_seed_seq;
+            ctx.lastRefineSeedSeq = s;
+            ctx.lastRefineSeedTriggerHash = ctx.triggerSourceKeyHash;
         }
         ctx.triggerActionHash = dominantActionHash;
         ctx.triggerTargetCountAtRefine = dominantPairTargets;
@@ -7508,6 +7589,27 @@ namespace {
         ApeNamingAbstractionContext &ctx = _apeNamingContext[actKey];
         naming::ActivityNamingManager &mgr2 = _apeStateNamingManager->activityManager();
         naming::NamingPtr mgrCur = mgr2.getNaming(actKey);
+        {
+            static std::atomic<uint64_t> g_coarsen_entry_probe{0};
+            const uint64_t ep = ++g_coarsen_entry_probe;
+            if (ep <= 220 || (ep % 600) == 0) {
+                const uintptr_t triggerKeyHashFromStateKey =
+                    ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
+                BDLOG("ape naming BUG_PROBE [coarsen_entry_trigger_ctx] seq=%llu activity=%s mgrCur=%p "
+                      "hasParent=%d trigHashCtx=%lu trigExact=%d trigHashStateKey=%lu "
+                      "equalCtxVsStateKey=%d old2newSize=%zu oldObsSize=%zu",
+                      static_cast<unsigned long long>(ep), actKey.c_str(),
+                      static_cast<const void *>(mgrCur.get()),
+                      (mgrCur && mgrCur->getParent()) ? 1 : 0,
+                      static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                      ctx.triggerSourceKeyExact ? 1 : 0,
+                      static_cast<unsigned long>(triggerKeyHashFromStateKey),
+                      (ctx.triggerSourceKeyExact &&
+                       ctx.triggerSourceKeyHash == triggerKeyHashFromStateKey) ? 1 : 0,
+                      ctx.oldKeyHashToNewKeyHashes.size(),
+                      ctx.oldKeyHashToObservationCount.size());
+            }
+        }
         if (!mgrCur || !mgrCur->getParent()) {
             const char *detail = "missing_manager";
             int fineness = -1;
@@ -7534,12 +7636,42 @@ namespace {
         }
         
         constexpr int affectedThreshold = 8;
-        for (naming::NamingPtr tn = mgrCur; tn && tn->getParent(); tn = tn->getParent()) {
+        int tnDepth = 0;
+        for (naming::NamingPtr tn = mgrCur; tn && tn->getParent(); tn = tn->getParent(), ++tnDepth) {
             const naming::NamingPtr targetParentNaming = tn->getParent();
             const int targetThreshold = apeMaxStatesForRefinementThreshold(tn);
             uintptr_t triggerSource = 0;
-            if (ctx.triggerSourceKeyHash != 0 && tn->fingerprintString() == mgrCur->fingerprintString()) {
+            const bool sameFpAsMgrCur = (tn->fingerprintString() == mgrCur->fingerprintString());
+            if (ctx.triggerSourceKeyHash != 0 && sameFpAsMgrCur) {
                 triggerSource = ctx.triggerSourceKeyHash;
+            }
+            {
+                static std::atomic<uint64_t> g_coarsen_loop_probe{0};
+                const uint64_t lp = ++g_coarsen_loop_probe;
+                if (lp <= 200 || (lp % 600) == 0) {
+                    BDLOG("ape naming BUG_PROBE [coarsen_loop_probe] seq=%llu activity=%s depth=%d "
+                          "tn=%p mgrCur=%p tnPar=%p trigHash=%lu triggerSource=%lu sameFpAsMgrCur=%d",
+                          static_cast<unsigned long long>(lp), activity.c_str(), tnDepth,
+                          static_cast<const void *>(tn.get()), static_cast<const void *>(mgrCur.get()),
+                          static_cast<const void *>(targetParentNaming.get()),
+                          static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                          static_cast<unsigned long>(triggerSource), sameFpAsMgrCur ? 1 : 0);
+                }
+            }
+            if (ctx.triggerSourceKeyHash != 0 && !sameFpAsMgrCur) {
+                static std::atomic<uint64_t> g_coarsen_trigger_short_circuit_non_mgrcur{0};
+                const uint64_t sn = ++g_coarsen_trigger_short_circuit_non_mgrcur;
+                if (sn <= 120 || (sn % 300) == 0) {
+                    BDLOG("ape naming BUG_PROBE [coarsen_ancestor_short_circuit] seq=%llu activity=%s "
+                          "tn=%p mgrCur=%p tnPar=%p trigHash=%lu triggerSource=%lu sameFpAsMgrCur=%d "
+                          "tnFp=%s mgrFp=%s",
+                          static_cast<unsigned long long>(sn), activity.c_str(),
+                          static_cast<const void *>(tn.get()), static_cast<const void *>(mgrCur.get()),
+                          static_cast<const void *>(targetParentNaming.get()),
+                          static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                          static_cast<unsigned long>(triggerSource), sameFpAsMgrCur ? 1 : 0,
+                          tn->fingerprintString().c_str(), mgrCur->fingerprintString().c_str());
+                }
             }
             size_t filteredAffected = 0;
             size_t filteredTargets = 0;
@@ -7548,6 +7680,16 @@ namespace {
             // originState.equals(oldState) filtering semantics used by optimization 3.
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
             if (triggerSource == 0) {
+                static std::atomic<uint64_t> g_coarsen_continue_trigger_zero{0};
+                const uint64_t cz = ++g_coarsen_continue_trigger_zero;
+                if (cz <= 160 || (cz % 500) == 0) {
+                    BDLOG("ape naming BUG_PROBE [coarsen_continue_trigger_zero] seq=%llu activity=%s "
+                          "depth=%d tn=%p mgrCur=%p trigHash=%lu sameFpAsMgrCur=%d",
+                          static_cast<unsigned long long>(cz), activity.c_str(), tnDepth,
+                          static_cast<const void *>(tn.get()), static_cast<const void *>(mgrCur.get()),
+                          static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                          sameFpAsMgrCur ? 1 : 0);
+                }
                 continue;
             }
             {
@@ -7628,6 +7770,16 @@ namespace {
             }
 #else
             if (triggerSource == 0) {
+                static std::atomic<uint64_t> g_coarsen_continue_trigger_zero{0};
+                const uint64_t cz = ++g_coarsen_continue_trigger_zero;
+                if (cz <= 160 || (cz % 500) == 0) {
+                    BDLOG("ape naming BUG_PROBE [coarsen_continue_trigger_zero] seq=%llu activity=%s "
+                          "depth=%d tn=%p mgrCur=%p trigHash=%lu sameFpAsMgrCur=%d",
+                          static_cast<unsigned long long>(cz), activity.c_str(), tnDepth,
+                          static_cast<const void *>(tn.get()), static_cast<const void *>(mgrCur.get()),
+                          static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                          sameFpAsMgrCur ? 1 : 0);
+                }
                 continue;
             }
             {

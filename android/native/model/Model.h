@@ -88,6 +88,9 @@ namespace gui_tree {
         uintptr_t triggerActionHash{0};
         std::unordered_set<uintptr_t> triggerTargetKeyHashes;
         size_t triggerTargetCountAtRefine{0};
+        // Diagnostic: last successful refine seed for this activity.
+        uint64_t lastRefineSeedSeq{0};
+        uintptr_t lastRefineSeedTriggerHash{0};
     };
 
     struct ApeActionDivergentPredicate {

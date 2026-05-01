@@ -1140,6 +1140,12 @@ namespace fastbotx {
                                           ? (basePath + ".static" + ModelStorageConstants::TempModelFileExtension)
                                           : (basePath + ModelStorageConstants::TempModelFileExtension);
         }
+
+        // Temporarily disable loading historical FBM data; keep save paths unchanged so
+        // current run can still build and persist a fresh model snapshot.
+        BLOG("Double SARSA: skip loading historical fbm model temporarily: %s", this->_modelSavePath.c_str());
+        clearReuseModelOnLoadFailure();
+        return;
         
         BLOG("Double SARSA: begin load model: %s", this->_modelSavePath.c_str());
 

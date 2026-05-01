@@ -363,10 +363,43 @@ namespace {
                         new_n->getFineness(), namingFpHash(old_n), namingFpHash(new_n));
                 }
             }
-            if (!isDirectChildOf(old_n, new_n)) {
+            const bool directChild = isDirectChildOf(old_n, new_n);
+            if (!directChild) {
                 const uint64_t c = ++g_u_refine_not_direct_child;
                 logStateNamingSample("update_refine_not_direct_child", c);
                 logRefineNotDirectChildDetail(c, activity_key, old_n, new_n);
+                auto distTo = [](const NamingPtr &from, const NamingPtr &target) -> int {
+                    if (!from || !target) {
+                        return -1;
+                    }
+                    int d = 0;
+                    for (NamingPtr p = from->getParent(); p; p = p->getParent(), ++d) {
+                        if (p == target) {
+                            return d + 1;
+                        }
+                    }
+                    return -1;
+                };
+                const NamingPtr old_par = old_n ? old_n->getParent() : nullptr;
+                const NamingPtr new_par = new_n ? new_n->getParent() : nullptr;
+                const int sibling_share_parent =
+                    (old_par && new_par && old_par == new_par) ? 1 : 0;
+                const int old_is_ancestor_of_new = isAncestorNaming(old_n, new_n) ? 1 : 0;
+                const int new_is_ancestor_of_old = isAncestorNaming(new_n, old_n) ? 1 : 0;
+                const int new_to_old_dist = distTo(new_n, old_n);
+                const int old_to_new_dist = distTo(old_n, new_n);
+                BDLOG(
+                    "state naming BUG_PROBE [non_direct_refine_still_applied] seq=%llu act=%s "
+                    "old=%p new=%p oldPar=%p newPar=%p sibling_share_parent=%d "
+                    "old_is_ancestor_of_new=%d new_is_ancestor_of_old=%d old_to_new_dist=%d new_to_old_dist=%d "
+                    "oldFin=%d newFin=%d old_fp=%s new_fp=%s",
+                    static_cast<unsigned long long>(c), activity_key.c_str(),
+                    static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()),
+                    static_cast<const void *>(old_par.get()), static_cast<const void *>(new_par.get()),
+                    sibling_share_parent, old_is_ancestor_of_new, new_is_ancestor_of_old,
+                    old_to_new_dist, new_to_old_dist,
+                    old_n ? old_n->getFineness() : -1, new_n ? new_n->getFineness() : -1,
+                    namingFpSnippet(old_n).c_str(), namingFpSnippet(new_n).c_str());
             }
             NamingEdge edge = inferRefineEdge(old_n, new_n);
             if (edge.from && edge.to) {
@@ -375,6 +408,16 @@ namespace {
                 const uint64_t c = ++g_u_refine_infer_edge_failed;
                 logStateNamingSample("update_refine_infer_edge_failed", c);
                 logRefineInferEdgeFailedDetail(c, activity_key, old_n, new_n);
+            }
+            if (!directChild) {
+                BDLOG(
+                    "state naming BUG_PROBE [WILL_APPLY_NON_DIRECT_REFINE] act=%s old=%p new=%p "
+                    "edge_ok=%d edge.from=%p edge.to=%p",
+                    activity_key.c_str(), static_cast<const void *>(old_n.get()),
+                    static_cast<const void *>(new_n.get()),
+                    (edge.from && edge.to) ? 1 : 0,
+                    static_cast<const void *>(edge.from.get()),
+                    static_cast<const void *>(edge.to.get()));
             }
             const int newFinForLog = new_n->getFineness();
             const void *const newPtrForLog = static_cast<const void *>(new_n.get());
@@ -505,6 +548,14 @@ namespace {
                 naming_to_edge_.erase(itSrc);
             }
         };
+        if (kind == NamingUpdateKind::Refine && !isDirectChildOf(old_n, new_n)) {
+            BDLOG(
+                "state naming BUG_PROBE [statekey_non_direct_refine_forward] act=%s sk_h=%" PRIuPTR
+                " old=%p new=%p old_fp=%s new_fp=%s",
+                activity_key.c_str(), static_cast<uintptr_t>(state_key.hash()),
+                static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()),
+                namingFpSnippet(old_n).c_str(), namingFpSnippet(new_n).c_str());
+        }
         updateNaming(activity_key, kind, old_n, new_n);
         NamingPtr stored_after = activity_mgr_->getNaming(activity_key);
         if (stored_after != new_n) {
@@ -773,6 +824,16 @@ namespace {
                   static_cast<unsigned long long>(shadowHops), (shadow != oneHop) ? 1 : 0,
                   static_cast<unsigned long long>(mismatchCount),
                   static_cast<unsigned long long>(multiHopCount), namingFpSnippet(source).c_str(),
+                  namingFpSnippet(oneHop).c_str(), namingFpSnippet(shadow).c_str());
+        }
+        if (shadow != oneHop) {
+            BDLOG("state naming BUG_PROBE [treeToNaming_const_truncated_to_onehop] seq=%llu "
+                  "activity=%s stateHash=%" PRIuPTR " source=%p oneHop=%p shadow=%p "
+                  "shadowHops=%llu will_return_oneHop=1 sourceFp=%s oneHopFp=%s shadowFp=%s",
+                  static_cast<unsigned long long>(entrySeq), activityKeyFromTree(tree).c_str(),
+                  static_cast<uintptr_t>(h), static_cast<const void *>(source.get()),
+                  static_cast<const void *>(oneHop.get()), static_cast<const void *>(shadow.get()),
+                  static_cast<unsigned long long>(shadowHops), namingFpSnippet(source).c_str(),
                   namingFpSnippet(oneHop).c_str(), namingFpSnippet(shadow).c_str());
         }
 
