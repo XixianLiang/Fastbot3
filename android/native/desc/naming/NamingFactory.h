@@ -39,6 +39,10 @@ namespace gui_tree {
 }
 namespace naming {
 
+    /** Thread-local stage tag for rebuild diagnostics (e.g. target_resolve/shared_check). */
+    void setRebuildLogStage(const char *stage);
+    void clearRebuildLogStage();
+
     enum class ApeBaseNamingMode : unsigned char {
         ActionType = 0,
         TypeOnly = 1,

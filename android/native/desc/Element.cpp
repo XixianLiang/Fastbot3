@@ -14,6 +14,10 @@
 #include <cstdio>
 #include <cstring>
 
+#ifndef FASTBOT_LOG_PARSED_GUITREE
+#define FASTBOT_LOG_PARSED_GUITREE 0
+#endif
+
 
 namespace fastbotx {
 namespace {
@@ -40,6 +44,7 @@ namespace {
     }
 
     /// Log parsed DOM tree with node hierarchy (indent by depth). Stops when *lineCount <= 0 or depth > maxDepth.
+#if FASTBOT_LOG_PARSED_GUITREE
     static void logDomTreeRecursive(const ElementPtr &e, int depth, int *lineCount, const int maxDepth = 40) {
         if (!e || depth > maxDepth) return;
         const int maxLines = 600;
@@ -47,20 +52,24 @@ namespace {
         if (*lineCount <= 0) return;
         std::string indent(static_cast<size_t>(depth * 2), ' ');
         std::string text = e->getText();
+        std::string contentDesc = e->getContentDesc();
         if (text.size() > 36) text = text.substr(0, 33) + "...";
+        if (contentDesc.size() > 36) contentDesc = contentDesc.substr(0, 33) + "...";
         for (char &c : text) if (c == '\n' || c == '\r') c = ' ';
+        for (char &c : contentDesc) if (c == '\n' || c == '\r') c = ' ';
         const char *rid = e->getResourceID().c_str();
         const char *clazz = e->getClassname().c_str();
         RectPtr b = e->getBounds();
         char boundsStr[32] = "";
         if (b) std::snprintf(boundsStr, sizeof(boundsStr), "[%d,%d][%d,%d]", b->left, b->top, b->right, b->bottom);
-        BLOG("[domtree] %snode index=%d class=%s resource-id=%s text=\"%s\" bounds=%s children=%zu",
+        BLOG("[domtree] %snode index=%d class=%s resource-id=%s text=\"%s\" content-desc=\"%s\" bounds=%s children=%zu",
              indent.c_str(), e->getIndex(), clazz[0] ? clazz : "(none)", rid[0] ? rid : "(none)",
-             text.c_str(), boundsStr, e->getChildren().size());
+             text.c_str(), contentDesc.c_str(), boundsStr, e->getChildren().size());
         --(*lineCount);
         for (const auto &child : e->getChildren())
             logDomTreeRecursive(child, depth + 1, lineCount, maxDepth);
     }
+#endif
 
     /// Try short then long attribute name (SECURITY_AND_OPTIMIZATION §7 - Java outputs rid/cd/bnd etc.)
     static bool queryStringAttr(const tinyxml2::XMLElement *node, const char *shortName, const char *longName, const char *&out) {
@@ -361,7 +370,7 @@ namespace {
 
         // Keep root scrollable as reported by source tree; do not force-enable.
 
-#if FASTBOT_LOG_RAW_GUITREE
+#if FASTBOT_LOG_PARSED_GUITREE
         int domTreeLineCount = 0;
         logDomTreeRecursive(elementPtr, 0, &domTreeLineCount);
 #endif
@@ -450,7 +459,7 @@ namespace {
         ElementPtr root = Element::parseBinaryNode(buf, len, &offset, nullptr);
         if (!root) return nullptr;
         // Keep root scrollable as reported by source tree; do not force-enable.
-#if FASTBOT_LOG_RAW_GUITREE
+#if FASTBOT_LOG_PARSED_GUITREE
         BLOG("[domtree] from binary (no raw XML); parsed tree hierarchy:");
         int domTreeLineCount = 0;
         logDomTreeRecursive(root, 0, &domTreeLineCount);

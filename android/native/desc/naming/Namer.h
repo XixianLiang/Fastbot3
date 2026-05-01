@@ -23,6 +23,7 @@
 #include "NamerType.h"
 #include "../gui_tree/GUITreeNode.h"
 
+#include <string>
 #include <vector>
 
 namespace fastbotx {
@@ -70,6 +71,9 @@ namespace naming {
 
     /** Lexicographic compare on sorted namer-type sets (Java Namelet.namerComparator). */
     int compareNamer(const Namer &a, const Namer &b);
+
+    /** Stable semantic key for Namer (type-set based, independent from pointer identity). */
+    std::string namerSemanticKey(const Namer &n);
 
 } // namespace naming
 } // namespace fastbotx

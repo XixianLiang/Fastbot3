@@ -435,17 +435,17 @@ namespace {
             std::vector<gui_tree::GUITreeNodePtr> nodes;
             std::vector<NameletPtr> namelets;
         };
-        struct NamePtrHash {
-            size_t operator()(const NamePtr &p) const {
-                return std::hash<const void *>()(p.get());
+        auto nameSemanticKey = [](const NamePtr &name) -> std::string {
+            if (!name) {
+                return std::string();
             }
+            const NamerPtr nmr = name->getNamer();
+            const std::string nk = nmr ? namerSemanticKey(*nmr) : std::string("0:");
+            const std::string nv =
+                name->cacheKeyString().empty() ? name->toXPath() : name->cacheKeyString();
+            return nk + "|" + nv;
         };
-        struct NamePtrEq {
-            bool operator()(const NamePtr &a, const NamePtr &b) const {
-                return a.get() == b.get();
-            }
-        };
-        std::unordered_map<NamePtr, Group, NamePtrHash, NamePtrEq> groups;
+        std::unordered_map<std::string, Group> groups;
         groups.reserve(bfs_nodes.empty() ? 64 : bfs_nodes.size());
         for (gui_tree::GUITreeNode *raw : bfs_nodes) {
             auto itNode = node_ref.find(raw);
@@ -477,28 +477,31 @@ namespace {
                     describeNodeForNamingError(raw) +
                     (dumped.empty() ? std::string() : ("; xmlDump=" + dumped)));
             }
-            Group &g = groups[name];
+            Group &g = groups[nameSemanticKey(name)];
             if (!g.name) g.name = name;
             g.nodes.push_back(nptr);
             g.namelets.push_back(selected);
         }
-        std::vector<NamePtr> sorted_names;
-        sorted_names.reserve(groups.size());
-        for (const auto &kv : groups) {
-            sorted_names.push_back(kv.first);
+        std::vector<Group *> sorted_groups;
+        sorted_groups.reserve(groups.size());
+        for (auto &kv : groups) {
+            sorted_groups.push_back(&kv.second);
         }
-        std::sort(sorted_names.begin(), sorted_names.end(), [](const NamePtr &a, const NamePtr &b) {
+        std::sort(sorted_groups.begin(), sorted_groups.end(), [](const Group *ga, const Group *gb) {
+            const NamePtr a = ga ? ga->name : nullptr;
+            const NamePtr b = gb ? gb->name : nullptr;
             if (!a || !b) {
                 return a.get() < b.get();
             }
             return *a < *b;
         });
-        for (const auto &nameKey : sorted_names) {
-            auto it = groups.find(nameKey);
-            if (it == groups.end() || !it->second.name) continue;
-            out.names.push_back(it->second.name);
-            out.node_groups.push_back(std::move(it->second.nodes));
-            out.namelet_groups.push_back(std::move(it->second.namelets));
+        for (Group *g : sorted_groups) {
+            if (!g || !g->name) {
+                continue;
+            }
+            out.names.push_back(g->name);
+            out.node_groups.push_back(std::move(g->nodes));
+            out.namelet_groups.push_back(std::move(g->namelets));
         }
         if (shouldLog) {
             size_t foreignOut = 0;

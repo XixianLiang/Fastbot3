@@ -20,6 +20,7 @@
 #include "Namer.h"
 
 #include <algorithm>
+#include <string>
 #include <vector>
 
 namespace fastbotx {
@@ -50,6 +51,21 @@ namespace naming {
             }
         }
         return 0;
+    }
+
+    std::string namerSemanticKey(const Namer &n) {
+        std::vector<NamerType> ts = n.getNamerTypes();
+        auto ord = [](NamerType t) -> unsigned { return static_cast<unsigned>(t); };
+        std::sort(ts.begin(), ts.end(), [&](NamerType x, NamerType y) { return ord(x) < ord(y); });
+        std::string out = std::to_string(static_cast<unsigned long long>(n.typeDimensionMask()));
+        out.push_back(':');
+        for (size_t i = 0; i < ts.size(); ++i) {
+            if (i != 0) {
+                out.push_back(',');
+            }
+            out.append(std::to_string(static_cast<unsigned long long>(ord(ts[i]))));
+        }
+        return out;
     }
 
 } // namespace naming

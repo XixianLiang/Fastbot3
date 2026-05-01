@@ -1,4 +1,5 @@
 #include "NameManager.h"
+#include "Namer.h"
 
 #include <mutex>
 #include <unordered_map>
@@ -12,7 +13,7 @@ struct NameCacheBucket {
 };
 
 std::mutex gNameCacheMu;
-std::unordered_map<const Namer *, NameCacheBucket> gNameCache;
+std::unordered_map<std::string, NameCacheBucket> gNameCache;
 int gNameOrderCounter = 0;
 
 } // namespace
@@ -21,7 +22,7 @@ NamePtr cacheName(const NamePtr &name) {
     if (!name || !name->getNamer()) {
         return name;
     }
-    const Namer *namerKey = name->getNamer().get();
+    const std::string namerKey = namerSemanticKey(*name->getNamer());
     const std::string cacheKey = name->cacheKeyString();
     std::lock_guard<std::mutex> lk(gNameCacheMu);
     NameCacheBucket &bucket = gNameCache[namerKey];

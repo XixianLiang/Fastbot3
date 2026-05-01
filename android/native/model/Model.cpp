@@ -465,9 +465,9 @@ std::string nameIdentityKey(const naming::NamePtr &nm) {
         return std::string();
     }
     const naming::NamerPtr nmr = nm->getNamer();
-    const uintptr_t namerId = reinterpret_cast<uintptr_t>(nmr.get());
+    const std::string nk = nmr ? naming::namerSemanticKey(*nmr) : std::string("0:");
     const std::string key = nm->cacheKeyString().empty() ? nm->toXPath() : nm->cacheKeyString();
-    return std::to_string(static_cast<unsigned long long>(namerId)) + "|" + key;
+    return nk + "|" + key;
 }
 
 std::string apeNodeDebugSummary(gui_tree::GUITreeNode *node) {
@@ -814,22 +814,25 @@ namespace {
 namespace {
 using ApeHashCache = std::unordered_map<uintptr_t, uintptr_t>;
 bool safeRebuildTree(const fastbotx::naming::NamingPtr &nm, fastbotx::gui_tree::GUITree &tree,
-                     const std::shared_ptr<fastbotx::gui_tree::XPathNodeMapper> &dom) {
+                     const std::shared_ptr<fastbotx::gui_tree::XPathNodeMapper> &dom,
+                     const char *stage = nullptr) {
     static std::atomic<uint64_t> g_rebuild_tree_seq{0};
     const uint64_t seq = ++g_rebuild_tree_seq;
-    const bool shouldLog = (seq <= 80 || (seq % 400) == 0);
+    const bool shouldLog = (seq <= 20 || (seq % 400) == 0);
+    const char *stageTag = (stage && *stage) ? stage : "-";
     const fastbotx::gui_tree::GUITreePtr treeAlias(&tree, [](fastbotx::gui_tree::GUITree *) {});
     const std::string beforeSummary = shouldLog ? summarizeGUITreeForLog(treeAlias) : std::string();
     if (shouldLog) {
-        BLOG("ape rebuild: enter seq=%" PRIu64 " namingFp=%s treePtr=%p dom=%d %s",
-             seq, nm ? nm->fingerprintString().c_str() : "(null)", &tree, dom ? 1 : 0,
+        BLOG("ape rebuild: enter seq=%" PRIu64 " stage=%s namingFp=%s treePtr=%p dom=%d %s",
+             seq, stageTag, nm ? nm->fingerprintString().c_str() : "(null)", &tree, dom ? 1 : 0,
              beforeSummary.c_str());
     }
-
+    fastbotx::naming::setRebuildLogStage(stageTag);
     const bool ok = fastbotx::naming::NamingFactory::rebuildTree(nm, tree, dom);
+    fastbotx::naming::clearRebuildLogStage();
     if (shouldLog) {
-        BLOG("ape rebuild: exit seq=%" PRIu64 " ok=%d treePtr=%p %s",
-             seq, ok ? 1 : 0, &tree, summarizeGUITreeForLog(treeAlias).c_str());
+        BLOG("ape rebuild: exit seq=%" PRIu64 " stage=%s ok=%d treePtr=%p %s",
+             seq, stageTag, ok ? 1 : 0, &tree, summarizeGUITreeForLog(treeAlias).c_str());
     }
     return ok;
 }
@@ -877,7 +880,7 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
     if (!built.tree || !built.dom) {
         return false;
     }
-    if (!safeRebuildTree(naming, *built.tree, built.dom)) {
+    if (!safeRebuildTree(naming, *built.tree, built.dom, "state_check")) {
         return false;
     }
     if (seq <= 40 || (seq % 400) == 0) {
@@ -1048,7 +1051,10 @@ bool apeCheckStateRefinementLikeJava(const std::string &activity, const fastbotx
 }
 
 bool apeNameletMatches(const naming::NameletPtr &a, const naming::NameletPtr &b) {
-    return a.get() == b.get();
+    if (!a || !b) {
+        return a.get() == b.get();
+    }
+    return *a == *b;
 }
 
 ssize_t apeFindNameletIndex(const naming::NamingPtr &naming, const naming::NameletPtr &needle) {
@@ -1265,7 +1271,7 @@ bool apeResolveParentNameletAndWidgetXPath(const std::string &activity, const na
         if (!built.tree || !built.dom) {
             return false;
         }
-        if (!safeRebuildTree(cur, *built.tree, built.dom)) {
+        if (!safeRebuildTree(cur, *built.tree, built.dom, "target_resolve")) {
             return false;
         }
         std::vector<gui_tree::GUITreeNode *> po;
@@ -1342,7 +1348,7 @@ bool apeResolveTargetXPathNameLikeJava(const std::string &activity, const naming
         BDLOG("ape refine: target-name resolve build_failed activity=%s", activity.c_str());
         return false;
     }
-    if (!safeRebuildTree(cur, *built.tree, built.dom)) {
+    if (!safeRebuildTree(cur, *built.tree, built.dom, "target_resolve")) {
         BDLOG("ape refine: target-name resolve rebuild_failed activity=%s", activity.c_str());
         return false;
     }
@@ -1449,7 +1455,7 @@ bool isSharedAction(
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq));
             continue;
         }
-        if (!safeRebuildTree(cur, *built.tree, built.dom)) {
+        if (!safeRebuildTree(cur, *built.tree, built.dom, "shared_check")) {
             BDLOG("ape refine: shared-check fail reason=rebuild_failed activity=%s branchIdx=%zu seq=%llu",
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq));
             continue;
@@ -1553,7 +1559,7 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
                       apeJoinStableIds(tt.resolvedNodeStableIds).c_str());
                 return false;
             }
-            if (!safeRebuildTree(newNaming, *built.tree, built.dom)) {
+            if (!safeRebuildTree(newNaming, *built.tree, built.dom, "action_check")) {
                 BDLOG("ape refine: action-check fail reason=source_tree_rebuild_failed activity=%s branch=%s idx=%zu seq=%llu "
                       "srcStateHash=%zu targetStateHash=%zu stableIds=%s",
                       activity.c_str(), branchTag, branchIndex,
@@ -1855,7 +1861,7 @@ bool apeCheckOverAbstractedActionRefinementLikeJava(const std::string &activity,
     if (!built.tree || !built.dom) {
         return false;
     }
-    if (!safeRebuildTree(newNaming, *built.tree, built.dom)) {
+    if (!safeRebuildTree(newNaming, *built.tree, built.dom, "action_check")) {
         return false;
     }
     const naming::StateKey sk = naming::StateKey::fromGUITree(*built.tree);
@@ -2013,7 +2019,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 4302315, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 05012200, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -3055,7 +3061,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 if (!builtProbe.tree || !builtProbe.dom) {
                     return false;
                 }
-                if (!safeRebuildTree(cur, *builtProbe.tree, builtProbe.dom)) {
+                if (!safeRebuildTree(cur, *builtProbe.tree, builtProbe.dom, "action_check")) {
                     return false;
                 }
 
@@ -5278,7 +5284,7 @@ namespace {
         if (!built.tree || !built.dom) {
             return false;
         }
-        if (!safeRebuildTree(cur, *built.tree, built.dom)) {
+        if (!safeRebuildTree(cur, *built.tree, built.dom, "target_resolve")) {
             return false;
         }
         std::vector<gui_tree::GUITreeNode *> po;
