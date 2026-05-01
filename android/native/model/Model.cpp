@@ -1496,6 +1496,7 @@ bool apeIsSharedTargetWidgetLikeJava(const std::string &activity, const naming::
         std::vector<gui_tree::GUITreeNode *> po;
         collectGUITreeNodesPreOrder(built.tree->getRootNode(), &po);
         int sameNameCount = 0;
+        gui_tree::GUITreeNode *firstMatchedNode = nullptr;
         for (gui_tree::GUITreeNode *node : po) {
             if (!node) {
                 continue;
@@ -1504,7 +1505,11 @@ bool apeIsSharedTargetWidgetLikeJava(const std::string &activity, const naming::
             if (!nm) {
                 continue;
             }
-            if (nm->toXPath() == targetXPathName) {
+            const std::string nodeXPath = nm->toXPath();
+            if (nodeXPath == targetXPathName) {
+                if (!firstMatchedNode) {
+                    firstMatchedNode = node;
+                }
                 ++sameNameCount;
                 if (sameNameCount > 1) {
                     BDLOG("ape refine: shared-check hit activity=%s targetName=%s sameNameCount=%d",
@@ -1512,6 +1517,44 @@ bool apeIsSharedTargetWidgetLikeJava(const std::string &activity, const naming::
                     return true;
                 }
             }
+        }
+        if (sameNameCount == 1 && firstMatchedNode) {
+            const std::string &hitCls = firstMatchedNode->getClassName();
+            const std::string &hitRes = firstMatchedNode->getResourceId();
+            const Rect &hitBounds = firstMatchedNode->getBounds();
+            const bool hitActionable = firstMatchedNode->isClickable() || firstMatchedNode->isLongClickable() ||
+                                       firstMatchedNode->isCheckable() || firstMatchedNode->getScrollable() > 0;
+            size_t sameClassCount = 0;
+            size_t sameClassResCount = 0;
+            size_t sameBoundsCount = 0;
+            size_t sameClassResActionableCount = 0;
+            for (gui_tree::GUITreeNode *cand : po) {
+                if (!cand) {
+                    continue;
+                }
+                if (cand->getClassName() == hitCls) {
+                    ++sameClassCount;
+                    if (cand->getResourceId() == hitRes) {
+                        ++sameClassResCount;
+                        const bool candActionable =
+                            cand->isClickable() || cand->isLongClickable() || cand->isCheckable() ||
+                            cand->getScrollable() > 0;
+                        if (candActionable) {
+                            ++sameClassResActionableCount;
+                        }
+                    }
+                }
+                if (cand->getBounds() == hitBounds) {
+                    ++sameBoundsCount;
+                }
+            }
+            BDLOG("ape refine: shared-check miss detail activity=%s targetName=%s "
+                  "sameNameCount=%d class=%s resId=%s index=%d bounds=%s actionable=%d "
+                  "sameClass=%zu sameClassRes=%zu sameClassResActionable=%zu sameBounds=%zu",
+                  activity.c_str(), targetXPathName.c_str(), sameNameCount,
+                  hitCls.c_str(), hitRes.c_str(), firstMatchedNode->getIndex(),
+                  hitBounds.toString().c_str(), hitActionable ? 1 : 0,
+                  sameClassCount, sameClassResCount, sameClassResActionableCount, sameBoundsCount);
         }
         BDLOG("ape refine: shared-check miss activity=%s targetName=%s sameNameCount=%d",
               activity.c_str(), targetXPathName.c_str(), sameNameCount);
@@ -5989,6 +6032,24 @@ namespace {
                                                             parASnapsPtr);
             (void)apeCollectSharedTargetWidgetStatsLikeJava(activity, cur, branchBXml, tr, &sharedBStats,
                                                             parBSnapsPtr);
+            // Shadow signal (log-only): compare current XPath-name-based shared check with
+            // a bounds-multiplicity proxy. This helps diagnose whether target_not_shared is
+            // caused by strict name matching or by sparse branch evidence.
+            const bool sharedByXPath = sharedA || sharedB;
+            const bool sharedByBoundsProxy =
+                (sharedAStats.maxSameBoundsCount > 1) || (sharedBStats.maxSameBoundsCount > 1);
+            const bool sparseSharedEvidence =
+                (sharedAStats.xmlCount < 2) || (sharedBStats.xmlCount < 2);
+            BDLOG("ape naming: shared_check_compare activity=%s srcKey=%lu act=%lu "
+                  "byXPath=%d byBoundsProxy=%d sparseEvidence=%d "
+                  "branchA(xml=%zu maxBounds=%zu totalMatch=%zu) "
+                  "branchB(xml=%zu maxBounds=%zu totalMatch=%zu) targetName=%s",
+                  activity.c_str(), (unsigned long)dominantSourceKeyHash,
+                  (unsigned long)dominantActionHash, sharedByXPath ? 1 : 0,
+                  sharedByBoundsProxy ? 1 : 0, sparseSharedEvidence ? 1 : 0,
+                  sharedAStats.xmlCount, sharedAStats.maxSameBoundsCount, sharedAStats.totalBoundsMatches,
+                  sharedBStats.xmlCount, sharedBStats.maxSameBoundsCount, sharedBStats.totalBoundsMatches,
+                  targetXPathName.c_str());
             if (!sharedA && !sharedB) {
                 BDLOG("ape naming: skip action refinement activity=%s reason=target_not_shared srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
@@ -7640,11 +7701,10 @@ namespace {
         for (naming::NamingPtr tn = mgrCur; tn && tn->getParent(); tn = tn->getParent(), ++tnDepth) {
             const naming::NamingPtr targetParentNaming = tn->getParent();
             const int targetThreshold = apeMaxStatesForRefinementThreshold(tn);
-            uintptr_t triggerSource = 0;
+            // Use the same trigger key for every ancestor layer; gating triggerSource on
+            // tn->fingerprintString() == mgrCur->fingerprintString() skipped ancestor evaluation.
+            const uintptr_t triggerSource = ctx.triggerSourceKeyHash;
             const bool sameFpAsMgrCur = (tn->fingerprintString() == mgrCur->fingerprintString());
-            if (ctx.triggerSourceKeyHash != 0 && sameFpAsMgrCur) {
-                triggerSource = ctx.triggerSourceKeyHash;
-            }
             {
                 static std::atomic<uint64_t> g_coarsen_loop_probe{0};
                 const uint64_t lp = ++g_coarsen_loop_probe;
@@ -7656,21 +7716,6 @@ namespace {
                           static_cast<const void *>(targetParentNaming.get()),
                           static_cast<unsigned long>(ctx.triggerSourceKeyHash),
                           static_cast<unsigned long>(triggerSource), sameFpAsMgrCur ? 1 : 0);
-                }
-            }
-            if (ctx.triggerSourceKeyHash != 0 && !sameFpAsMgrCur) {
-                static std::atomic<uint64_t> g_coarsen_trigger_short_circuit_non_mgrcur{0};
-                const uint64_t sn = ++g_coarsen_trigger_short_circuit_non_mgrcur;
-                if (sn <= 120 || (sn % 300) == 0) {
-                    BDLOG("ape naming BUG_PROBE [coarsen_ancestor_short_circuit] seq=%llu activity=%s "
-                          "tn=%p mgrCur=%p tnPar=%p trigHash=%lu triggerSource=%lu sameFpAsMgrCur=%d "
-                          "tnFp=%s mgrFp=%s",
-                          static_cast<unsigned long long>(sn), activity.c_str(),
-                          static_cast<const void *>(tn.get()), static_cast<const void *>(mgrCur.get()),
-                          static_cast<const void *>(targetParentNaming.get()),
-                          static_cast<unsigned long>(ctx.triggerSourceKeyHash),
-                          static_cast<unsigned long>(triggerSource), sameFpAsMgrCur ? 1 : 0,
-                          tn->fingerprintString().c_str(), mgrCur->fingerprintString().c_str());
                 }
             }
             size_t filteredAffected = 0;
