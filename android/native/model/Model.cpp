@@ -2019,7 +2019,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 05021333, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 05021710, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -5503,6 +5503,9 @@ namespace {
         const int apeMaxStatesPerActivity =
             _preference ? _preference->getApeMaxStatesPerActivity() : 10;
         const int apeMaxGuitreesPerState = _preference ? _preference->getApeMaxGuitreesPerState() : 20;
+        // APE *intent* (cf. paper / state chart): cap distinct states per activity, and GUITrees per
+        // logical state. Java NamingFactory.refine line 280 wrongly uses an.getStates().size() for the
+        // second check; Fastbot uses rep-state guitrees (see log: maxGuitreesPerState).
         if (static_cast<int>(graphStatesInActivity) > apeMaxStatesPerActivity) {
             BDLOG("ape naming: skip refine activity=%s reason=maxStatesPerActivity graphStates=%zu max=%d",
                   activity.c_str(), graphStatesInActivity, apeMaxStatesPerActivity);
@@ -6346,11 +6349,10 @@ namespace {
                 if (!seenW.insert(w.get()).second) {
                     continue;
                 }
+                // APE stateRefinement: HashSet<Name> iteration order; preserve getActions() insertion order +
+                // first-seen dedup (LinkedHashSet analogue). Do not sort by widget hash — that diverged from Java.
                 nameCandidates.push_back(w);
             }
-            std::sort(nameCandidates.begin(), nameCandidates.end(), [](const WidgetPtr &a, const WidgetPtr &b) {
-                return a->hash() < b->hash();
-            });
             for (const WidgetPtr &tw : nameCandidates) {
                 if (!tw) {
                     continue;
@@ -6584,13 +6586,15 @@ namespace {
             }
             return false;
         }
+        if (naming::NamingPtr mgrCurPreSort = _apeStateNamingManager->getNamingForActivity(actKey)) {
+            cur = mgrCurPreSort;
+        }
+        // APE RefinementResult comparator: RefinementResult.states1/states2 are never populated in Java,
+        // so the size branch is a no-op at runtime; primary order matches NamerComparator + expr.
         std::stable_sort(accepted.begin(), accepted.end(), [&](const CandidateEval &a, const CandidateEval &b) {
             if (a.useApeJavaStyleComparator && b.useApeJavaStyleComparator) {
-                if (a.partitionTotal != b.partitionTotal) {
-                    return a.partitionTotal < b.partitionTotal;
-                }
                 {
-                    // NamingFactory.comparator: NamerComparator on originalNamelet, then on updatedNamelet.
+                    // NamingFactory.comparator: originalNamelet namer, then updatedNamelet namer, then expr.
                     if (a.originalNameletNamer && b.originalNameletNamer) {
                         const int c0 = naming::compareNamer(*a.originalNameletNamer, *b.originalNameletNamer);
                         if (c0 != 0) {
@@ -6618,6 +6622,9 @@ namespace {
                 if (a.updatedNameletExpr != b.updatedNameletExpr) {
                     return a.updatedNameletExpr < b.updatedNameletExpr;
                 }
+                if (a.partitionTotal != b.partitionTotal) {
+                    return a.partitionTotal < b.partitionTotal;
+                }
                 return false;
             }
             if (a.finenessGain != b.finenessGain) {
@@ -6643,86 +6650,20 @@ namespace {
             }
             return direct || sibling;
         };
-        const bool allApeJavaComparator =
-            !accepted.empty() &&
-            std::all_of(accepted.begin(), accepted.end(),
-                        [](const CandidateEval &ev) { return ev.useApeJavaStyleComparator; });
-        naming::NamingPtr next = nullptr;
+        // APE filterRefinementResult: sort then candidates.get(0) — always take sorted first (no skip scan).
+        naming::NamingPtr next = accepted.front().naming;
         bool refineSiblingReplace = false;
-        size_t skippedUnsupportedRelation = 0;
-        size_t pickedEvalIndex = 0;
-        if (allApeJavaComparator) {
-            // Diagnostic: when Java comparator mode is enabled, we still need to know whether
-            // accepted.front() actually forms a supported refine relation (direct child/sibling).
-            // Otherwise we may apply NamingUpdateKind::Refine even when relation is invalid.
-            static std::atomic<uint64_t> g_refine_all_java_diag{0};
-            const uint64_t dseq = ++g_refine_all_java_diag;
-            size_t directCnt = 0;
-            size_t siblingCnt = 0;
-            size_t unsupportedCnt = 0;
-            bool frontDirect = false;
-            bool frontSibling = false;
-            const auto snipFp = [](const naming::NamingPtr &p) -> std::string {
-                if (!p) {
-                    return std::string("-");
-                }
-                const std::string &s = p->fingerprintString();
-                return s.size() > 140 ? s.substr(0, 140) + std::string("...") : s;
-            };
-            for (const auto &ev : accepted) {
-                bool isDirect = false;
-                bool isSibling = false;
-                (void)isSupportedRefineRelation(ev.naming, &isDirect, &isSibling);
-                if (isDirect) {
-                    ++directCnt;
-                } else if (isSibling) {
-                    ++siblingCnt;
-                } else {
-                    ++unsupportedCnt;
-                }
-            }
-            const CandidateEval &frontEv = accepted.front();
-            (void)isSupportedRefineRelation(frontEv.naming, &frontDirect, &frontSibling);
-            if (dseq <= 20 || (dseq % 200) == 0) {
-                const naming::NamingPtr curParDiag = cur ? cur->getParent() : nullptr;
-                const naming::NamingPtr frontParDiag =
-                    frontEv.naming ? frontEv.naming->getParent() : nullptr;
-                BDLOG("ape naming diag [allApeJavaComparator] seq=%llu act=%s cur=%p curFp=%s curPar=%p "
-                      "front=%p front_fp=%s frontPar=%p frontUseJava=%d frontDirect=%d frontSibling=%d "
-                      "accepted=%zu direct=%zu sibling=%zu unsupported=%zu",
-                      static_cast<unsigned long long>(dseq), actKey.c_str(),
-                      static_cast<const void *>(cur.get()), snipFp(cur).c_str(),
-                      static_cast<const void *>(curParDiag.get()),
-                      static_cast<const void *>(frontEv.naming.get()), snipFp(frontEv.naming).c_str(),
-                      static_cast<const void *>(frontParDiag.get()),
-                      frontEv.useApeJavaStyleComparator ? 1 : 0, frontDirect ? 1 : 0, frontSibling ? 1 : 0,
-                      accepted.size(), directCnt, siblingCnt, unsupportedCnt);
-            }
-            pickedEvalIndex = 0;
-            next = accepted.front().naming;
+        const size_t pickedEvalIndex = 0;
+        {
             bool isDirect = false;
             bool isSibling = false;
             (void)isSupportedRefineRelation(next, &isDirect, &isSibling);
             refineSiblingReplace = isSibling;
-        } else {
-            for (size_t i = 0; i < accepted.size(); ++i) {
-                const CandidateEval &ev = accepted[i];
-                bool isDirect = false;
-                bool isSibling = false;
-                if (isSupportedRefineRelation(ev.naming, &isDirect, &isSibling)) {
-                    next = ev.naming;
-                    refineSiblingReplace = isSibling;
-                    pickedEvalIndex = i;
-                    break;
-                }
-                ++skippedUnsupportedRelation;
-            }
         }
         if (!next) {
-            BDLOG("ape naming: skip refine activity=%s reason=unsupported_refine_relation srcKey=%lu act=%lu "
-                  "accepted=%zu skipped=%zu",
+            BDLOG("ape naming: skip refine activity=%s reason=no_next_naming srcKey=%lu act=%lu accepted=%zu",
                   activity.c_str(), (unsigned long)dominantSourceKeyHash,
-                  (unsigned long)dominantActionHash, accepted.size(), skippedUnsupportedRelation);
+                  (unsigned long)dominantActionHash, accepted.size());
             if (outFailReason) {
                 *outFailReason = ApeRefineFailReason::UnsupportedRefineRelation;
             }
@@ -6913,6 +6854,29 @@ namespace {
                     sCur.c_str(), sNext.c_str(), sPar.c_str());
             }
         }
+        bool skipNamingEdgeUpdate = false;
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+        // APE StateNamingManager.updateNaming: when getNaming(tree,dom) already equals newOne, skip edge write.
+        if (nondetSrcState && next && !branchAXml.empty()) {
+            std::string pkgDom;
+            std::string clsDom;
+            naming::StateKey::splitActivityPackageClass(activity, &pkgDom, &clsDom);
+            gui_tree::GUITreePtr noopSnap = apeLatestGuiTreeSnapshot(nondetSrcState->hash());
+            gui_tree::GUITreeBuildResult noopBuilt =
+                buildGuitreePreferApeSnapshotAndDomXml(branchAXml.back(), pkgDom, clsDom, noopSnap);
+            if (noopBuilt.tree && noopBuilt.dom &&
+                safeRebuildTree(cur, *noopBuilt.tree, noopBuilt.dom, "ape_noop_gate")) {
+                naming::NamingPtr noopResolved =
+                    _apeStateNamingManager->treeToNaming(*noopBuilt.tree, noopBuilt.dom);
+                if (noopResolved && next &&
+                    noopResolved->fingerprintString() == next->fingerprintString()) {
+                    BDLOG("ape naming: refine noop gate (treeToNaming already target); skip "
+                          "updateNamingWithStateKey only");
+                    skipNamingEdgeUpdate = true;
+                }
+            }
+        }
+#endif
         const naming::NamingUpdateKind refineUpdateKind =
             refineSiblingReplace ? naming::NamingUpdateKind::Abstract : naming::NamingUpdateKind::Refine;
         {
@@ -6937,8 +6901,28 @@ namespace {
                     refineSiblingReplace ? 1 : 0, candDirect ? 1 : 0, candSibling ? 1 : 0);
             }
         }
-        _apeStateNamingManager->updateNamingWithStateKey(
-            actKey, refineUpdateKind, cur, next, ctx.triggerSourceKey);
+        if (!skipNamingEdgeUpdate) {
+            _apeStateNamingManager->updateNamingWithStateKey(
+                actKey, refineUpdateKind, cur, next, ctx.triggerSourceKey);
+        } else if (next) {
+            // Full updateNaming still ends in setNaming(activity, newOne); noop skipped edges only — sync pointer.
+            naming::NamingPtr storedAct = _apeStateNamingManager->getNamingForActivity(actKey);
+            if (!storedAct || storedAct.get() != next.get()) {
+                _apeStateNamingManager->activityManager().setNaming(actKey, next);
+            }
+        }
+        {
+            naming::NamingPtr postApply = _apeStateNamingManager->getNamingForActivity(actKey);
+            if (!postApply || !next ||
+                postApply->fingerprintString() != next->fingerprintString()) {
+                BDLOG("ape naming: refine failed activity naming did not reach picked target "
+                      "(StateNamingManager rejected update or noop mismatch)");
+                if (outFailReason) {
+                    *outFailReason = ApeRefineFailReason::UnsupportedRefineRelation;
+                }
+                return false;
+            }
+        }
         invalidateApeGraphStateKeyDedupMap();
         bool rebuiltViaHistory = apeLocalRebuildFromHistory(actKey);
         std::vector<uintptr_t> repKeyHashes;

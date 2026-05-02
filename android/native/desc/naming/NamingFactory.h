@@ -122,7 +122,11 @@ namespace naming {
          */
         static NamingPtr replaceLast(const NamingPtr &naming, const NameletPtr &replaced, const NamerPtr &finer);
 
-        /** First applicable immediate refinement on the bitmask lattice (one Namelet step). */
+        /**
+         * One lattice step: walk namelets in order; for each, try NamerLattice::sortedAbove
+         * (Java NamerFactory.getSortedAbove order) until makeLatticeRefinementChild succeeds.
+         * Model ND refine does not use this; it mirrors Java stateRefinement/actionRefinement.
+         */
         static NamingPtr refineNaming(const NamingPtr &naming, const NamerLattice &lattice);
 
         /** First applicable immediate abstraction on the bitmask lattice (one Namelet step). */
@@ -162,8 +166,8 @@ namespace naming {
                                                      const ActionRefinementOptions &options);
 
         /**
-         * Enumerate refinement candidates within max_steps using the same blacklist/predicate options.
-         * Used by Model-level "resolve -> filter -> pick best" flow.
+         * Enumerate refinement candidates (optional full fan-out per namelet). Search helper only —
+         * not APE NamingFactory.refine ND resolution (that uses stateRefinement / actionRefinement only).
          */
         static std::vector<NamingPtr> actionRefinementCandidatesWithOptions(
             const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options);

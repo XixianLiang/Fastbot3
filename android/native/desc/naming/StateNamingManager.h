@@ -52,6 +52,8 @@ namespace naming {
         uint64_t update_abstract_sibling_no_parent{0};
         uint64_t update_abstract_sibling_naming_to_edge_failed{0};
         uint64_t update_abstract_sibling_infer_edge_failed{0};
+        /** Abstract sibling replace rejected: old/new not both state-graph leaves (APE isLeaf). */
+        uint64_t update_abstract_sibling_not_leaf{0};
         uint64_t update_abstract_relation_rejected{0};
         uint64_t statekey_not_applied_after_update{0};
         uint64_t statekey_abstract_leaf_blocked{0};
@@ -64,7 +66,8 @@ namespace naming {
             return update_reject_null_new || update_refine_not_direct_child ||
                    update_refine_infer_edge_failed || update_abstract_sibling_no_parent ||
                    update_abstract_sibling_naming_to_edge_failed ||
-                   update_abstract_sibling_infer_edge_failed || update_abstract_relation_rejected ||
+                   update_abstract_sibling_infer_edge_failed || update_abstract_sibling_not_leaf ||
+                   update_abstract_relation_rejected ||
                    statekey_not_applied_after_update || statekey_abstract_leaf_blocked ||
                    statehash_not_applied_after_update || statehash_abstract_leaf_blocked ||
                    statekey_skipped_null_arg || statehash_skipped_null_arg;
@@ -161,6 +164,7 @@ namespace naming {
         std::map<NamingPtr, std::map<uintptr_t, NamingPtr>, std::owner_less<NamingPtr>> naming_to_edge_hash_only_;
         EdgeLookupStats lookup_stats_{};
         std::shared_ptr<ActivityNamingManager> activity_mgr_;
+        bool isStateGraphLeaf(const NamingPtr &n) const;
     };
 
 } // namespace naming

@@ -45,6 +45,7 @@ namespace {
     std::atomic<uint64_t> g_u_abstract_sibling_no_parent{0};
     std::atomic<uint64_t> g_u_abstract_sibling_naming_to_edge_failed{0};
     std::atomic<uint64_t> g_u_abstract_sibling_infer_edge_failed{0};
+    std::atomic<uint64_t> g_u_abstract_sibling_not_leaf{0};
     std::atomic<uint64_t> g_u_abstract_relation_rejected{0};
     std::atomic<uint64_t> g_sk_not_applied{0};
     std::atomic<uint64_t> g_sk_abstract_leaf_blocked{0};
@@ -321,6 +322,25 @@ namespace {
 
     const ActivityNamingManager &StateNamingManager::activityManager() const { return *activity_mgr_; }
 
+    bool StateNamingManager::isStateGraphLeaf(const NamingPtr &n) const {
+        if (!n) {
+            return true;
+        }
+        auto it = naming_to_edge_.find(n);
+        if (it != naming_to_edge_.end()) {
+            for (const auto &kv : it->second) {
+                if (!kv.second.empty()) {
+                    return false;
+                }
+            }
+        }
+        auto ith = naming_to_edge_hash_only_.find(n);
+        if (ith != naming_to_edge_hash_only_.end() && !ith->second.empty()) {
+            return false;
+        }
+        return true;
+    }
+
     NamingPtr StateNamingManager::getNamingForActivity(const std::string &activity_key) const {
         return activity_mgr_->getNaming(activity_key);
     }
@@ -363,43 +383,12 @@ namespace {
                         new_n->getFineness(), namingFpHash(old_n), namingFpHash(new_n));
                 }
             }
-            const bool directChild = isDirectChildOf(old_n, new_n);
-            if (!directChild) {
+            // APE: only if oldOne == newOne.getParent()  =>  new.getParent() == old
+            if (!isDirectChildOf(old_n, new_n)) {
                 const uint64_t c = ++g_u_refine_not_direct_child;
                 logStateNamingSample("update_refine_not_direct_child", c);
                 logRefineNotDirectChildDetail(c, activity_key, old_n, new_n);
-                auto distTo = [](const NamingPtr &from, const NamingPtr &target) -> int {
-                    if (!from || !target) {
-                        return -1;
-                    }
-                    int d = 0;
-                    for (NamingPtr p = from->getParent(); p; p = p->getParent(), ++d) {
-                        if (p == target) {
-                            return d + 1;
-                        }
-                    }
-                    return -1;
-                };
-                const NamingPtr old_par = old_n ? old_n->getParent() : nullptr;
-                const NamingPtr new_par = new_n ? new_n->getParent() : nullptr;
-                const int sibling_share_parent =
-                    (old_par && new_par && old_par == new_par) ? 1 : 0;
-                const int old_is_ancestor_of_new = isAncestorNaming(old_n, new_n) ? 1 : 0;
-                const int new_is_ancestor_of_old = isAncestorNaming(new_n, old_n) ? 1 : 0;
-                const int new_to_old_dist = distTo(new_n, old_n);
-                const int old_to_new_dist = distTo(old_n, new_n);
-                BDLOG(
-                    "state naming BUG_PROBE [non_direct_refine_still_applied] seq=%llu act=%s "
-                    "old=%p new=%p oldPar=%p newPar=%p sibling_share_parent=%d "
-                    "old_is_ancestor_of_new=%d new_is_ancestor_of_old=%d old_to_new_dist=%d new_to_old_dist=%d "
-                    "oldFin=%d newFin=%d old_fp=%s new_fp=%s",
-                    static_cast<unsigned long long>(c), activity_key.c_str(),
-                    static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()),
-                    static_cast<const void *>(old_par.get()), static_cast<const void *>(new_par.get()),
-                    sibling_share_parent, old_is_ancestor_of_new, new_is_ancestor_of_old,
-                    old_to_new_dist, new_to_old_dist,
-                    old_n ? old_n->getFineness() : -1, new_n ? new_n->getFineness() : -1,
-                    namingFpSnippet(old_n).c_str(), namingFpSnippet(new_n).c_str());
+                return;
             }
             NamingEdge edge = inferRefineEdge(old_n, new_n);
             if (edge.from && edge.to) {
@@ -408,16 +397,6 @@ namespace {
                 const uint64_t c = ++g_u_refine_infer_edge_failed;
                 logStateNamingSample("update_refine_infer_edge_failed", c);
                 logRefineInferEdgeFailedDetail(c, activity_key, old_n, new_n);
-            }
-            if (!directChild) {
-                BDLOG(
-                    "state naming BUG_PROBE [WILL_APPLY_NON_DIRECT_REFINE] act=%s old=%p new=%p "
-                    "edge_ok=%d edge.from=%p edge.to=%p",
-                    activity_key.c_str(), static_cast<const void *>(old_n.get()),
-                    static_cast<const void *>(new_n.get()),
-                    (edge.from && edge.to) ? 1 : 0,
-                    static_cast<const void *>(edge.from.get()),
-                    static_cast<const void *>(edge.to.get()));
             }
             const int newFinForLog = new_n->getFineness();
             const void *const newPtrForLog = static_cast<const void *>(new_n.get());
@@ -435,14 +414,21 @@ namespace {
             return;
         }
 
-        // NamingUpdateKind::Abstract
+        // NamingUpdateKind::Abstract — same branch order as APE StateNamingManager.updateNaming
+        if (isAncestorNaming(new_n, old_n)) {
+            activity_mgr_->setNaming(activity_key, std::move(new_n));
+            return;
+        }
         if (new_n->getParent() == old_n->getParent()) {
-            // sibling replace
             NamingPtr parent = new_n->getParent();
             if (!parent) {
                 const uint64_t c = ++g_u_abstract_sibling_no_parent;
                 logStateNamingSample("update_abstract_sibling_no_parent", c);
-                activity_mgr_->setNaming(activity_key, std::move(new_n));
+                return;
+            }
+            if (!isStateGraphLeaf(old_n) || !isStateGraphLeaf(new_n)) {
+                const uint64_t c = ++g_u_abstract_sibling_not_leaf;
+                logStateNamingSample("update_abstract_sibling_not_leaf", c);
                 return;
             }
             NamingEdge oldEdge{}, newEdge{};
@@ -461,11 +447,8 @@ namespace {
             return;
         }
 
-        if (!isAncestorNaming(new_n, old_n) && old_n->getParent() != new_n) {
-            const uint64_t c = ++g_u_abstract_relation_rejected;
-            logStateNamingSample("update_abstract_relation_rejected", c);
-        }
-        activity_mgr_->setNaming(activity_key, std::move(new_n));
+        const uint64_t c = ++g_u_abstract_relation_rejected;
+        logStateNamingSample("update_abstract_relation_rejected", c);
     }
 
     void StateNamingManager::updateNamingWithStateKey(const std::string &activity_key, NamingUpdateKind kind,
@@ -548,14 +531,6 @@ namespace {
                 naming_to_edge_.erase(itSrc);
             }
         };
-        if (kind == NamingUpdateKind::Refine && !isDirectChildOf(old_n, new_n)) {
-            BDLOG(
-                "state naming BUG_PROBE [statekey_non_direct_refine_forward] act=%s sk_h=%" PRIuPTR
-                " old=%p new=%p old_fp=%s new_fp=%s",
-                activity_key.c_str(), static_cast<uintptr_t>(state_key.hash()),
-                static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()),
-                namingFpSnippet(old_n).c_str(), namingFpSnippet(new_n).c_str());
-        }
         updateNaming(activity_key, kind, old_n, new_n);
         NamingPtr stored_after = activity_mgr_->getNaming(activity_key);
         if (stored_after != new_n) {
@@ -967,6 +942,7 @@ namespace {
         s.update_abstract_sibling_naming_to_edge_failed =
             g_u_abstract_sibling_naming_to_edge_failed.exchange(0);
         s.update_abstract_sibling_infer_edge_failed = g_u_abstract_sibling_infer_edge_failed.exchange(0);
+        s.update_abstract_sibling_not_leaf = g_u_abstract_sibling_not_leaf.exchange(0);
         s.update_abstract_relation_rejected = g_u_abstract_relation_rejected.exchange(0);
         s.statekey_not_applied_after_update = g_sk_not_applied.exchange(0);
         s.statekey_abstract_leaf_blocked = g_sk_abstract_leaf_blocked.exchange(0);
@@ -977,7 +953,7 @@ namespace {
         if (s.any()) {
             BLOG("state naming update reject (window): null_new=%llu refine_not_child=%llu "
                  "refine_bad_edge=%llu abs_sib_noparent=%llu abs_sib_noedge=%llu "
-                 "abs_sib_infer=%llu abs_relation=%llu sk_not_applied=%llu "
+                 "abs_sib_infer=%llu abs_sib_not_leaf=%llu abs_relation=%llu sk_not_applied=%llu "
                  "sk_leaf_blk=%llu sh_not_applied=%llu sh_leaf_blk=%llu "
                  "sk_null_arg=%llu sh_null_arg=%llu",
                  static_cast<unsigned long long>(s.update_reject_null_new),
@@ -986,6 +962,7 @@ namespace {
                  static_cast<unsigned long long>(s.update_abstract_sibling_no_parent),
                  static_cast<unsigned long long>(s.update_abstract_sibling_naming_to_edge_failed),
                  static_cast<unsigned long long>(s.update_abstract_sibling_infer_edge_failed),
+                 static_cast<unsigned long long>(s.update_abstract_sibling_not_leaf),
                  static_cast<unsigned long long>(s.update_abstract_relation_rejected),
                  static_cast<unsigned long long>(s.statekey_not_applied_after_update),
                  static_cast<unsigned long long>(s.statekey_abstract_leaf_blocked),

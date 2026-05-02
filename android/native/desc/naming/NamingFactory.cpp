@@ -736,36 +736,35 @@ void clearRebuildLogStage() {
         if (!naming || naming->getNamelets().empty()) {
             return nullptr;
         }
-        // Only walk downward on the namer lattice. Returning the structural parent here is
-        // coarser (abstract direction) and polluted actionRefinementCandidatesWithOptions: the
-        // multi-hop gather would re-insert the activity's current naming with finenessGain==0,
-        // which Model then sorted ahead of real refinements.
+        // Align with Java NamerFactory.getSortedAbove order per namelet (APE NamingFactory
+        // state/action refinement tries finer namers in that order). Do not use immediateRefinements[0]
+        // only — that diverged from sortedAbove tie-breaking.
         const auto &namelets = naming->getNamelets();
         for (size_t i = 0; i < namelets.size(); ++i) {
             const auto &nl = namelets[i];
-            if (!nl) {
+            if (!nl || !nl->getNamerPtr()) {
                 continue;
             }
-            NamerPtr namer = nl->getNamerPtr();
-            if (!namer) {
-                continue;
-            }
-            std::vector<NamerPtr> refs = lattice.immediateRefinements(namer);
-            if (refs.empty()) {
-                continue;
-            }
-            NamerPtr finer = refs[0];
-            if (NamingPtr childNaming = makeLatticeRefinementChild(naming, i, namelets, finer)) {
-                static std::atomic<uint64_t> g_refine_child_seq{0};
-                const uint64_t n = ++g_refine_child_seq;
-                if (n <= 24 || (n % 768) == 0) {
-                    const std::string fromFp = naming->fingerprintString();
-                    const std::string toFp = childNaming ? childNaming->fingerprintString() : std::string("-");
-                    const unsigned finerMask = finer ? finer->typeDimensionMask() : 0u;
-                    BDLOG("naming refineNaming: lattice step idx=%zu naming=%p child_fp=%s finerMask=%u from_fp=%s",
-                          i, static_cast<const void *>(naming.get()), toFp.c_str(), finerMask, fromFp.c_str());
+            for (const NamerPtr &finer : lattice.sortedAbove(nl->getNamerPtr())) {
+                if (!finer) {
+                    continue;
                 }
-                return childNaming;
+                if (NamingPtr childNaming = makeLatticeRefinementChild(naming, i, namelets, finer)) {
+                    static std::atomic<uint64_t> g_refine_child_seq{0};
+                    const uint64_t n = ++g_refine_child_seq;
+                    if (n <= 24 || (n % 768) == 0) {
+                        const std::string fromFp = naming->fingerprintString();
+                        const std::string toFp =
+                            childNaming ? childNaming->fingerprintString() : std::string("-");
+                        const unsigned finerMask = finer ? finer->typeDimensionMask() : 0u;
+                        BDLOG(
+                            "naming refineNaming: lattice sortedAbove step idx=%zu naming=%p child_fp=%s "
+                            "finerMask=%u from_fp=%s",
+                            i, static_cast<const void *>(naming.get()), toFp.c_str(), finerMask,
+                            fromFp.c_str());
+                    }
+                    return childNaming;
+                }
             }
         }
         return nullptr;
