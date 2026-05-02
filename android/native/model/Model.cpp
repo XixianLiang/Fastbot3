@@ -2019,7 +2019,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 05012200, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 05021333, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -2970,13 +2970,29 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     }
                     return false;
                 }
-                if (static_cast<int>(g) > apeMaxGUITreesPerState) {
+                size_t guitreesForState = 0;
+                auto itSn = _apeGuiTreeSnapshotsByStateHash.find(state->hash());
+                if (itSn != _apeGuiTreeSnapshotsByStateHash.end()) {
+                    guitreesForState = itSn->second.size();
+                }
+                if (guitreesForState == 0) {
+                    size_t n = 0;
+                    for (const auto &te : _apeTransitionLog) {
+                        if (te.valid && te.sourceStateHash == state->hash()) {
+                            ++n;
+                        }
+                    }
+                    if (n > 0) {
+                        guitreesForState = n;
+                    }
+                }
+                if (static_cast<int>(guitreesForState) > apeMaxGUITreesPerState) {
                     if (!activitySizeGateLogged) {
                         const naming::NamingPtr cur = mgr.getNaming(actKey);
                         const size_t activityStateCount = getApeStateCountByActivityAndNamingFingerprint(
                             actKey, cur ? cur->fingerprintString() : std::string());
-                        BDLOG("ape naming: skip pre-evolve refine activity=%s reason=maxGUITreesPerState graphStates=%zu max=%d",
-                              activity.c_str(), g, apeMaxGUITreesPerState);
+                        BDLOG("ape naming: skip pre-evolve refine activity=%s reason=maxGUITreesPerState guitreesInState=%zu max=%d",
+                              activity.c_str(), guitreesForState, apeMaxGUITreesPerState);
                         BDLOG("ape naming: maxGUITreesPerState detail activity=%s namingFingerprint=%s namingScopedStates=%zu",
                               activity.c_str(), cur ? cur->fingerprintString().c_str() : "null",
                               activityStateCount);
@@ -5482,7 +5498,6 @@ namespace {
         }
         const size_t activityStateCount = getApeStateCountByActivityAndNamingFingerprint(
             actKey, cur ? cur->fingerprintString() : std::string());
-        // Java NamingFactory.refine lines 278-287: BOTH thresholds compare an.getStates().size()
         const size_t graphStatesInActivity =
             apeGraphActivityStateCountLikeJavaActivityNode(_graph, actKey);
         const int apeMaxStatesPerActivity =
@@ -5498,44 +5513,53 @@ namespace {
             }
             return false;
         }
-        // Same predicate as Java line 284: an.getStates().size() > maxGUITreesPerState.
-        if (static_cast<int>(graphStatesInActivity) > apeMaxGuitreesPerState) {
-            size_t javaLogGuitreesProxy = 1;
-            if (dominantSourceKeyHash != 0 && _graph) {
-                uintptr_t repStateHash = 0;
-                for (const StatePtr &sp : _graph->getStates()) {
-                    if (!sp) {
-                        continue;
-                    }
-                    uintptr_t kH = 0;
-                    if (!tryGetApeStateKeyHash(sp->hash(), &kH, actKey, dominantSourceKeyHash) ||
-                        kH != dominantSourceKeyHash) {
-                        continue;
-                    }
-                    auto ap = sp->getActivityString();
-                    const std::string ac = 
-                        (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
-                    if (ac != actKey) {
-                        continue;
-                    }
-                    repStateHash = sp->hash();
-                    break;
+        // Second gate: GUI trees on the representative ND source state (Java NamingFactory.refine:
+        // state.getGUITrees().size() > maxGUITreesPerState), not activity-wide graph state count.
+        uintptr_t repStateHash = 0;
+        if (dominantSourceKeyHash != 0 && _graph) {
+            for (const StatePtr &sp : _graph->getStates()) {
+                if (!sp) {
+                    continue;
                 }
-                if (repStateHash != 0) {
-                    size_t n = 0;
-                    for (const auto &te : _apeTransitionLog) {
-                        if (te.valid && te.sourceStateHash == repStateHash) {
-                            ++n;
-                        }
+                uintptr_t kH = 0;
+                if (!tryGetApeStateKeyHash(sp->hash(), &kH, actKey, dominantSourceKeyHash) ||
+                    kH != dominantSourceKeyHash) {
+                    continue;
+                }
+                auto ap = sp->getActivityString();
+                const std::string ac =
+                    (ap && ap.get()) ? naming::StateKey::canonicalActivityString(*ap) : std::string();
+                if (ac != actKey) {
+                    continue;
+                }
+                repStateHash = sp->hash();
+                break;
+            }
+        }
+        size_t guitreesInRepState = 0;
+        if (repStateHash != 0) {
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+            auto itSn = _apeGuiTreeSnapshotsByStateHash.find(repStateHash);
+            if (itSn != _apeGuiTreeSnapshotsByStateHash.end()) {
+                guitreesInRepState = itSn->second.size();
+            }
+#endif
+            if (guitreesInRepState == 0) {
+                size_t n = 0;
+                for (const auto &te : _apeTransitionLog) {
+                    if (te.valid && te.sourceStateHash == repStateHash) {
+                        ++n;
                     }
-                    if (n > 0) {
-                        javaLogGuitreesProxy = n;
-                    }
+                }
+                if (n > 0) {
+                    guitreesInRepState = n;
                 }
             }
-            BDLOG("ape naming: skip refine activity=%s reason=maxGuitreesPerState graphStatesForCond=%zu max=%d "
-                  "javaLogGuitreesProxy=%zu (Java logs state.getGUITrees().size here; NamingFactory.refine)",
-                  activity.c_str(), graphStatesInActivity, apeMaxGuitreesPerState, javaLogGuitreesProxy);
+        }
+        if (static_cast<int>(guitreesInRepState) > apeMaxGuitreesPerState) {
+            BDLOG("ape naming: skip refine activity=%s reason=maxGuitreesPerState guitreesInRepState=%zu max=%d "
+                  "(Java state.getGUITrees().size(); NamingFactory.refine)",
+                  activity.c_str(), guitreesInRepState, apeMaxGuitreesPerState);
             if (outFailReason) {
                 *outFailReason = ApeRefineFailReason::MaxGuitreesPerState;
             }

@@ -313,8 +313,8 @@ namespace fastbotx {
         int getApeMaxStatesPerActivity() const { return _apeMaxStatesPerActivity; }
 
         /**
-         * Mirrors Config.maxGUITreesPerState — Java refine second gate uses the same metric as the first
-         * (activity state count); kept for config parity with properties.
+         * Mirrors Config.maxGUITreesPerState — NamingFactory.refine second gate bounds GUI trees recorded
+         * on the representative source state (Java: state.getGUITrees().size()).
          * max.config: max.apeMaxGuitreesPerState=N
          */
         int getApeMaxGuitreesPerState() const { return _apeMaxGuitreesPerState; }
