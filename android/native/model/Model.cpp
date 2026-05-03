@@ -836,6 +836,77 @@ bool safeRebuildTree(const fastbotx::naming::NamingPtr &nm, fastbotx::gui_tree::
     }
     return ok;
 }
+
+/**
+ * Build GUITree from XML (or prefer a transition snapshot), then NamingFactory::rebuildTree for `naming`.
+ * Shared by hash paths, isStateEquivalent / isTopNamingEquivalent (full StateKey equality, APE parity).
+ */
+bool apeGuitreeFromXmlWithNamingRebuilt(const std::string &activity, const std::string &xml,
+                                        const fastbotx::naming::NamingPtr &naming,
+                                        fastbotx::gui_tree::GUITreeBuildResult *outBuilt,
+                                        const fastbotx::gui_tree::GUITreePtr *preferGuiSnapshot) {
+    if (!naming || xml.empty() || !outBuilt) {
+        return false;
+    }
+    std::string pkg;
+    std::string cls;
+    fastbotx::naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
+    const bool usePreferSnapshot = (preferGuiSnapshot && *preferGuiSnapshot);
+    fastbotx::gui_tree::GUITreeBuildResult built =
+        usePreferSnapshot
+            ? buildGuitreeFromTransitionSourcePreferSnapshot(xml, pkg, cls, *preferGuiSnapshot)
+            : buildGuitreeFromCachedXmlPreferElement(xml, pkg, cls);
+    if (!built.tree || !built.dom) {
+        return false;
+    }
+    if (!safeRebuildTree(naming, *built.tree, built.dom, "state_check")) {
+        return false;
+    }
+    *outBuilt = std::move(built);
+    return true;
+}
+
+/**
+ * When branch SourceTransition did not copy sourceGuiSnapshot, recover APE-style source GUITree from the
+ * ring-buffer TreeTransitionEntry (same transitionSeq as Java GUITreeTransition identity).
+ */
+static fastbotx::gui_tree::GUITreePtr apeLookupApeSourceGuiTreeByTransitionSeq(
+    uint64_t transitionSeq, const std::vector<fastbotx::TreeTransitionEntry> &treeLog) {
+    for (const fastbotx::TreeTransitionEntry &te : treeLog) {
+        if (te.valid && te.transitionSeq == transitionSeq && te.apeSourceGuiTree) {
+            return te.apeSourceGuiTree;
+        }
+    }
+    return nullptr;
+}
+
+/** Prefer SourceTransition.sourceGuiSnapshot; else TreeTransitionEntry.apeSourceGuiTree (APE: tt.getSource()). */
+static void apePreferSnapPtrFromSourceTransition(
+    const fastbotx::NondetTreeTransitionBranchPair::SourceTransition &st,
+    const std::vector<fastbotx::TreeTransitionEntry> &treeLog,
+    fastbotx::gui_tree::GUITreePtr *outFallbackStorage,
+    const fastbotx::gui_tree::GUITreePtr **outPreferSnapPtr) {
+    if (outPreferSnapPtr) {
+        *outPreferSnapPtr = nullptr;
+    }
+    if (outFallbackStorage) {
+        outFallbackStorage->reset();
+    }
+    if (!outPreferSnapPtr) {
+        return;
+    }
+    if (st.sourceGuiSnapshot) {
+        *outPreferSnapPtr = &st.sourceGuiSnapshot;
+        return;
+    }
+    fastbotx::gui_tree::GUITreePtr fromLog =
+        apeLookupApeSourceGuiTreeByTransitionSeq(st.transitionSeq, treeLog);
+    if (fromLog && outFallbackStorage) {
+        *outFallbackStorage = std::move(fromLog);
+        *outPreferSnapPtr = outFallbackStorage;
+    }
+}
+
 bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::string &xml,
                                     const fastbotx::naming::NamingPtr &naming,
                                     uintptr_t *outHash,
@@ -855,9 +926,6 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
             return true;
         }
     }
-    std::string pkg;
-    std::string cls;
-    naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
     const bool usePreferSnapshot = (preferGuiSnapshot && *preferGuiSnapshot);
     if (seq <= 40 || (seq % 400) == 0) {
         BDLOG("ape xml hash: entry activity=%s seq=%" PRIu64
@@ -867,26 +935,15 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
               usePreferSnapshot ? (*preferGuiSnapshot).get() : nullptr,
               usePreferSnapshot ? summarizeGUITreeForLog(*preferGuiSnapshot).c_str() : "(null)");
     }
-    gui_tree::GUITreeBuildResult built =
-        usePreferSnapshot
-            ? buildGuitreeFromTransitionSourcePreferSnapshot(xml, pkg, cls, *preferGuiSnapshot)
-            : buildGuitreeFromCachedXmlPreferElement(xml, pkg, cls);
-    if (seq <= 40 || (seq % 400) == 0) {
-        BDLOG("ape xml hash: tree stage=after_build activity=%s seq=%" PRIu64
-              " source=%s treePtr=%p dom=%d %s",
-              activity.c_str(), seq, usePreferSnapshot ? "prefer_snapshot" : "xml_only",
-              built.tree.get(), built.dom ? 1 : 0, summarizeGUITreeForLog(built.tree).c_str());
-    }
-    if (!built.tree || !built.dom) {
-        return false;
-    }
-    if (!safeRebuildTree(naming, *built.tree, built.dom, "state_check")) {
+    gui_tree::GUITreeBuildResult built;
+    if (!apeGuitreeFromXmlWithNamingRebuilt(activity, xml, naming, &built, preferGuiSnapshot)) {
         return false;
     }
     if (seq <= 40 || (seq % 400) == 0) {
-        BLOG("ape xml hash: tree stage=after_rebuild activity=%s seq=%" PRIu64
-             " treePtr=%p namingFp=%s %s",
-             activity.c_str(), seq, built.tree.get(), naming->fingerprintString().c_str(),
+        BLOG("ape xml hash: tree after build+rebuild (state_check) activity=%s seq=%" PRIu64
+             " source=%s treePtr=%p dom=%d namingFp=%s %s",
+             activity.c_str(), seq, usePreferSnapshot ? "prefer_snapshot" : "xml_only", built.tree.get(),
+             built.dom ? 1 : 0, naming->fingerprintString().c_str(),
              summarizeGUITreeForLog(built.tree).c_str());
     }
     *outHash = naming::StateKey::hashFromGUITree(*built.tree);
@@ -1070,9 +1127,10 @@ ssize_t apeFindNameletIndex(const naming::NamingPtr &naming, const naming::Namel
     return -1;
 }
 
-naming::NamingPtr apeBuildTopNamingForEquivalence() {
-    // NamerLattice is typeToNamer.get(NamerType.allOf()). - the namer whose bitmask has
-    // EVERY namer-type bit set (lattice maximum). Previously we used only the TYPE bit,
+naming::NamingPtr createTopNaming() {
+    // Port of APE NamingFactory.createTopNaming: BASE namelet "//*" with lattice max namer
+    // (NamerLattice typeToNamer.get(NamerType.allOf()) / bitmask with every namerTypesUsed bit).
+    // Previously we used only the TYPE bit,
     // producing an almost-bottom naming: two XMLs with identical tree type-structure but
     // different text / resource-id / class / flags would hash equal, causing state
     // refinement to bail with reason=top_naming_equivalent even when the branches are
@@ -1091,79 +1149,129 @@ naming::NamingPtr apeBuildTopNamingForEquivalence() {
     return std::make_shared<naming::Naming>(std::move(v));
 }
 
-bool apeIsTopNamingEquivalentXmlPair(const std::string &activity, const std::string &xmlA,
-                                     const std::string &xmlB,
-                                     const gui_tree::GUITreePtr *preferSnapA = nullptr,
-                                     const gui_tree::GUITreePtr *preferSnapB = nullptr) {
-    naming::NamingPtr top = apeBuildTopNamingForEquivalence();
+/**
+ * XML-side port of APE NamingFactory.isStateEquivalent(Naming naming, GUITree t1, GUITree t2):
+ * compare StateKey from two trees under the same `naming` via full StateKey::operator==
+ * (activity + naming fingerprint + sorted widget xpaths), not hash-only equality.
+ * Optional outputs: diagnostic StateKey::hash() per side; `outBothXmlPathsBuiltOk` iff both XML paths rebuilt.
+ */
+bool isStateEquivalent(const std::string &activity, const std::string &xmlA, const std::string &xmlB,
+                       const naming::NamingPtr &naming, const gui_tree::GUITreePtr *preferSnapA = nullptr,
+                       const gui_tree::GUITreePtr *preferSnapB = nullptr, uintptr_t *outHashA = nullptr,
+                       uintptr_t *outHashB = nullptr, bool *outBothXmlPathsBuiltOk = nullptr) {
+    if (outBothXmlPathsBuiltOk) {
+        *outBothXmlPathsBuiltOk = false;
+    }
+    if (!naming || xmlA.empty() || xmlB.empty()) {
+        return false;
+    }
+    fastbotx::gui_tree::GUITreeBuildResult builtA;
+    fastbotx::gui_tree::GUITreeBuildResult builtB;
+    if (!apeGuitreeFromXmlWithNamingRebuilt(activity, xmlA, naming, &builtA, preferSnapA)) {
+        return false;
+    }
+    if (!apeGuitreeFromXmlWithNamingRebuilt(activity, xmlB, naming, &builtB, preferSnapB)) {
+        return false;
+    }
+    if (outBothXmlPathsBuiltOk) {
+        *outBothXmlPathsBuiltOk = true;
+    }
+    const naming::StateKey keyA = naming::StateKey::fromGUITree(*builtA.tree);
+    const naming::StateKey keyB = naming::StateKey::fromGUITree(*builtB.tree);
+    if (outHashA) {
+        *outHashA = keyA.hash();
+    }
+    if (outHashB) {
+        *outHashB = keyB.hash();
+    }
+    return keyA == keyB;
+}
+
+bool isTopNamingEquivalent(const std::string &activity, const std::string &xmlA,
+                           const std::string &xmlB, const gui_tree::GUITreePtr *preferSnapA = nullptr,
+                           const gui_tree::GUITreePtr *preferSnapB = nullptr) {
+    // Port of APE NamingFactory.isTopNamingEquivalent -> isStateEquivalent(getTopNaming(), t1, t2).
+    naming::NamingPtr top = createTopNaming();
     if (!top || xmlA.empty() || xmlB.empty()) {
         return false;
     }
-    uintptr_t h1 = 0;
-    uintptr_t h2 = 0;
-    if (!apeStateHashFromXmlWithNaming(activity, xmlA, top, &h1, 0, nullptr, preferSnapA) ||
-        !apeStateHashFromXmlWithNaming(activity, xmlB, top, &h2, 0, nullptr, preferSnapB)) {
-        return false;
-    }
-    return h1 == h2;
+    return isStateEquivalent(activity, xmlA, xmlB, top, preferSnapA, preferSnapB);
 }
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 
-bool apeGuitreeNodesAreIsomorphicLikeApeJava(const gui_tree::GUITreeNode *a, const gui_tree::GUITreeNode *b) {
-    if (!a || !b) {
+/**
+ * Port of APE NamingFactory.isIsomorphic(GUITreeNode t1, GUITreeNode t2):
+ * index, class, package, resourceId, enabled, text, contentDesc, clickable, checkable,
+ * longClickable, scrollable; children same count and order, recursive.
+ */
+bool isIsomorphic(const gui_tree::GUITreeNode *t1, const gui_tree::GUITreeNode *t2) {
+    if (!t1 || !t2) {
         return false;
     }
-    if (a->getIndex() != b->getIndex()) {
+    if (t1->getIndex() != t2->getIndex()) {
         return false;
     }
-    if (a->getClassName() != b->getClassName()) {
+    if (t1->getClassName() != t2->getClassName()) {
         return false;
     }
-    if (a->getPackageName() != b->getPackageName()) {
+    if (t1->getPackageName() != t2->getPackageName()) {
         return false;
     }
-    if (a->getResourceId() != b->getResourceId()) {
+    if (t1->getResourceId() != t2->getResourceId()) {
         return false;
     }
-    if (a->isEnabled() != b->isEnabled()) {
+    if (t1->isEnabled() != t2->isEnabled()) {
         return false;
     }
-    if (a->getText() != b->getText()) {
+    if (t1->getText() != t2->getText()) {
         return false;
     }
-    if (a->getContentDesc() != b->getContentDesc()) {
+    if (t1->getContentDesc() != t2->getContentDesc()) {
         return false;
     }
-    if (a->isClickable() != b->isClickable()) {
+    if (t1->isClickable() != t2->isClickable()) {
         return false;
     }
-    if (a->isCheckable() != b->isCheckable()) {
+    if (t1->isCheckable() != t2->isCheckable()) {
         return false;
     }
-    if (a->isLongClickable() != b->isLongClickable()) {
+    if (t1->isLongClickable() != t2->isLongClickable()) {
         return false;
     }
-    if (a->getScrollable() != b->getScrollable()) {
+    if (t1->getScrollable() != t2->getScrollable()) {
         return false;
     }
-    const auto &ca = a->getChildren();
-    const auto &cb = b->getChildren();
-    if (ca.size() != cb.size()) {
+    const auto &c1 = t1->getChildren();
+    const auto &c2 = t2->getChildren();
+    if (c1.size() != c2.size()) {
         return false;
     }
-    for (size_t i = 0; i < ca.size(); ++i) {
-        if (!apeGuitreeNodesAreIsomorphicLikeApeJava(ca[i].get(), cb[i].get())) {
+    for (size_t i = 0; i < c1.size(); ++i) {
+        if (!isIsomorphic(c1[i].get(), c2[i].get())) {
             return false;
         }
     }
     return true;
 }
 
-bool apeAreGuitreesIsomorphicFromXmlLikeJava(const std::string &activity, const std::string &xmlA,
-                                             const std::string &xmlB,
-                                             const gui_tree::GUITreePtr *preferSnapA = nullptr,
-                                             const gui_tree::GUITreePtr *preferSnapB = nullptr) {
+/** Port of APE NamingFactory.isIsomorphic(GUITree t1, GUITree t2). */
+bool isIsomorphic(const gui_tree::GUITree &t1, const gui_tree::GUITree &t2) {
+    const gui_tree::GUITreeNode *r1 = t1.getRootNode();
+    const gui_tree::GUITreeNode *r2 = t2.getRootNode();
+    if (!r1 || !r2) {
+        return false;
+    }
+    return isIsomorphic(r1, r2);
+}
+
+/**
+ * Build two GUITrees from XML (optional transition snapshots), then isIsomorphic(tree, tree).
+ * No Naming rebuild — same as Java comparing raw widget trees (stateRefinement uses this for logging only).
+ */
+bool isIsomorphic(const std::string &activity, const std::string &xmlA, const std::string &xmlB,
+                  const gui_tree::GUITreePtr *preferSnapA = nullptr,
+                  const gui_tree::GUITreePtr *preferSnapB = nullptr) {
     if (xmlA.empty() || xmlB.empty()) {
         return false;
     }
@@ -1181,12 +1289,7 @@ bool apeAreGuitreesIsomorphicFromXmlLikeJava(const std::string &activity, const 
     if (!ba.tree || !bb.tree) {
         return false;
     }
-    gui_tree::GUITreeNode *ra = ba.tree->getRootNode();
-    gui_tree::GUITreeNode *rb = bb.tree->getRootNode();
-    if (!ra || !rb) {
-        return false;
-    }
-    return apeGuitreeNodesAreIsomorphicLikeApeJava(ra, rb);
+    return isIsomorphic(*ba.tree, *bb.tree);
 }
 
 #endif
@@ -2707,7 +2810,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         double buildStateEndTimestamp = currentStamp();
         bool fromLlm = (_llmTaskAgent && _llmTaskAgent->inSession());
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        auto runApeUnderAbstractedStateCheck = [&]() -> size_t {
+        auto runApeUnderAbstractedStateCheck = [&](const char *coarsenPhase) -> size_t {
             if (!_preference || !_preference->useApeEvolveModel()) {
                 return 0;
             }
@@ -2727,10 +2830,10 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 naming::ActivityNamingManager &mgrGate = _apeStateNamingManager->activityManager();
                 naming::NamingPtr curGate = mgrGate.getNaming(actKeyCollected);
                 if (!curGate || !curGate->getParent()) {
-                    BDLOG("ape naming: under-abstracted-check activity=%s rollbacks=0 changed=0 "
+                    BDLOG("ape naming: under-abstracted-check phase=%s activity=%s rollbacks=0 changed=0 "
                           "collected=%zu collectedObs=%zu skipped=root_no_parent fineness=%d",
-                          activity.c_str(), collectedKeys, collectedObservations,
-                          curGate ? curGate->getFineness() : -1);
+                          coarsenPhase ? coarsenPhase : "?", activity.c_str(), collectedKeys,
+                          collectedObservations, curGate ? curGate->getFineness() : -1);
                     return 0;
                 }
             }
@@ -2745,10 +2848,11 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     if (cp <= 240 || (cp % 600) == 0) {
                         const uintptr_t triggerKeyHashFromStateKey =
                             ctxProbe.triggerSourceKeyExact ? ctxProbe.triggerSourceKey.hash() : 0;
-                        BDLOG("ape naming BUG_PROBE [coarsen_callsite_ctx] seq=%llu activity=%s "
+                        BDLOG("ape naming BUG_PROBE [coarsen_callsite_ctx] phase=%s seq=%llu activity=%s "
                               "before_call=1 trigHashCtx=%lu trigExact=%d trigHashStateKey=%lu "
                               "equalCtxVsStateKey=%d old2newSize=%zu oldObsSize=%zu rollbackCount=%zu "
                               "lastRefineSeedSeq=%llu lastRefineSeedTrigHash=%lu",
+                              coarsenPhase ? coarsenPhase : "?",
                               static_cast<unsigned long long>(cp), actKeyCollected.c_str(),
                               static_cast<unsigned long>(ctxProbe.triggerSourceKeyHash),
                               ctxProbe.triggerSourceKeyExact ? 1 : 0,
@@ -2764,10 +2868,18 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     if (ctxProbe.lastRefineSeedSeq == 0 || ctxProbe.triggerSourceKeyHash == 0) {
                         static std::atomic<uint64_t> g_coarsen_skip_unseeded_ctx{0};
                         const uint64_t su = ++g_coarsen_skip_unseeded_ctx;
+                        const bool seq0 = ctxProbe.lastRefineSeedSeq == 0;
+                        const bool trig0 = ctxProbe.triggerSourceKeyHash == 0;
+                        const char *unseededDetail =
+                            (seq0 && trig0)
+                                ? "both_seq_and_trigger_zero"
+                                : (seq0 ? "seq_zero_trigger_nonzero" : "trigger_zero_seq_nonzero");
                         if (su <= 200 || (su % 600) == 0) {
-                            BDLOG("ape naming: coarsen skip activity=%s reason=unseeded_context "
-                                  "lastRefineSeedSeq=%llu trigHashCtx=%lu old2newSize=%zu oldObsSize=%zu",
-                                  actKeyCollected.c_str(),
+                            BDLOG("ape naming: coarsen skip activity=%s phase=%s reason=unseeded_context "
+                                  "unseeded_detail=%s lastRefineSeedSeq=%llu trigHashCtx=%lu "
+                                  "old2newSize=%zu oldObsSize=%zu note=ND_refine_seeds_ctx_after_recordTransition",
+                                  actKeyCollected.c_str(), coarsenPhase ? coarsenPhase : "?",
+                                  unseededDetail,
                                   static_cast<unsigned long long>(ctxProbe.lastRefineSeedSeq),
                                   static_cast<unsigned long>(ctxProbe.triggerSourceKeyHash),
                                   ctxProbe.oldKeyHashToNewKeyHashes.size(),
@@ -2789,18 +2901,19 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 notifyAgentsOfApeNamingChange();
             }
 
-            BDLOG("ape naming: under-abstracted-check activity=%s rollbacks=%zu changed=%d "
+            BDLOG("ape naming: under-abstracted-check phase=%s activity=%s rollbacks=%zu changed=%d "
                   "collected=%zu collectedObs=%zu",
-                  activity.c_str(), rollbackCount, changed ? 1 : 0, collectedKeys, collectedObservations);
+                  coarsenPhase ? coarsenPhase : "?", activity.c_str(), rollbackCount, changed ? 1 : 0,
+                  collectedKeys, collectedObservations);
 
             return rollbackCount;
         };
 
-        const size_t underRollbacksPre = runApeUnderAbstractedStateCheck();
+        const size_t underRollbacksPre = runApeUnderAbstractedStateCheck("pre_over_evolve");
         const size_t overRefinements =
             (_preference && _preference->useApeEvolveModel()) ? runApeOverAbstractedPreEvolvePhase(activity, state)
                                                              : static_cast<size_t>(0);
-        const size_t underRollbacksPost = runApeUnderAbstractedStateCheck();
+        const size_t underRollbacksPost = runApeUnderAbstractedStateCheck("post_over_evolve");
 
         if (state) {
             state->visit(this->_graph->getTimestamp());
@@ -5850,10 +5963,18 @@ namespace {
             }
             const std::string &xmlA = branchAXml.back();
             const std::string &xmlB = branchBXml.back();
-            const gui_tree::GUITreePtr *snapXmlA =
-                (!branchATransitions.empty()) ? &branchATransitions.back().sourceGuiSnapshot : nullptr;
-            const gui_tree::GUITreePtr *snapXmlB =
-                (!branchBTransitions.empty()) ? &branchBTransitions.back().sourceGuiSnapshot : nullptr;
+            gui_tree::GUITreePtr snapFallbackXmlA;
+            gui_tree::GUITreePtr snapFallbackXmlB;
+            const gui_tree::GUITreePtr *snapXmlA = nullptr;
+            const gui_tree::GUITreePtr *snapXmlB = nullptr;
+            if (!branchATransitions.empty()) {
+                apePreferSnapPtrFromSourceTransition(branchATransitions.back(), _apeTreeTransitionLog,
+                                                     &snapFallbackXmlA, &snapXmlA);
+            }
+            if (!branchBTransitions.empty()) {
+                apePreferSnapPtrFromSourceTransition(branchBTransitions.back(), _apeTreeTransitionLog,
+                                                     &snapFallbackXmlB, &snapXmlB);
+            }
             ActivityStateActionPtr edgeAct;
             for (const auto &action : nondetSrcState->getActions()) {
                 auto asa = std::dynamic_pointer_cast<ActivityStateAction>(action);
@@ -5894,13 +6015,17 @@ namespace {
             naming::NamerPtr targetNameNamer;
             const auto missingSnapshotA =
                 std::any_of(branchATransitions.begin(), branchATransitions.end(),
-                            [](const NondetTreeTransitionBranchPair::SourceTransition &st) {
-                                return !st.sourceGuiSnapshot;
+                            [this](const NondetTreeTransitionBranchPair::SourceTransition &st) {
+                                return !st.sourceGuiSnapshot &&
+                                       !apeLookupApeSourceGuiTreeByTransitionSeq(st.transitionSeq,
+                                                                                 _apeTreeTransitionLog);
                             });
             const auto missingSnapshotB =
                 std::any_of(branchBTransitions.begin(), branchBTransitions.end(),
-                            [](const NondetTreeTransitionBranchPair::SourceTransition &st) {
-                                return !st.sourceGuiSnapshot;
+                            [this](const NondetTreeTransitionBranchPair::SourceTransition &st) {
+                                return !st.sourceGuiSnapshot &&
+                                       !apeLookupApeSourceGuiTreeByTransitionSeq(st.transitionSeq,
+                                                                                 _apeTreeTransitionLog);
                             });
             if (missingSnapshotA || missingSnapshotB) {
                 BDLOG("ape naming: skip action refinement activity=%s reason=cannot_ape_align_missing_snapshot "
@@ -6167,32 +6292,36 @@ namespace {
                       (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
-            const gui_tree::GUITreePtr *snapBackA =
-                (!branchATransitions.empty()) ? &branchATransitions.back().sourceGuiSnapshot : nullptr;
-            const gui_tree::GUITreePtr *snapBackB =
-                (!branchBTransitions.empty()) ? &branchBTransitions.back().sourceGuiSnapshot : nullptr;
+            gui_tree::GUITreePtr snapFallbackBackA;
+            gui_tree::GUITreePtr snapFallbackBackB;
+            const gui_tree::GUITreePtr *snapBackA = nullptr;
+            const gui_tree::GUITreePtr *snapBackB = nullptr;
+            if (!branchATransitions.empty()) {
+                apePreferSnapPtrFromSourceTransition(branchATransitions.back(), _apeTreeTransitionLog,
+                                                     &snapFallbackBackA, &snapBackA);
+            }
+            if (!branchBTransitions.empty()) {
+                apePreferSnapPtrFromSourceTransition(branchBTransitions.back(), _apeTreeTransitionLog,
+                                                     &snapFallbackBackB, &snapBackB);
+            }
             uintptr_t topH1 = 0;
             uintptr_t topH2 = 0;
             bool topHashReady = false;
+            bool topEquiv = false;
             {
-                naming::NamingPtr top = apeBuildTopNamingForEquivalence();
-                if (top &&
-                    apeStateHashFromXmlWithNaming(activity, branchAXml.back(), top, &topH1, 0, nullptr,
-                                                  snapBackA) &&
-                    apeStateHashFromXmlWithNaming(activity, branchBXml.back(), top, &topH2, 0, nullptr,
-                                                  snapBackB)) {
-                    topHashReady = true;
+                naming::NamingPtr top = createTopNaming();
+                if (top) {
+                    topEquiv = isStateEquivalent(activity, branchAXml.back(), branchBXml.back(), top, snapBackA,
+                                               snapBackB, &topH1, &topH2, &topHashReady);
                 }
             }
-            if (apeIsTopNamingEquivalentXmlPair(activity, branchAXml.back(), branchBXml.back(), snapBackA,
-                                                snapBackB)) {
+            if (topEquiv) {
                 // NamingFactory.stateRefinement: log top equivalence, then optional isomorphic (same early return).
                 BDLOG("ape naming: two GUI trees are top naming equivalent (NamingFactory.stateRefinement) "
                       "activity=%s srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
                       (unsigned long)dominantActionHash);
-                if (apeAreGuitreesIsomorphicFromXmlLikeJava(activity, branchAXml.back(), branchBXml.back(),
-                                                            snapBackA, snapBackB)) {
+                if (isIsomorphic(activity, branchAXml.back(), branchBXml.back(), snapBackA, snapBackB)) {
                     BDLOG("ape naming: two GUI trees are top naming equivalent and isomorphic "
                           "(NamingFactory.stateRefinement) activity=%s srcKey=%lu act=%lu",
                           activity.c_str(), (unsigned long)dominantSourceKeyHash,
@@ -6202,9 +6331,8 @@ namespace {
                       "srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
                       (unsigned long)dominantActionHash);
-                // Diagnostic: help distinguish legitimate top-equivalence (different XMLs that
-                // collapse under TYPE-only top naming) from the degenerate case where both
-                // branches captured the exact same source snapshot (pair input is identical).
+                // Diagnostic: distinguish true top state-key equality from degenerate same-input
+                // (identical XML / same snapshot object) when logs still show topEquiv.
                 const bool xmlsIdentical = branchAXml.back() == branchBXml.back();
                 const void *snapAPtr = snapBackA ? static_cast<const void *>(snapBackA->get()) : nullptr;
                 const void *snapBPtr = snapBackB ? static_cast<const void *>(snapBackB->get()) : nullptr;
@@ -7017,6 +7145,24 @@ namespace {
                   activity.c_str(), next ? next->getFineness() : -1, rebuiltViaHistory ? 1 : 0,
                   focusOldKeyHashes.size(), affectedTrees.size(), repKeyHashes.size(), nextFpOk.c_str());
         }
+        {
+            const uintptr_t trigSk =
+                ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : static_cast<uintptr_t>(0);
+            BDLOG(
+                "ape naming: refineActivityApeNaming success_return activity=%s pairScoped=%d "
+                "xmlSpaceTriggerSourceKeyHash=%lu ctx_triggerSourceKeyHash=%lu trigger_stateKeyHash=%lu "
+                "lastRefineSeedSeq=%llu trigExact=%d dominantSrcKey=%lu dominantAct=%lu "
+                "xmlSpaceTrigger_zero=%d ctxTrig_vs_sk_equal=%d",
+                actKey.c_str(), pairScopedCall ? 1 : 0,
+                static_cast<unsigned long>(xmlSpaceTriggerSourceKeyHash),
+                static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                static_cast<unsigned long>(trigSk),
+                static_cast<unsigned long long>(ctx.lastRefineSeedSeq), ctx.triggerSourceKeyExact ? 1 : 0,
+                static_cast<unsigned long>(dominantSourceKeyHash),
+                static_cast<unsigned long>(dominantActionHash),
+                xmlSpaceTriggerSourceKeyHash == 0 ? 1 : 0,
+                (ctx.triggerSourceKeyHash == trigSk) ? 1 : 0);
+        }
         if (outFailReason) {
             *outFailReason = ApeRefineFailReason::None;
         }
@@ -7819,6 +7965,8 @@ namespace {
             ctx.triggerActionHash = 0;
             ctx.triggerTargetKeyHashes.clear();
             ctx.triggerTargetCountAtRefine = 0;
+            ctx.lastRefineSeedSeq = 0;
+            ctx.lastRefineSeedTriggerHash = 0;
             ctx.stateCountAtLastNamingRefinement = getApeStateCountByActivityAndNamingFingerprint(
                 actKey, rollbackTo ? rollbackTo->fingerprintString() : std::string());
             ApeActivityRebuildStats &st = _apeRebuildStatsByActivity[actKey];

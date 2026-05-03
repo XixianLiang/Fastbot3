@@ -17,3 +17,5 @@ android/native/fastbot.log
 android/monkeyq copy.jar
 /android/logs/my-fastbot-logs
 /android/logs
+android/native/CMakeCache 2.txt
+android/native/cmake_install 2.cmake

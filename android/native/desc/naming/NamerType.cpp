@@ -23,7 +23,7 @@ namespace fastbotx {
 namespace naming {
 
 #ifndef FASTBOTX_USE_ANCESTOR_NAMER
-#define FASTBOTX_USE_ANCESTOR_NAMER 0
+#define FASTBOTX_USE_ANCESTOR_NAMER 1
 #endif
 #ifndef FASTBOTX_USE_PATCH_NAMER
 #define FASTBOTX_USE_PATCH_NAMER 1
