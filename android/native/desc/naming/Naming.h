@@ -110,6 +110,9 @@ namespace naming {
 
         void addRefinementChild(const NamingEdge &edge, std::shared_ptr<Naming> child);
 
+        std::shared_ptr<Naming> getRefinementChild(const std::shared_ptr<Namelet> &from,
+                                                   const std::shared_ptr<Namelet> &to) const;
+
         /** Stable fingerprint for StateKey / lattice (same serialization as StateKey::fromParts). */
         const std::string &fingerprintString() const;
 

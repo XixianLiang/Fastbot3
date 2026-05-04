@@ -155,66 +155,6 @@ namespace {
         }
     }
 
-    void logCacheChildParentMismatch(const char *kind, const NamingPtr &base,
-                                     const NamingPtr &cached, const NamingPtr &cachedPar,
-                                     const NameletPtr &parentNamelet, const std::string &expr,
-                                     const NamerPtr &finer) {
-        static std::atomic<uint64_t> g_cacheChildParentMismatch_lattice{0};
-        static std::atomic<uint64_t> g_cacheChildParentMismatch_widget{0};
-        uint64_t ud = 0;
-        if (kind && std::string(kind) == "lattice") {
-            ud = ++g_cacheChildParentMismatch_lattice;
-        } else {
-            ud = ++g_cacheChildParentMismatch_widget;
-        }
-        // Keep early evidence dense, then sample to avoid log flooding after fix is stable.
-        if (!(ud <= 40 || (ud % 200) == 0)) {
-            return;
-        }
-        BDLOG(
-            "ape naming diag [cacheChildParentMismatch][%s] seq=%llu base=%p "
-            "cached=%p cachedPar=%p parentNamelet=%p expr=%s finerMask=%u baseFp=%s "
-            "cachedFp=%s",
-            kind ? kind : "widget", static_cast<unsigned long long>(ud),
-            static_cast<const void *>(base.get()),
-            static_cast<const void *>(cached.get()),
-            static_cast<const void *>(cachedPar.get()),
-            static_cast<const void *>(parentNamelet.get()), expr.c_str(),
-            finer ? static_cast<unsigned>(finer->typeDimensionMask()) : 0u,
-            base ? base->fingerprintString().c_str() : "-",
-            cached ? cached->fingerprintString().c_str() : "-");
-    }
-
-    NamingPtr findExistingChildNaming(const NamingPtr &base, const NameletPtr &parentNamelet,
-                                      const std::string &expr, const NamerPtr &finer,
-                                      const char *kind) {
-        if (!base || !parentNamelet || !finer) {
-            return nullptr;
-        }
-        for (const auto &kv : parentNamelet->getChildNamings()) {
-            const NameletPtr &ch = kv.first;
-            if (!ch) {
-                continue;
-            }
-            const NamerPtr chNamer = ch->getNamerPtr();
-            if (!chNamer) {
-                continue;
-            }
-            // child reuse is keyed by equivalent namer behavior, not pointer identity.
-            if (ch->getExprString() == expr && compareNamer(*chNamer, *finer) == 0) {
-                const NamingPtr &cached = kv.second;
-                const NamingPtr cachedPar = cached ? cached->getParent() : nullptr;
-                if (cachedPar == base) {
-                    return cached;
-                }
-                // Root-cause fix: never reuse a child naming attached to a different base/parent chain.
-                logCacheChildParentMismatch(kind, base, cached, cachedPar, parentNamelet, expr, finer);
-                return nullptr;
-            }
-        }
-        return nullptr;
-    }
-
     /**
      * Mirrors Java Naming.extend(parent, namelet).ensureRefine contract: finer must strictly refine
      * the parent namer. Under normal callers (lattice.immediateRefinements / sortedAbove) the
@@ -254,15 +194,15 @@ namespace {
         }
         debugAssertRefinesTo(parentNamelet, finer);
         const std::string &expr = parentNamelet->getExprString();
-        if (NamingPtr cached = findExistingChildNaming(base, parentNamelet, expr, finer, "lattice")) {
+        NameletPtr probe = std::make_shared<Namelet>(expr, finer);
+        // APE Naming.extend: children live on Naming (Edge -> child), not Namelet.child map.
+        if (NamingPtr cached = base->getRefinementChild(parentNamelet, probe)) {
             return cached;
         }
-        NameletPtr probe = std::make_shared<Namelet>(expr, finer);
         probe->setParent(parentNamelet);
         std::vector<NameletPtr> newlets = namelets;
         newlets.push_back(probe);
         NamingPtr childNaming = Naming::createChild(base, std::move(newlets));
-        parentNamelet->addChildNaming(probe, childNaming);
         base->addRefinementChild(NamingEdge{parentNamelet, probe}, childNaming);
         return childNaming;
     }
@@ -278,16 +218,14 @@ namespace {
             return nullptr;
         }
         debugAssertRefinesTo(parentNamelet, finer);
-        if (NamingPtr cached =
-                findExistingChildNaming(base, parentNamelet, widgetExpr, finer, "widget")) {
+        NameletPtr probe = std::make_shared<Namelet>(widgetExpr, finer);
+        if (NamingPtr cached = base->getRefinementChild(parentNamelet, probe)) {
             return cached;
         }
-        NameletPtr probe = std::make_shared<Namelet>(widgetExpr, finer);
         probe->setParent(parentNamelet);
         std::vector<NameletPtr> newlets = namelets;
         newlets.push_back(probe);
         NamingPtr childNaming = Naming::createChild(base, std::move(newlets));
-        parentNamelet->addChildNaming(probe, childNaming);
         base->addRefinementChild(NamingEdge{parentNamelet, probe}, childNaming);
         return childNaming;
     }

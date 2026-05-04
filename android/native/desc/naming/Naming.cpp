@@ -239,6 +239,19 @@ namespace {
         children_[edge] = std::move(child);
     }
 
+    std::shared_ptr<Naming> Naming::getRefinementChild(const std::shared_ptr<Namelet> &from,
+                                                       const std::shared_ptr<Namelet> &to) const {
+        if (!from || !to) {
+            return nullptr;
+        }
+        NamingEdge key{from, to};
+        auto it = children_.find(key);
+        if (it == children_.end()) {
+            return nullptr;
+        }
+        return it->second;
+    }
+
     Naming::Naming(std::shared_ptr<Naming> parent, std::vector<std::shared_ptr<Namelet>> namelets)
         : parent_(parent),
           namelets_(std::move(namelets)) {

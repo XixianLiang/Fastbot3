@@ -7699,7 +7699,15 @@ namespace {
         
         constexpr int affectedThreshold = 8;
         int tnDepth = 0;
+        unsigned coarsen_layers_walked = 0;
+        unsigned coarsen_layers_skip_trig0 = 0;
+        size_t coarsen_max_filtered_affected = 0;
+        size_t coarsen_max_filtered_targets = 0;
+        int coarsen_max_fa_depth = -1;
+        int coarsen_max_ft_depth = -1;
+        int coarsen_max_ft_thr_at_peak = -1;
         for (naming::NamingPtr tn = mgrCur; tn && tn->getParent(); tn = tn->getParent(), ++tnDepth) {
+            coarsen_layers_walked++;
             const naming::NamingPtr targetParentNaming = tn->getParent();
             const int targetThreshold = apeMaxStatesForRefinementThreshold(tn);
             // Use the same trigger key for every ancestor layer; gating triggerSource on
@@ -7726,6 +7734,7 @@ namespace {
             // originState.equals(oldState) filtering semantics used by optimization 3.
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
             if (triggerSource == 0) {
+                coarsen_layers_skip_trig0++;
                 static std::atomic<uint64_t> g_coarsen_continue_trigger_zero{0};
                 const uint64_t cz = ++g_coarsen_continue_trigger_zero;
                 if (cz <= 160 || (cz % 500) == 0) {
@@ -7816,6 +7825,7 @@ namespace {
             }
 #else
             if (triggerSource == 0) {
+                coarsen_layers_skip_trig0++;
                 static std::atomic<uint64_t> g_coarsen_continue_trigger_zero{0};
                 const uint64_t cz = ++g_coarsen_continue_trigger_zero;
                 if (cz <= 160 || (cz % 500) == 0) {
@@ -7838,6 +7848,15 @@ namespace {
             }
         
 #endif
+            if (filteredAffected > coarsen_max_filtered_affected) {
+                coarsen_max_filtered_affected = filteredAffected;
+                coarsen_max_fa_depth = tnDepth;
+            }
+            if (filteredTargets > coarsen_max_filtered_targets) {
+                coarsen_max_filtered_targets = filteredTargets;
+                coarsen_max_ft_depth = tnDepth;
+                coarsen_max_ft_thr_at_peak = targetThreshold;
+            }
             const bool overFilteredAffected = filteredAffected > static_cast<size_t>(affectedThreshold);
             const bool overFilteredTargets = filteredTargets > static_cast<size_t>(targetThreshold);
             
@@ -7974,7 +7993,30 @@ namespace {
             return true;
         }
         _apeRebuildStatsByActivity[actKey].consecutiveRollbacks = 0;
-        BDLOG("ape naming: coarsen keep refinement activity=%s rollback=0", activity.c_str());
+        const bool coarsen_diag_verbose_activity =
+            (actKey.find("CountryListActivity") != std::string::npos);
+        static std::atomic<uint64_t> g_coarsen_keep_global_seq{0};
+        const uint64_t keepSeq = ++g_coarsen_keep_global_seq;
+        const bool emit_full_keep_diag =
+            coarsen_diag_verbose_activity || keepSeq <= 120 || (keepSeq % 400) == 0;
+        if (emit_full_keep_diag) {
+            BDLOG(
+                "ape naming: coarsen_decision outcome=keep reason=no_layer_hit_thresholds activity=%s "
+                "actKey=%s layersWalked=%u layersSkipTrig0=%u maxFilteredAffected=%zu maxFilteredTargets=%zu "
+                "maxFaDepth=%d maxFtDepth=%d thrAffected=%d targetThrAtMaxFt=%d "
+                "lastRefineSeedSeq=%llu trigHashCtx=%lu old2newBuckets=%zu oldObsBuckets=%zu "
+                "affectedObsTotal=%zu totalNewDist=%zu mgrFineness=%d",
+                activity.c_str(), actKey.c_str(), coarsen_layers_walked, coarsen_layers_skip_trig0,
+                coarsen_max_filtered_affected, coarsen_max_filtered_targets, coarsen_max_fa_depth,
+                coarsen_max_ft_depth, affectedThreshold, coarsen_max_ft_thr_at_peak,
+                static_cast<unsigned long long>(ctx.lastRefineSeedSeq),
+                static_cast<unsigned long>(ctx.triggerSourceKeyHash),
+                ctx.oldKeyHashToNewKeyHashes.size(), ctx.oldKeyHashToObservationCount.size(),
+                affectedStateObservations, totalNewKeys.size(),
+                mgrCur ? mgrCur->getFineness() : -1);
+        } else {
+            BDLOG("ape naming: coarsen keep refinement activity=%s rollback=0", activity.c_str());
+        }
         return false;
     }
 #endif
