@@ -1,4 +1,8 @@
-/*
+/**
+ * @file ApeStringCache.cpp
+ *
+ * Implementation of the interning table: singleton mutex, string set, optional ordered pointer log.
+ *
  * @authors Zhao Zhang
  */
 #include "ApeStringCache.h"
@@ -85,7 +89,7 @@ std::vector<const std::string *> &ApeStringCache::stringList() {
 }
 
 size_t &ApeStringCache::maxStringListSize() {
-    static size_t maxSize = 2000; // Java APE default Config.maxStringListSize
+    static size_t maxSize = 2000; // Default cap for recorded vocabulary pointers (tunable via `setMaxStringListSize`).
     return maxSize;
 }
 

@@ -16,6 +16,10 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
+/**
+ * Runtime toggles and the ordered dimension list used by `NamerFactory` / `NamerLattice`. Defaults come from
+ * compile-time `FASTBOTX_USE_*` macros when unset.
+ */
 
 #include "NamerType.h"
 
@@ -29,18 +33,26 @@ namespace naming {
 #define FASTBOTX_USE_PATCH_NAMER 1
 #endif
 namespace {
+    /** When true, `namerTypesUsed()` includes `ANCESTOR`; lattice includes ancestor XPath modes. */
     bool g_use_ancestor_namer = (FASTBOTX_USE_ANCESTOR_NAMER != 0);
+    /** When true, `NamerFactory` wraps bitmask namers with `ActionPatchNamer`. */
     bool g_use_patch_namer = (FASTBOTX_USE_PATCH_NAMER != 0);
 }
 
+    /** Overrides runtime ancestor-namer preference (triggers `NamerFactory` rebuild via `current()`). */
     void setUseAncestorNamer(bool enabled) { g_use_ancestor_namer = enabled; }
 
     bool useAncestorNamer() { return g_use_ancestor_namer; }
 
+    /** Overrides runtime action-patch wrapping around bitmask namers. */
     void setUsePatchNamer(bool enabled) { g_use_patch_namer = enabled; }
 
     bool usePatchNamer() { return g_use_patch_namer; }
 
+    /**
+     * Fixed enumeration order of dimensions that participate in bitmask subsets: TYPE, INDEX, PARENT, TEXT,
+     * and optionally ANCESTOR. Must stay aligned with lattice indexing assumptions.
+     */
     const std::vector<NamerType> &namerTypesUsed() {
         static const std::vector<NamerType> kUsedWithAncestor = {
             NamerType::TYPE, NamerType::INDEX, NamerType::PARENT,

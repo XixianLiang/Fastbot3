@@ -2,6 +2,11 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file ReuseState.h
+ *
+ * UI state representation for reuse-oriented exploration: builds from an accessibility `Element` tree into
+ * `RichWidget` metadata, hashes, actions, and optional graph / merged-state bookkeeping.
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 #ifndef ReuseState_H_
@@ -24,12 +29,14 @@ namespace fastbotx {
     class MergedState;
     typedef std::shared_ptr<MergedState> MergedStatePtr;
 
+    /** Lightweight transition in a small exploration subgraph (next state, label action, visit flag). */
     struct MiniGraphEdge {
         ReuseStatePtr next;
         ActionPtr action;
         bool isVisited;
     };
 
+    /** Recorded transition in the activity-level state graph (deduped by action+next hash). */
     struct StateGraphEdge {
         ActionPtr action;
         ReuseStatePtr nextState;
@@ -63,7 +70,7 @@ namespace fastbotx {
         create(const ElementPtr &element, const stringPtr &activityName,
                WidgetKeyMask mask = DefaultWidgetKeyMask);
 
-        // --- LLMDroid / MergedState overlay (see MIGRATION_LLMDROID_B2.md §3) ---
+        // --- Optional MergedState overlay: textual summaries, similarity, and graph edges ---
 
         void setMergedState(MergedStatePtr mergedState) { _mergedState = std::move(mergedState); }
 
@@ -75,7 +82,7 @@ namespace fastbotx {
 
         void addSubSequentState(const ReuseStatePtr &state);
 
-        /** LLMDroid RL graph: last action chosen while on this ReuseState (edge label to next). */
+        /** Last action chosen while at this state; labels the outgoing edge to the successor in the reuse graph. */
         ActionPtr _actionToPerform;
 
         std::vector<StateGraphEdge> _edges;
@@ -84,12 +91,12 @@ namespace fastbotx {
 
         void addMiniEdge(MiniGraphEdge edge);
 
-        /** Textual page summary for GPT / MergedState::stateDescription (not RL identity). */
+        /** Human-readable page summary for merged-state / LLM context (not used as RL state identity). */
         std::string getStateDescriptionForMergedState() const;
 
         float computeSimilarityForMergedState(const ReuseStatePtr &target) const;
 
-        /** Widget-overlap similarity for navigation {@link guideCheck} (LLMDroid). */
+        /** Widget-overlap similarity vs. another state; used for navigation-style matching. */
         float computeSimilarity(const ReuseStatePtr &target) const;
 
         ActionPtr findSimilarAction(const ActionPtr &origin);
@@ -100,6 +107,11 @@ namespace fastbotx {
         
         int getStableElementIdForWidget(const WidgetPtr &widget) const;
 
+        /**
+         * Locates `target` among representatives and merged duplicates.
+         * Returns `-1` if it matches the primary row in `_widgets`, a non-negative index into the merge group,
+         * or a negative code if not found (see implementation).
+         */
         int findWhichWidget(WidgetPtr target) const;
 
         WidgetPtr findWidgetByHashAndLocation(uintptr_t hash, int location) const;
@@ -108,13 +120,13 @@ namespace fastbotx {
 
         std::vector<ActivityStateActionPtr> findActionsByWidget(WidgetPtr widget) const;
 
-        /** Resolve action index in {@link #getActions} from GPT element id + {@link ActionType}. */
+        /** Map stable element id and `ActionType` to an index in `State::getActions()`. */
         int findActionByElementId(int elementId, int actionType);
 
-        /** Widgets in this state whose widget hash is not present in {@code target} (LLMDroid reanalysis). */
+        /** Widgets present here whose hash does not appear in `target` (diff between two snapshots). */
         std::vector<WidgetPtr> diffWidgets(const ReuseStatePtr &target);
 
-        /** LLMDroid legacy helper for activity-level graph aggregation. */
+        /** Widgets that expose actions or visible text / content-description; used when summarizing an activity. */
         std::vector<WidgetPtr> getValuableWidgets() const;
 
     protected:
@@ -151,12 +163,13 @@ namespace fastbotx {
 
         virtual void buildBoundingBox(const ElementPtr &element);
 
-        /// Widget key mask for dynamic state abstraction (used in buildHashForState and mergeWidgetsInState)
+        /// Mask selecting which widget fields participate in hashing and merge keys (dynamic abstraction).
         WidgetKeyMask _widgetKeyMask{DefaultWidgetKeyMask};
 
     private:
         void buildFromElement(WidgetPtr parentWidget, ElementPtr elem) override;
 
+        /** DFS preorder assigns `Element::stableElementId` and mirrors ids onto widgets for remote action lookup. */
         void rebuildElementIdMaps(const ElementPtr &root);
 
         MergedStatePtr _mergedState;

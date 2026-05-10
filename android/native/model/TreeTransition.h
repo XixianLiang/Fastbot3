@@ -1,3 +1,11 @@
+/**
+ * @authors Zhao Zhang
+ *
+ * @file TreeTransition.h
+ * @brief Helpers for analyzing logged UI transitions: index by sequence, nondeterministic branch pairing,
+ *        and refinement context for action predicates. Consumes `Model` transition logs (`ApeTransitionEntry`)
+ *        and optional `GUITree` snapshots when pugixml is enabled.
+ */
 #ifndef FASTBOTX_MODEL_TREE_TRANSITION_H_
 #define FASTBOTX_MODEL_TREE_TRANSITION_H_
 
@@ -17,8 +25,10 @@
 
 namespace fastbotx {
 
+/** Opaque transition row type defined in `Model` (ring buffer of executed transitions). */
 struct ApeTransitionEntry;
 
+/** One tree-backed transition record: hashes, action metadata, resolved widget ids, optional bounds / path. */
 struct TreeTransitionEntry {
     uint64_t transitionSeq{0};
     uintptr_t sourceStateHash{0};
@@ -33,11 +43,12 @@ struct TreeTransitionEntry {
     std::string sourceActivity;
     bool valid{false};
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
-    gui_tree::GUITreePtr apeSourceGuiTree{};
-    gui_tree::GUITreePtr apeTargetGuiTree{};
+    gui_tree::GUITreePtr apeSourceGuiTree{}; ///< Deep-cloned source page tree when logging (historical field name).
+    gui_tree::GUITreePtr apeTargetGuiTree{}; ///< Deep-cloned target page tree when logging (historical field name).
 #endif
 };
 
+/** Two-way comparison material for nondeterministic refinement: XML strings and optional GUI snapshots per branch. */
 struct NondetTreeTransitionBranchPair {
     struct SourceTransition {
         uint64_t transitionSeq{0};
@@ -64,6 +75,7 @@ struct NondetTreeTransitionBranchPair {
 
 using TreeTransitionIndex = std::unordered_map<uint64_t, const TreeTransitionEntry *>;
 
+/** One filtered transition sample in chronological order for branch construction. */
 struct NondetBranchSourceSample {
     uint64_t seq{0};
     uint64_t transitionSeq{0};
@@ -77,6 +89,7 @@ struct NondetBranchSourceSample {
 #endif
 };
 
+/** Counters explaining how many ring-buffer entries were skipped while collecting branch samples. */
 struct NondetBranchInputStats {
     size_t logN{0};
     size_t orderedCount{0};
@@ -98,21 +111,28 @@ struct NondetBranchCollectionResult {
     std::vector<NondetTreeTransitionBranchPair> branchPairs;
 };
 
+/** Bounds picked from `TreeTransitionEntry` rows when refining an action predicate. */
 struct NondetActionRefineTransitionContext {
     uintptr_t actionPredicateSourceStateHash{0};
     bool selectedTargetBoundsFound{false};
     Rect selectedTargetBounds{};
 };
 
+/** Build `transitionSeq` → `TreeTransitionEntry*` for one activity and action hash (only valid rows). */
 void buildTreeTransitionIndex(const std::vector<TreeTransitionEntry> &transitionLog,
                               const std::string &sourceActivity,
                               uintptr_t actionHash,
                               TreeTransitionIndex *outIndex);
 
+/** Look up target widget bounds by global transition sequence in the tree log. */
 bool findTreeTransitionTargetBoundsBySeq(const std::vector<TreeTransitionEntry> &transitionLog,
                                          uint64_t transitionSeq,
                                          Rect *outBounds);
 
+/**
+ * Walks the circular `transitionLog` from `transitionLogWriteIndex`, filters by activity / keys / targets,
+ * joins `treeBySeq` for resolved stable ids (and optional GUI trees), and outputs monotonic `seq` ordering.
+ */
 void collectOrderedNondetBranchSourceSamples(
     const std::vector<ApeTransitionEntry> &transitionLog,
     size_t transitionLogWriteIndex,
@@ -125,14 +145,17 @@ void collectOrderedNondetBranchSourceSamples(
     std::vector<NondetBranchSourceSample> *outOrdered,
     NondetBranchInputStats *outStats);
 
+/** Build A/B branch pairs around the nondeterministic transition `nstTransitionSeq` within `ordered`. */
 void buildNondetTreeTransitionBranchPairsFromOrderedSamples(
     const std::vector<NondetBranchSourceSample> &ordered,
     uint64_t nstTransitionSeq,
     std::vector<NondetTreeTransitionBranchPair> *outPairs);
 
+/** Convenience wrapper: validates NST sequence presence, builds pairs, sorts them. */
 NondetBranchBuildResult buildNondetBranchPairs(const std::vector<NondetBranchSourceSample> &ordered,
                                                uint64_t nstTransitionSeq);
 
+/** Full pipeline: index tree log, collect ordered samples, build branch pairs for refinement. */
 NondetBranchCollectionResult collectNondetBranchPairsForRefine(
     const std::vector<ApeTransitionEntry> &transitionLog,
     size_t transitionLogWriteIndex,
@@ -144,11 +167,13 @@ NondetBranchCollectionResult collectNondetBranchPairsForRefine(
     const std::function<bool(uintptr_t)> &acceptSourceStateHash,
     uint64_t nstTransitionSeq);
 
+/** Derives source state hash and first available target bounds from branch transition lists. */
 NondetActionRefineTransitionContext buildNondetActionRefineTransitionContext(
     const std::vector<NondetTreeTransitionBranchPair::SourceTransition> &branchATransitions,
     const std::vector<NondetTreeTransitionBranchPair::SourceTransition> &branchBTransitions,
     const std::vector<TreeTransitionEntry> &treeTransitionLog);
 
+/** Stable ordering for downstream deterministic refinement (sequence, hashes, keys). */
 void sortNondetTreeTransitionBranchPairs(std::vector<NondetTreeTransitionBranchPair> *pairs);
 
 } // namespace fastbotx

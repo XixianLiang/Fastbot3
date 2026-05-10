@@ -2,6 +2,12 @@
  * Keeps the pugixml document used to build a GUITree and maps XPath results to GUITreeNode.
  */
 /**
+ * @file XPathNodeMapper.h
+ *
+ * Bridges the GUI tree to XPath: owns an in-memory XML DOM parallel to `GUITreeNode`, registers each
+ * DOM element against its tree node, and resolves XPath 1.0 expressions to matching `GUITreeNode` rows.
+ * When `FASTBOT_HAS_PUGIXML` is unset, public APIs degrade to no-op / empty results.
+ *
  * @authors Zhao Zhang
  */
 
@@ -23,6 +29,10 @@ namespace gui_tree {
 
     class GUITreeFactory;
 
+    /**
+     * Encapsulates pugixml state for `GUITreeFactory`: document lifecycle, `xml_node` → `GUITreeNodePtr`
+     * mapping, and cached XPath compilation. All mutation and queries run under an internal lock.
+     */
     class XPathNodeMapper {
     public:
         XPathNodeMapper();
@@ -34,20 +44,26 @@ namespace gui_tree {
         XPathNodeMapper(const XPathNodeMapper &) = delete;
         XPathNodeMapper &operator=(const XPathNodeMapper &) = delete;
 
-        /** XPath 1.0 node-set mapped through the same DOM as the tree (invalid expr → empty). */
+        /**
+         * Evaluates an XPath 1.0 expression against the document root and returns the corresponding
+         * GUI nodes. Invalid compile-time expressions are remembered and yield an empty vector;
+         * runtime evaluation errors yield empty without blacklisting the expression.
+         */
         std::vector<GUITreeNodePtr> nodesForXPath(const std::string &expr) const;
-        /** Debug helper: dump current DOM as XML string. */
+        /** Serializes the live DOM to a string for debugging (indentation via pugixml defaults). */
         std::string dumpXmlString() const;
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
         /**
-         * DOM setup helpers used by GUITreeFactory.
-         * They keep pugixml details inside this module after splitting GUITreeFactory.cpp.
+         * Replaces the internal document by parsing `utf8` as XML (UTF-8). Returns whether parsing succeeded.
+         * Clears prior node registrations; callers must rebuild the tree mapping afterward.
          */
         bool loadXmlString(const std::string &utf8);
-        /** Initialize a fresh empty DOM document and return its root element. */
+        /** Creates a new empty document whose document element is `<tagName>...</tagName>`; returns that element. */
         pugi::xml_node initEmptyDocumentWithRoot(const char *tagName);
+        /** Root element of the current document, or null if uninitialized / empty. */
         pugi::xml_node documentElement() const;
+        /** Associates a DOM element node with its parallel `GUITreeNode` for XPath result translation. */
         void registerNode(pugi::xml_node xmlNode, const GUITreeNodePtr &gn);
 #endif
 

@@ -2,6 +2,12 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file State.cpp
+ *
+ * Base `State` construction from accessibility trees, hashing with optional ordered widget combine,
+ * duplicate-widget merge buckets, action lists, detail stripping for memory, `fillDetails` resync,
+ * and weighted action sampling helpers.
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 #ifndef State_CPP_
@@ -24,13 +30,16 @@
 
 namespace fastbotx {
 namespace {
-    constexpr bool kApeStateHashWithOrder = true;
+    /** Passed to `combineHash` so widget ordering is stable after deduplication sort (matches legacy behavior). */
+    constexpr bool kStateCombineHashWithOrder = true;
 
+    /** Activity short label for diagnostic logs (fallback "?"). */
     std::string stateActivityLabel(const State &s) {
         const stringPtr ap = s.getActivityString();
         return (ap && ap.get()) ? *ap : std::string("?");
     }
 
+    /** Counts rows in `v` sharing the same widget hash (merged-group diagnostics). */
     size_t countWidgetsWithHash(const WidgetPtrVec &v, uintptr_t h) {
         size_t c = 0;
         for (const auto &w : v) {
@@ -41,6 +50,7 @@ namespace {
         return c;
     }
 
+    /** Compact widget list snippet for mismatch logs. */
     std::string summarizeStateWidgets(const State &s, size_t limit = 3) {
         std::ostringstream oss;
         size_t n = 0;
@@ -66,6 +76,7 @@ namespace {
         return oss.str();
     }
 
+    /** Compact action list snippet for mismatch logs. */
     std::string summarizeStateActions(const State &s, size_t limit = 3) {
         std::ostringstream oss;
         size_t n = 0;
@@ -103,6 +114,7 @@ namespace {
             : Node(), _hasNoDetail(false) {
     }
 
+    /** Binds activity string used in hashing and logs; widgets/actions filled by `buildFromElement` / `create`. */
     State::State(stringPtr activityName)
             : Node(), _activity(std::move(activityName)), _hasNoDetail(false) {
         BLOG("create state");
@@ -206,7 +218,7 @@ namespace {
             // If widget order matters for hash computation, sort by hash to ensure consistency
             // This ensures that same set of widgets always produces same hash regardless of
             // the order they were inserted into the set
-            if (kApeStateHashWithOrder) {
+            if (kStateCombineHashWithOrder) {
                 std::sort(sharedPtr->_widgets.begin(), sharedPtr->_widgets.end(),
                           [](const WidgetPtr& a, const WidgetPtr& b) {
                               if (a == nullptr || b == nullptr) {
@@ -219,7 +231,7 @@ namespace {
 
         // Combine activity hash with widget hash
         activityHash ^=
-                (combineHash<Widget>(sharedPtr->_widgets, kApeStateHashWithOrder) << 1);
+                (combineHash<Widget>(sharedPtr->_widgets, kStateCombineHashWithOrder) << 1);
         sharedPtr->_hashcode = activityHash;
         
         // Build actions for all widgets
@@ -421,11 +433,13 @@ namespace {
         }
     }
 
+    /** Fixed after construction (`create` / dynamic abstraction); equality uses this value. */
     uintptr_t State::hash() const {
         return this->_hashcode;
     }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** Overrides `_hashcode` with the identity produced by dynamic abstraction (mask/coarsening pipeline). */
     void State::applyDynamicAbstractionIdentityHash(uintptr_t apeStateKeyHash) {
         this->_hashcode = apeStateKeyHash;
         this->_usesApeIdentityHash = true;
@@ -489,6 +503,7 @@ namespace {
         return this->hash() < state.hash();
     }
 
+    /** Drops activity reference and clears widgets/actions (merged buckets included). */
     State::~State() {
         this->_activity.reset();
         this->_actions.clear();
@@ -499,10 +514,13 @@ namespace {
     }
 
 
+    /**
+     * Strips non-essential widget text when allowed; keeps targets of current actions.
+     * When merged-state overview is enabled in preferences, retains strings for planner-facing widgets.
+     */
     void State::clearDetails() {
-        // LLMDroid relies on widget textual details for GPT context; keep them when enabled.
         auto pref = Preference::inst();
-        const bool keepWidgetDetailsForLlmdroid =
+        const bool keepWidgetTextForPlanner =
             (pref != nullptr) && pref->isLlmdroidEnabled();
         std::unordered_set<const Widget *> actionTargetWidgets;
         actionTargetWidgets.reserve(this->_actions.size());
@@ -516,7 +534,7 @@ namespace {
             }
         }
 
-        if (!keepWidgetDetailsForLlmdroid) {
+        if (!keepWidgetTextForPlanner) {
             for (auto const &widget: this->_widgets) {
                 if (widget != nullptr) {
                     if (actionTargetWidgets.count(widget.get()) != 0) {
@@ -530,6 +548,10 @@ namespace {
         _hasNoDetail = true;
     }
 
+    /**
+     * Copies rich widget fields from a fresher `State` snapshot onto this canonical row when hashes align.
+     * Handles merged-widget buckets and logs structural mismatches.
+     */
     void State::fillDetails(const std::shared_ptr<State> &copy, const char *debugFrom) {
         if (copy == nullptr) {
             BLOGE("fillDetails: copy state is nullptr (from=%s)", debugFrom ? debugFrom : "?");
@@ -541,11 +563,11 @@ namespace {
         const uintptr_t stCanon = this->hash();
         const uintptr_t stFresh = copy->hash();
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-        const int apeCanon = this->usesDynamicAbstractionIdentityHash() ? 1 : 0;
-        const int apeFresh = copy->usesDynamicAbstractionIdentityHash() ? 1 : 0;
+        const int dynAbsCanon = this->usesDynamicAbstractionIdentityHash() ? 1 : 0;
+        const int dynAbsFresh = copy->usesDynamicAbstractionIdentityHash() ? 1 : 0;
 #else
-        const int apeCanon = 0;
-        const int apeFresh = 0;
+        const int dynAbsCanon = 0;
+        const int dynAbsFresh = 0;
 #endif
         const char *fromTag = debugFrom ? debugFrom : "?";
         if (debugFrom) {
@@ -561,7 +583,7 @@ namespace {
             }
         }
 
-        // Same state hash (e.g. APE) but UI widget count changed: per-widget hash refill cannot align.
+        // Same abstract state hash but widget row count drifted: rebuild lists from the fresh snapshot.
         if (hasNoDetail() && this->_widgets.size() != copy->_widgets.size()) {
             const size_t nwWas = this->_widgets.size();
             const std::string canonWidgetSummary = summarizeStateWidgets(*this);
@@ -608,12 +630,12 @@ namespace {
                 const size_t nmatch = countWidgetsWithHash(copy->_widgets, wh);
                 LOGE(
                     "ERROR can not refill widget: from=%s canonId=%d freshId=%d act canon=%s fresh=%s "
-                    "sameAct=%d st=%" PRIuPTR "/%" PRIuPTR " stEq=%d apeId=%d/%d noDet=%d/%d "
+                    "sameAct=%d st=%" PRIuPTR "/%" PRIuPTR " stEq=%d dynAbs=%d/%d noDet=%d/%d "
                     "nw=%zu/%zu merged=%zu/%zu wi=%zu wHash=%" PRIuPTR " myHash=%" PRIuPTR
                     " freshCountSameWHash=%zu",
                     fromTag, getIdi(), copy->getIdi(), actCanon.c_str(), actFresh.c_str(),
                     actCanon == actFresh ? 1 : 0, static_cast<uintptr_t>(stCanon),
-                    static_cast<uintptr_t>(stFresh), stCanon == stFresh ? 1 : 0, apeCanon, apeFresh,
+                    static_cast<uintptr_t>(stFresh), stCanon == stFresh ? 1 : 0, dynAbsCanon, dynAbsFresh,
                     hasNoDetail() ? 1 : 0, copy->hasNoDetail() ? 1 : 0, this->_widgets.size(),
                     copy->_widgets.size(), this->_mergedWidgets.size(), copy->_mergedWidgets.size(),
                     static_cast<unsigned long>(wi), static_cast<uintptr_t>(wh),
@@ -663,6 +685,7 @@ namespace {
         _hasNoDetail = false;
     }
 
+    /** Multi-line debug dump of hash, widgets, and actions. */
     std::string State::toString() const {
         std::ostringstream oss;
         oss << "{state: " << this->hash() << "\n    widgets: \n";
@@ -687,7 +710,7 @@ namespace {
     }
 
 
-    // for algorithm
+    /** Sums filter priorities for actions passing `filter` (optional exclusion of BACK). */
     int State::countActionPriority(const ActionFilterPtr &filter, bool includeBack) const {
         int totalP = 0;
         for (const auto &action: this->_actions) {
@@ -706,6 +729,7 @@ namespace {
         return totalP;
     }
 
+    /** Actions that match `targetFilter` (typically spatial targets). */
     ActivityStateActionPtrVec State::targetActions() const {
         ActivityStateActionPtrVec retV;
         ActionFilterPtr filter = targetFilter; //(ActionFilterPtr(new ActionFilterTarget());)
@@ -716,6 +740,7 @@ namespace {
         return retV;
     }
 
+    /** Highest filter-priority action (ties broken by scan order). */
     ActivityStateActionPtr State::greedyPickMaxQValue(const ActionFilterPtr &filter) const {
         ActivityStateActionPtr retA;
         long maxvalue = 0;
@@ -730,10 +755,12 @@ namespace {
         return retA;
     }
 
+    /** Random selection including BACK in the support when priorities allow. */
     ActivityStateActionPtr State::randomPickAction(const ActionFilterPtr &filter) const {
         return this->randomPickAction(filter, true);
     }
 
+    /** Weighted random choice: roll in `[0, total)` then walk cumulative filter priorities. */
     ActivityStateActionPtr
     State::randomPickAction(const ActionFilterPtr &filter, bool includeBack) const {
         int total = this->countActionPriority(filter, includeBack);
@@ -744,6 +771,7 @@ namespace {
         return pickAction(filter, includeBack, index);
     }
 
+    /** Deterministic slice of the discrete distribution implied by `filter` priorities. */
     ActivityStateActionPtr
     State::pickAction(const ActionFilterPtr &filter, bool includeBack, int index) const {
         int ii = index;
@@ -762,6 +790,7 @@ namespace {
         return nullptr;
     }
 
+    /** Random valid-unvisited pick; falls back to BACK when nothing else matches. */
     ActivityStateActionPtr State::randomPickUnvisitedAction() const {
         ActivityStateActionPtr action = this->randomPickAction(enableValidUnvisitedFilter, false);
         if (action == nullptr && enableValidUnvisitedFilter->include(getBackAction())) {
@@ -771,6 +800,7 @@ namespace {
     }
 
 
+    /** Rotates among duplicate-hash widgets using visit count modulo group size. */
     ActivityStateActionPtr State::resolveAt(ActivityStateActionPtr action, time_t /*t*/) {
         if (action == nullptr) {
             return action;
@@ -801,6 +831,7 @@ namespace {
     }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** Size of the merge bucket for `target`'s hash, or 1 if none / empty. */
     size_t State::getMergedTargetGroupSize(const WidgetPtr &target) const {
         if (!target) {
             return 0;
@@ -812,6 +843,7 @@ namespace {
         return it->second.size();
     }
 
+    /** Non-null only when at least two widgets share `target`'s hash in `_mergedWidgets`. */
     const WidgetPtrVec *State::getMergedTargetsIfAny(const WidgetPtr &target) const {
         if (!target) {
             return nullptr;
@@ -824,6 +856,7 @@ namespace {
     }
 #endif
 
+    /** Linear scan of `_widgets` using pointer equality helper. */
     bool State::containsTarget(const WidgetPtr &widget) const {
         if (widget == nullptr) {
             return false;
@@ -837,12 +870,13 @@ namespace {
 
     PropertyIDPrefixImpl(State, "g0s");
 
+    /** Value equality is hash equality for `State` (used after abstraction stabilizes the hash). */
     bool State::operator==(const State &state) const {
         return this->hash() == state.hash();
     }
 
 
-} // namespace fastbot
+} // namespace fastbotx
 
 
 #endif // State_CPP_

@@ -30,12 +30,17 @@ namespace fastbotx {
 namespace naming {
 namespace {
 
-    // Java ActionPatchNamer.interactiveProperties order; XPath iterates same order (LSB = enabled).
+    /**
+     * Interactive XPath predicate names in bit order from the least significant bit:
+     * enabled, clickable, checkable, long-clickable, scrollable.
+     */
     constexpr const char *kInteractiveProps[5] = {"enabled", "clickable", "checkable", "long-clickable",
                                                   "scrollable"};
 
+    /** Process-global token settings for action-patch profiles and derived-action flags. */
     ActionPatchTokenConfig g_cfg;
 
+    /** Returns an ASCII lowercased copy of `s`. */
     inline std::string toLowerCopy(std::string s) {
         std::transform(s.begin(), s.end(), s.begin(), [](unsigned char c) {
             return static_cast<char>(std::tolower(c));
@@ -43,6 +48,7 @@ namespace {
         return s;
     }
 
+    /** Returns a copy of `s` with leading and trailing ASCII whitespace removed. */
     inline std::string trimCopy(std::string s) {
         size_t l = 0;
         while (l < s.size() && (s[l] == ' ' || s[l] == '\t' || s[l] == '\r' || s[l] == '\n')) {
@@ -55,10 +61,12 @@ namespace {
         return s.substr(l, r - l);
     }
 
+    /** Single-bit mask for one `ActionType` enumerator value. */
     inline uint32_t actionTypeBit(ActionType t) {
         return 1u << static_cast<unsigned>(t);
     }
 
+    /** String placed in `[@scroll-type='…']` for the given scroll classification. */
     const char *scrollTypeAttrValue(ScrollType st) {
         switch (st) {
         case ScrollType::NONE:
@@ -76,7 +84,10 @@ namespace {
         }
     }
 
-    /// Keep in sync with `gui_tree::GUITreeFactory::computeScrollTypeString` whitelist and bit mapping.
+    /**
+     * Classifies scroll axes from the scrollable bitmask and widget class name (same heuristics as the
+     * GUI tree factory’s scroll-type helper).
+     */
     ScrollType scrollTypeFromNodeImpl(int scrollableBits, const char *className) {
         if (scrollableBits == 0) {
             return ScrollType::NONE;
@@ -104,15 +115,19 @@ namespace {
         return ScrollType::ALL;
     }
 
+    /** Currently passes `st` through unchanged (reserved for profile-dependent normalization). */
     ScrollType normalizeScrollTypeForToken(ScrollType st, bool /*includeScrollType*/,
                                            uint8_t /*includeBoolPropsMask*/) {
         return st;
     }
 
+    /**
+     * Bitmask of high-level action categories encoded by the current token (click / long-click / scroll),
+     * based on which interactive properties participate in the patch.
+     */
     uint32_t buildDerivedActionKnownKinds(uint8_t includeBoolPropsMask, bool /*includeScrollType*/) {
         uint32_t known = 0;
-        // CLICK is derivable as long as either clickable or checkable participates in the token,
-        // consistent with buildDerivedActionMask(clickable || checkable).
+        // CLICK is derivable when either clickable or checkable participates, matching `buildDerivedActionMask`.
         if ((includeBoolPropsMask & (1u << 1)) != 0 || (includeBoolPropsMask & (1u << 2)) != 0) {
             known |= kDerivedKindClick;
         }
@@ -125,6 +140,10 @@ namespace {
         return known;
     }
 
+    /**
+     * Builds the allowed concrete action mask from packed predicate bits in `patch`, scroll axis,
+     * and which properties are included in the token; scroll actions attach only when scrollable is present.
+     */
     uint32_t buildDerivedActionMask(int patch, ScrollType scrollType, uint8_t includeBoolPropsMask,
                                     bool /*includeScrollType*/) {
         uint32_t mask = 0;
@@ -172,6 +191,7 @@ namespace {
         return mask;
     }
 
+    /** Appends `[@prop='true'|'false']` predicates (and optionally scroll-type) to `baseXPath`. */
     void appendInteractiveTokens(std::string &baseXPath, int patch, ScrollType scrollType,
                                  uint8_t includeBoolPropsMask, bool includeScrollType) {
         baseXPath.reserve(baseXPath.size() + 160);
@@ -196,12 +216,14 @@ namespace {
 
 } // namespace
 
+/** Returns `baseXPath` with interactive and optional scroll-type predicates appended. */
 std::string appendActionPatchXPathSuffix(std::string baseXPath, int patch, ScrollType scrollType,
                                          uint8_t includeBoolPropsMask, bool includeScrollType) {
     appendInteractiveTokens(baseXPath, patch, scrollType, includeBoolPropsMask, includeScrollType);
     return baseXPath;
 }
 
+/** Packs the five interactive flags from `node` into an integer (same bit order as `kInteractiveProps`). */
 int actionPatchBitsForNode(const gui_tree::GUITreeNode &node) {
     int flag = 0;
     for (int i = 4; i >= 0; --i) {
@@ -226,14 +248,20 @@ int actionPatchBitsForNode(const gui_tree::GUITreeNode &node) {
     return flag;
 }
 
+/** Scroll classification for XPath tokens derived from the node’s scroll bits and class name. */
 ScrollType actionPatchScrollTypeForNode(const gui_tree::GUITreeNode &node) {
     return scrollTypeFromNodeImpl(node.getScrollable(), node.getClassName().c_str());
 }
 
+/** Snapshot of the current global action-patch token configuration. */
 ActionPatchTokenConfig getActionPatchTokenConfig() {
     return g_cfg;
 }
 
+/**
+ * Parses a profile string (`default`, `full`, `no_scroll_type`, `no_enabled`, hex masks, etc.)
+ * and updates which predicates appear in tokens and whether scroll-type is included.
+ */
 void setActionPatchProfile(const std::string &value) {
     const std::string trimmed = trimCopy(value);
     g_cfg.profile = trimmed;
@@ -268,18 +296,25 @@ void setActionPatchProfile(const std::string &value) {
     g_cfg.include_scroll_type = false;
 }
 
+/** Last profile string passed to `setActionPatchProfile`. */
 const std::string &getActionPatchProfile() {
     return g_cfg.profile;
 }
 
+/** Whether planners should derive concrete actions from encoded action-patch names. */
 bool useActionPatchDeriveActionsFromName() {
     return g_cfg.derive_actions_from_name;
 }
 
+/** Enables or disables deriving actions from action-patch name metadata. */
 void setActionPatchDeriveActionsFromName(bool enabled) {
     g_cfg.derive_actions_from_name = enabled;
 }
 
+/**
+ * If `name` is an `ActionPatchName`, writes derived allowed and known-kind masks and returns true;
+ * otherwise clears outputs and returns false.
+ */
 bool decodeApeDerivedActionsFromName(const NamePtr &name, uint32_t *outAllowedActionMask,
                                      uint32_t *outKnownActionKinds) {
     if (!outAllowedActionMask || !outKnownActionKinds) {
@@ -296,6 +331,7 @@ bool decodeApeDerivedActionsFromName(const NamePtr &name, uint32_t *outAllowedAc
     return true;
 }
 
+/** Builds cached XPath text and derived-action bitmasks from base name, patch bits, and inclusion flags. */
 ActionPatchName::ActionPatchName(NamerPtr namer, NamePtr baseName, int patch, ScrollType scrollType,
                                  uint8_t includeBoolPropsMask, bool includeScrollType,
                                  std::string xpath_full_override)
@@ -322,10 +358,12 @@ ActionPatchName::ActionPatchName(NamerPtr namer, NamePtr baseName, int patch, Sc
     }
 }
 
+/** Returns the fully materialized XPath string including interactive predicates. */
 const std::string &ActionPatchName::toXPath() const {
     return xpath_full_;
 }
 
+/** Appends only this layer’s predicates to `sb`, after any base name’s local properties. */
 void ActionPatchName::appendXPathLocalProperties(std::string &sb) const {
     if (base_) {
         base_->appendXPathLocalProperties(sb);
@@ -333,16 +371,20 @@ void ActionPatchName::appendXPathLocalProperties(std::string &sb) const {
     appendInteractiveTokens(sb, patch_, scroll_type_, include_bool_props_mask_, include_scroll_type_);
 }
 
+/** Wraps `base` to append interactive predicates on top of its names. */
 ActionPatchNamer::ActionPatchNamer(NamerPtr base) : base_(std::move(base)) {}
 
+/** Delegates to the underlying namer, or returns an empty vector if there is no base. */
 std::vector<NamerType> ActionPatchNamer::getNamerTypes() const {
     return base_ ? base_->getNamerTypes() : std::vector<NamerType>{};
 }
 
+/** Dimension mask forwarded from the base namer. */
 uint32_t ActionPatchNamer::typeDimensionMask() const {
     return base_ ? base_->typeDimensionMask() : 0u;
 }
 
+/** Names the node with the base namer, then wraps the result in an `ActionPatchName` for the node state. */
 NamePtr ActionPatchNamer::naming(gui_tree::GUITreeNode &node) {
     NamePtr baseName = base_ ? base_->naming(node) : nullptr;
     const int p = actionPatchBitsForNode(node);
@@ -354,13 +396,17 @@ NamePtr ActionPatchNamer::naming(gui_tree::GUITreeNode &node) {
         shared_from_this(), std::move(baseName), p, st, cfg.include_bool_props_mask, cfg.include_scroll_type));
 }
 
+/**
+ * Like `naming`, but builds XPath from `xpathKey` (must be the base key without action-patch suffix);
+ * appends predicates exactly once.
+ */
 NamePtr ActionPatchNamer::namingWithXPathKey(gui_tree::GUITreeNode &node, const std::string &xpathKey) {
     const int p = actionPatchBitsForNode(node);
     const ActionPatchTokenConfig cfg = getActionPatchTokenConfig();
     const ScrollType st =
         normalizeScrollTypeForToken(actionPatchScrollTypeForNode(node), cfg.include_scroll_type,
                                     cfg.include_bool_props_mask);
-    // `xpathKey` must be base-key only (no ActionPatch suffix). We append the suffix exactly once here.
+    // `xpathKey` must be the base key only so predicates are not duplicated during rebuild.
     std::string full = appendActionPatchXPathSuffix(std::string(xpathKey), p, st, cfg.include_bool_props_mask,
                                                     cfg.include_scroll_type);
     return cacheName(std::make_shared<ActionPatchName>(
@@ -368,6 +414,9 @@ NamePtr ActionPatchNamer::namingWithXPathKey(gui_tree::GUITreeNode &node, const 
         std::move(full)));
 }
 
+/**
+ * Returns the base namer’s key for `node` (no interactive predicates), falling back to the base XPath if needed.
+ */
 std::string ActionPatchNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const {
     std::string k = base_ ? base_->xpathKeyForNode(node) : std::string();
     if (k.empty() && base_) {
@@ -376,10 +425,11 @@ std::string ActionPatchNamer::xpathKeyForNode(gui_tree::GUITreeNode &node) const
             k = n->toXPath();
         }
     }
-    // IMPORTANT: Key must not include ActionPatch predicates, otherwise rebuild will append twice.
+    // The key must omit action-patch predicates so a later pass can append them once.
     return k;
 }
 
+/** True if this namer’s dimension mask includes every dimension set in `other`. */
 bool ActionPatchNamer::refinesTo(const Namer &other) const {
     uint32_t om = other.typeDimensionMask();
     const uint32_t mm = typeDimensionMask();

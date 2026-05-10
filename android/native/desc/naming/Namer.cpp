@@ -16,6 +16,10 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
+/**
+ * Default `Namer` helpers: bitmask from declared types, total order on namer type sets, and a stable cache key
+ * string used by `NameManager::cacheName`.
+ */
 
 #include "Namer.h"
 
@@ -26,6 +30,7 @@
 namespace fastbotx {
 namespace naming {
 
+    /** ORs together `1u << t` for each `t` returned by `getNamerTypes()`. */
     uint32_t Namer::typeDimensionMask() const {
         uint32_t m = 0;
         for (NamerType t : getNamerTypes()) {
@@ -34,6 +39,10 @@ namespace naming {
         return m;
     }
 
+    /**
+     * Three-way comparison after sorting each namer’s `NamerType` list numerically: shorter list first,
+     * then lexicographic compare of parallel elements. Used for deterministic ordering (e.g. `Namelet`).
+     */
     int compareNamer(const Namer &a, const Namer &b) {
         std::vector<NamerType> ta = a.getNamerTypes();
         std::vector<NamerType> tb = b.getNamerTypes();
@@ -53,6 +62,10 @@ namespace naming {
         return 0;
     }
 
+    /**
+     * Stable fingerprint for cache bucketing: `typeDimensionMask()` as decimal, `:`, then comma-separated
+     * sorted `NamerType` ordinals (matches dimension bits but remains readable for debugging).
+     */
     std::string namerSemanticKey(const Namer &n) {
         std::vector<NamerType> ts = n.getNamerTypes();
         auto ord = [](NamerType t) -> unsigned { return static_cast<unsigned>(t); };

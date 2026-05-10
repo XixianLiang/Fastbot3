@@ -1,22 +1,26 @@
 /**
  * @authors Zhao Zhang, Tianming Liu, Chenxu Wang
+ *
+ * @file ValuableWidget.cpp
+ * @brief Implements aggregation and line-oriented text formatting for merged widgets in activity briefs.
  */
 
 #include "ValuableWidget.h"
 
 namespace fastbotx {
 
+/** Builds the initial bucket from a single widget (details, top edge, bounds hash). */
 ValuableWidget::ValuableWidget(WidgetPtr widget) {
     fillDetails(widget);
 
-    // get top value of bounds
     RectPtr rect = widget ? widget->getBounds() : nullptr;
     _top = rect ? rect->top : 0;
 
-    // Bounds-based identity hash (LLMDroid-compatible semantics)
+    // Bounds identity (`Rect::hash2`) aligns with merging widgets by region in activity summaries.
     computeHash(rect);
 }
 
+/** Adds `widget` to `_widgets`, merges class names, actions, or informational text depending on `hasAction()`. */
 void ValuableWidget::fillDetails(WidgetPtr widget) {
     _widgets.insert(widget);
     _classes.insert(widget->getClassname());
@@ -31,6 +35,7 @@ void ValuableWidget::fillDetails(WidgetPtr widget) {
     }
 }
 
+/** Sets `_hashcode` from `Rect::hash2()` when bounds exist; otherwise clears the hash. */
 void ValuableWidget::computeHash(RectPtr rect) {
     if (!rect) {
         this->_hashcode = 0;
@@ -40,6 +45,10 @@ void ValuableWidget::computeHash(RectPtr rect) {
     this->_hashcode = rect->hash2();
 }
 
+/**
+ * Concatenates class names, widget count, optional resource id, optional serialized widgets plus action phrase,
+ * or parenthetical info lines for widgets without actions.
+ */
 std::string ValuableWidget::toDescription() {
     std::string desc = generateClass();
     desc.append(std::to_string(_widgets.size()));
@@ -69,6 +78,7 @@ std::string ValuableWidget::toDescription() {
     return desc;
 }
 
+/** Space-separated unique class strings from `_classes`. */
 std::string ValuableWidget::generateClass() {
     std::string str;
     for (auto clazz : _classes) {
@@ -77,6 +87,7 @@ std::string ValuableWidget::generateClass() {
     return str;
 }
 
+/** Builds `" which can "` followed by global `actName` labels for each merged action type. */
 std::string ValuableWidget::generateAction() {
     std::string str = " which can ";
     for (auto action : _actions) {
@@ -85,6 +96,7 @@ std::string ValuableWidget::generateAction() {
     return str;
 }
 
+/** Returns `(resource-id:…)` from the first widget in `_widgets`, or empty when missing (caller must ensure non-empty set). */
 std::string ValuableWidget::generateResId() {
     std::string str;
     std::string res_id = (*(_widgets.begin()))->getResourceID();
@@ -95,6 +107,7 @@ std::string ValuableWidget::generateResId() {
     return str;
 }
 
+/** No extra teardown; smart pointers own widget data. */
 ValuableWidget::~ValuableWidget() {
     return;
 }

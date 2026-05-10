@@ -17,8 +17,7 @@
  * @authors Tianxiao Gu, Zhao Zhang
  */
 /*
- * Evaluate Naming on GUITree via XPath (XPathNodeMapper) + Namer.
- * refine / batchAbstract / blacklist — extended in later passes.
+ * Evaluates `Naming` on `GUITree` via XPath (`XPathNodeMapper`) and exposes lattice refinement utilities.
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMINGFACTORY_H_
 #define FASTBOTX_DESC_NAMING_NAMINGFACTORY_H_
@@ -52,7 +51,7 @@ namespace naming {
         Stoat = 5,
     };
 
-    /** Counters for review items 1.1–1.2: default ActionType XPath gaps + evaluateNaming failures. */
+    /** Rolling counters for evaluate/rebuild failures (consumed via `consumeNamingEvaluateDiagStats`). */
     struct NamingEvaluateDiagStats {
         uint64_t fail_node_without_namelet{0};
         /** Subset of the above when naming matches ActionType default-root shape (two partition XPaths). */
@@ -102,30 +101,24 @@ namespace naming {
         static ApeBaseNamingMode getDefaultRootNamingMode();
 
         /**
-         * Append one REFINE namelet under namelet {@code nameletIndex}
-         * with namer {@code finer} (same XPath as that namelet).
+         * Appends a REFINE namelet at `nameletIndex` with the same XPath as that namelet but namer `finer`.
          */
         static NamingPtr latticeRefinementChildAtNamelet(const NamingPtr &base, size_t nameletIndex,
                                                          const NamerPtr &finer);
 
         /**
-         * Java Naming.extend(parentNamelet, newNamelet): append a REFINE namelet with
-         * {@code widgetXPathExpr} and {@code finer} under the existing lattice namelet at
-         * {@code parentNameletIndex}.
+         * Appends a REFINE namelet with `widgetXPathExpr` and `finer` under the namelet at `parentNameletIndex`.
          */
         static NamingPtr extendUnderNamelet(const NamingPtr &base, size_t parentNameletIndex,
                                             const std::string &widgetXPathExpr, const NamerPtr &finer);
 
         /**
-         * Java Naming.replaceLast(replaced, namelet): parentNaming.extend(replaced.getParent(), newNamelet)
-         * with same XPath expr as {@code replaced} and finer namer.
+         * Replaces the last REFINE namelet by extending from the parent naming with the same XPath and `finer`.
          */
         static NamingPtr replaceLast(const NamingPtr &naming, const NameletPtr &replaced, const NamerPtr &finer);
 
         /**
-         * One lattice step: walk namelets in order; for each, try NamerLattice::sortedAbove
-         * (Java NamerFactory.getSortedAbove order) until makeLatticeRefinementChild succeeds.
-         * Model ND refine does not use this; it mirrors Java stateRefinement/actionRefinement.
+         * One lattice step: for each namelet in order, try `sortedAbove` refinements until a child `Naming` is created.
          */
         static NamingPtr refineNaming(const NamingPtr &naming, const NamerLattice &lattice);
 
@@ -166,15 +159,13 @@ namespace naming {
                                                      const ActionRefinementOptions &options);
 
         /**
-         * Enumerate refinement candidates (optional full fan-out per namelet). Search helper only —
-         * not APE NamingFactory.refine ND resolution (that uses stateRefinement / actionRefinement only).
+         * Enumerates refinement candidates (optional full fan-out per namelet) for search / planning helpers.
          */
         static std::vector<NamingPtr> actionRefinementCandidatesWithOptions(
             const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options);
 
         /**
-         * Refinement candidates anchored at {@code widget_parent} using {@code widget_xpath_expr} and
-         * lattice.sortedAbove (Java widget XPath refinement analogue).
+         * Refinement candidates anchored at `widget_parent` with `widget_xpath_expr`, using `sortedAbove` order.
          */
         static std::vector<NamingPtr> widgetXPathRefinementCandidatesWithOptions(
             const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options,

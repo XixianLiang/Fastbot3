@@ -16,6 +16,10 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
+/**
+ * Enumerates every combination of active `NamerType` dimensions from `namerTypesUsed()`, wraps each as a
+ * `BitmaskNamer` (optionally inside `ActionPatchNamer`), and indexes instances by bitmask for reuse.
+ */
 
 #include "NamerFactory.h"
 #include "ActionPatchNamer.h"
@@ -29,12 +33,18 @@ namespace fastbotx {
 namespace naming {
 namespace {
 
+    /** Population count of set bits in `x` (used to sort namers from simpler to richer masks). */
     int popcount32(uint32_t x) {
         return __builtin_popcount(x);
     }
 
 } // namespace
 
+    /**
+     * For each subset of `namerTypesUsed()`, builds the corresponding dimension bitmask, creates the stacked
+     * namer, registers `by_mask_[mask]`, and appends to `ordered_`. Sorts `ordered_` by increasing bit count then
+     * numeric mask. Records `empty_` as the namer for mask zero when present.
+     */
     NamerFactory::NamerFactory() {
         const auto &used = namerTypesUsed();
         const size_t n = used.size();
@@ -77,6 +87,10 @@ namespace {
         }
     }
 
+    /**
+     * Process-wide singleton: reconstructed whenever `useAncestorNamer()` or `usePatchNamer()` changes so the
+     * cached cube matches current layering preferences.
+     */
     const NamerFactory &NamerFactory::current() {
         static std::unique_ptr<NamerFactory> inst;
         static bool have = false;
@@ -93,6 +107,7 @@ namespace {
         return *inst;
     }
 
+    /** Lookup of the pre-built namer for `mask`, or nullptr if that combination was not generated. */
     NamerPtr NamerFactory::getByMask(uint32_t mask) const {
         auto it = by_mask_.find(mask);
         if (it == by_mask_.end()) {

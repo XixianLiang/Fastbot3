@@ -16,6 +16,9 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
+/**
+ * Out-of-line definitions for `Name` comparison operators (ordering uses the `order_` field on `Name`).
+ */
 
 #include "Name.h"
 
@@ -24,8 +27,13 @@
 namespace fastbotx {
 namespace naming {
 
+    /** Virtual destructor; default implementation is sufficient for the base class. */
     Name::~Name() = default;
 
+    /**
+     * Strict weak ordering for use in `std::set` / `std::map` of `Name*`.
+     * Compares `getOrder()`; if equal for two different objects, throws (invalid total order / mis-set orders).
+     */
     bool Name::operator<(const Name &other) const {
         const int ret = getOrder() - other.getOrder();
         if (ret == 0 && this != &other) {
@@ -34,6 +42,7 @@ namespace naming {
         return ret < 0;
     }
 
+    /** Identity equality: only the same object compares equal (not value equality on XPath text). */
     bool Name::operator==(const Name &other) const {
         return this == &other;
     }

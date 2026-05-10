@@ -18,8 +18,8 @@
  */
 
 /*
- * Coordinates Naming lattice navigation per activity.
- * treeToNaming / refine fixed-point — full logic in NamingFactory.
+ * Per-activity `Naming` selection and refinement graph edges keyed by `StateKey` / state hash.
+ * Bridges `ActivityNamingManager`, lattice refinements (`NamingFactory`), and tree walks for fixed points.
  */
 #ifndef FASTBOTX_DESC_NAMING_STATENAMINGMANAGER_H_
 #define FASTBOTX_DESC_NAMING_STATENAMINGMANAGER_H_
@@ -44,7 +44,7 @@ namespace naming {
 
     enum class NamingUpdateKind : unsigned char { Refine, Abstract };
 
-    /** Review item 1.3: updateNaming* rejected or skipped (structural / state-key guards). */
+    /** Counters for `updateNaming*` paths that bail out (structural checks, state-key guards). */
     struct StateNamingUpdateRejectDiagStats {
         uint64_t update_reject_null_new{0};
         uint64_t update_refine_not_direct_child{0};
@@ -52,7 +52,7 @@ namespace naming {
         uint64_t update_abstract_sibling_no_parent{0};
         uint64_t update_abstract_sibling_naming_to_edge_failed{0};
         uint64_t update_abstract_sibling_infer_edge_failed{0};
-        /** Abstract sibling replace rejected: old/new not both state-graph leaves (APE isLeaf). */
+        /** Abstract sibling replace rejected: old/new not both leaves in the stored refinement graph. */
         uint64_t update_abstract_sibling_not_leaf{0};
         uint64_t update_abstract_relation_rejected{0};
         uint64_t statekey_not_applied_after_update{0};
@@ -74,7 +74,7 @@ namespace naming {
         }
     };
 
-    /** Review item 1.4: treeToNaming(dom) walk + getNamingFixedPoint failures. */
+    /** Counters for `treeToNaming` / fixed-point failures (rebuild, hash, cycles). */
     struct StateNamingTreeWalkDiagStats {
         uint64_t tree_to_naming_dom_entries{0};
         uint64_t tree_to_naming_rebuild_failed{0};
@@ -92,6 +92,10 @@ namespace naming {
         }
     };
 
+    /**
+     * Owns activity-scoped naming roots and maps `(source naming, state key)` to successor namings after
+     * refine/abstract updates. Exposes `treeToNaming` walks and bitmask fixed-point refinement.
+     */
     class StateNamingManager {
     public:
         struct EdgeLookupStats {
@@ -105,27 +109,28 @@ namespace naming {
         ActivityNamingManager &activityManager();
         const ActivityNamingManager &activityManager() const;
 
+        /** Cached `Naming` root for `activity_key` (may be lazily inserted by `ActivityNamingManager`). */
         NamingPtr getNamingForActivity(const std::string &activity_key) const;
 
-        /** APE-style update from current(activity) naming to n with relation checks by kind. */
+        /** Updates from current activity naming to `n`, dispatching on `kind` (see overload for rules). */
         void updateNaming(const std::string &activity_key, NamingUpdateKind kind, NamingPtr n);
-        /** APE-style explicit transition update (old -> new) with strict relation checks. */
+        /** Validates `old_n -> new_n` by kind, registers refinement edges, then stores `new_n` for the activity. */
         void updateNaming(const std::string &activity_key, NamingUpdateKind kind, const NamingPtr &old_n, NamingPtr new_n);
-        /** APE-style state-scoped update edge: source naming + state key -> target naming. */
+        /** After a successful structural update, records `state_key -> new_n` from `old_n` when applicable. */
         void updateNamingWithStateKey(const std::string &activity_key, NamingUpdateKind kind,
                                       const NamingPtr &old_n, NamingPtr new_n, const StateKey &state_key);
-        /** Same as updateNamingWithStateKey but keyed by precomputed StateKey hash. */
+        /** Like `updateNamingWithStateKey` but stores hash-only edges when only the uintptr key is available. */
         void updateNamingWithStateHash(const std::string &activity_key, NamingUpdateKind kind,
                                        const NamingPtr &old_n, NamingPtr new_n, uintptr_t state_key_hash);
 
         /** True if to is a direct refinement child of from (edge in from's refinement map). */
         bool namingToEdge(const NamingPtr &from, const NamingPtr &to, NamingEdge *out_edge) const;
 
-        /** Current naming for the tree's activity, or {@link NamingFactory::defaultRootNaming} if unset. */
+        /** One-hop resolve: activity naming + current tree `StateKey`; falls back to `NamingFactory::defaultRootNaming`. */
         NamingPtr treeToNaming(const gui_tree::GUITree &tree);
-        /** APE-style lookup with per-hop rebuild and state-key recomputation. */
+        /** Follows state edges with `rebuildTree` each hop until no successor or cycle (multi-hop). */
         NamingPtr treeToNaming(gui_tree::GUITree &tree, const std::shared_ptr<gui_tree::XPathNodeMapper> &dom);
-        /** State-hash scoped lookup from a source naming (APE namingToEdge-style). */
+        /** Looks up successor naming by hash bucket (exact bucket first, then hash-only fallback). */
         NamingPtr getNamingByStateHash(const NamingPtr &source, uintptr_t state_key_hash) const;
         /** State-key exact lookup with hash-bucket + full-key verification. */
         NamingPtr getNamingByStateKey(const NamingPtr &source, const StateKey &state_key) const;
@@ -159,8 +164,9 @@ namespace naming {
         };
         using StateEdgeBucket = std::vector<StateEdgeEntry>;
         using StateEdgeMap = std::map<uintptr_t, StateEdgeBucket>;
+        /** Source naming → hash bucket → full `StateKey` entries with successor namings. */
         std::map<NamingPtr, StateEdgeMap, std::owner_less<NamingPtr>> naming_to_edge_;
-        // Compatibility path for callers that only provide hash (no full StateKey available).
+        /** Fallback edges keyed only by `StateKey::hash()` when callers lack full keys. */
         std::map<NamingPtr, std::map<uintptr_t, NamingPtr>, std::owner_less<NamingPtr>> naming_to_edge_hash_only_;
         EdgeLookupStats lookup_stats_{};
         std::shared_ptr<ActivityNamingManager> activity_mgr_;

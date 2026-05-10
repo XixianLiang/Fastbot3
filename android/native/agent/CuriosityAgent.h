@@ -1,16 +1,16 @@
-
-/**
- * Curiosity-driven exploration agent
- *
- * Aligns with WebRLED (arXiv:2504.19237) curiosity-driven reward model:
- * - Dual novelty: (1) Episode-internal novelty — prefer leaving states visited often in current episode.
- * - (2) Global novelty — prefer actions with low global visit count (getVisitedCount()).
- * - No DQN/grid; uses novelty as intrinsic score for action selection.
- * - Action selection: ε-greedy over curiosity score (with probability ε random, else greedy max score).
- * - Episode resets on CLEAN_RESTART (state-abstraction change clears episode counts).
- */
 /**
  * @authors Zhao Zhang
+ */
+
+/**
+ * @file CuriosityAgent.h
+ *
+ * Curiosity-driven exploration aligned with the WebRLED formulation (arXiv:2504.19237):
+ * - **Dual novelty**: episode novelty down-weights staying in states visited often *within the current episode*;
+ *   global novelty favors actions with low `getVisitedCount()`.
+ * - **No Q-network**: intrinsic scores replace value estimates for ranking candidate actions.
+ * - **Selection**: ε-greedy — with probability ε sample proportional to score (exploration), else greedy maximum.
+ * - **Episode boundaries**: `CLEAN_RESTART`, step/state caps, and `onStateAbstractionChanged()` reset episode counts.
  */
 
 #ifndef FASTBOTX_CURIOSITY_AGENT_H
@@ -30,6 +30,10 @@
 
 namespace fastbotx {
 
+    /**
+     * Ranks `ActivityStateAction` candidates with intrinsic curiosity: visit statistics,
+     * optional embeddings + online clustering, and lightweight successor-graph shaping.
+     */
     class CuriosityAgent : public AbstractAgent {
     public:
         explicit CuriosityAgent(const ModelPtr &model);
@@ -51,7 +55,7 @@ namespace fastbotx {
         void onStateAbstractionChanged() override;
 
     private:
-        /** Curiosity score: globalNovelty * episodeMod * stateFactor (WebRLED §3.5: episodic = 1/√(1+n)). */
+        /** Intrinsic score: `globalNovelty * episodeMod * stateFactor` (episode factor `1/sqrt(1+n)`). */
         double getCuriosityScore(const ActivityStateActionPtr &action, double episodeMod, double stateFactor) const;
 
         /** Fallback when no valid action: prefer low-visit, non-BACK, then random, then BACK. */
@@ -59,11 +63,11 @@ namespace fastbotx {
 
         mutable std::mt19937 _rng{std::random_device{}()};
 
-        /// Episode state visit count (reset on CLEAN_RESTART, onStateAbstractionChanged, max steps, or max states)
+        /// Per-state visit counts within the current episode (reset on restart / caps / abstraction change).
         std::unordered_map<uintptr_t, int> _episodeStateCount;
-        /// Steps in current episode (for max-step truncation, align with WebRLED finite-length episode)
+        /// Steps taken in the current episode (truncated at `kMaxEpisodeSteps`).
         int _episodeSteps = 0;
-        /// Global state visit count (state-level novelty; cleared only on onStateAbstractionChanged)
+        /// Lifetime visit counts per abstract state hash (cleared in `onStateAbstractionChanged`).
         std::unordered_map<uintptr_t, int> _globalStateCount;
         /// Smoothed global count for stochastic transitions (EMA); used when kEnableCountSmoothing.
         std::unordered_map<uintptr_t, double> _smoothedGlobalStateCount;
@@ -85,8 +89,7 @@ namespace fastbotx {
         /// Keyed by ActivityStateAction::hash() to remain stable across state rebuilds.
         std::unordered_map<uintptr_t, int> _selfLoopCount;
 
-        /// Bottleneck (3.1): state hash -> out-degree (number of actions). Used to down-weight actions
-        /// that tend to lead to hub states (high out-degree); prefer actions leading to leaves.
+        /// State hash → out-degree (action count) when bottleneck shaping is enabled (prefer low-hub successors).
         std::unordered_map<uintptr_t, int> _stateOutDegree;
 
         /// Sliding window of recent state hashes for path diversity (rolling window over last kPathWindow states).
@@ -101,8 +104,8 @@ namespace fastbotx {
         static constexpr int kBlockDeepLinkThreshold = 10;
         static constexpr int kBlockCleanRestartThreshold = 15;
 
-        /// ε-greedy: initial and min (decay from initial to min over kEpsilonDecaySteps); 0.4 aligns with WebRLED §3.6.
-        /// NOTE: use a smaller decay horizon than WebRLED (kEpsilonDecaySteps=3000) to speed up convergence to greedy in UI testing.
+        /// ε-greedy schedule: decay from `kEpsilonInitial` toward `kEpsilonMin` over `kEpsilonDecaySteps`.
+        /// Horizon is shorter than the paper default so the policy becomes greedier sooner during UI runs.
         static constexpr double kEpsilonInitial = 0.4;
         static constexpr double kEpsilonMin = 0.05;
         static constexpr int kEpsilonDecaySteps = 3000;
@@ -125,15 +128,14 @@ namespace fastbotx {
         };
         /// Max reward scaling for multiplicative combination (WebRLED L=5)
         static constexpr double kRewardCap = 5.0;
-        /// Max steps per episode before resetting episode counts (finite-length episode).
-        /// UI testing benefits from slightly shorter episodes to reduce long local plateaus.
+        /// Episode length cap before resetting episode-local counts (shorter than paper defaults for UI plateau relief).
         static constexpr int kMaxEpisodeSteps = 300;
         /// Max distinct states per episode before reset (memory cap)
         static constexpr size_t kMaxEpisodeStateCount = 2000;
         /// Global state factor: stateFactor = 1 + kGlobalStateBonus * min(globalStateCount, kGlobalStateCap), encourage leaving globally over-visited state
         static constexpr double kGlobalStateBonus = 0.15;
         static constexpr int kGlobalStateCap = 20;
-        /// Count smoothing for stochastic UI (transfer noise): use EMA of global count; default on (see CURIOSITY_ALGORITHM_EXPLANATION §2.4.5).
+        /// Exponential moving average on global visit counts (helps stochastic UI transitions); enabled by default.
         static constexpr bool kEnableCountSmoothing = true;
         static constexpr double kSmoothBeta = 0.2;  // EMA: smoothed = (1-beta)*smoothed + beta*raw
         /// Curriculum: early bias global novelty, later bias episode (leave repeated states); disable by default.
@@ -151,14 +153,12 @@ namespace fastbotx {
         static constexpr double kSuccessorMinFactor = 0.1;     // clamp successor factor to avoid vanishing scores
         static constexpr double kSuccessorAlpha = 1.0;         // exponent on successor factor (>=1 stronger)
 
-        /// Bottleneck diversity (3.1, experimental): A/B tests showed coverage drop vs baseline; disable by default.
-        /// When enabled, down-weight actions that tend to lead to hub states (high out-degree); prefer leaves.
+        /// Experimental hub-avoidance penalty (often hurts coverage in A/B runs); off unless tuning exploration.
         static constexpr bool kEnableBottleneckDiversity = false;
         static constexpr double kBottleneckMinFactor = 0.3;   // clamp bottleneck factor
         static constexpr int kBottleneckOutDegreeCap = 50;     // cap out-degree in factor to avoid overflow
 
-        /// Path diversity (3.2, experimental): A/B tests showed coverage drop vs baseline; disable by default.
-        /// Set to true to re-enable path-level diversity penalty.
+        /// Experimental rolling path-signature penalty (can reduce coverage); disabled by default.
         static constexpr bool kEnablePathDiversity = false;
         static constexpr int kPathWindow = 16;
         static constexpr int kPathMinLengthForPenalty = 6;

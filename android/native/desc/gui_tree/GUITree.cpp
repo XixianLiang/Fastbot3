@@ -40,20 +40,27 @@ namespace gui_tree {
 
     static std::atomic<int> g_tree_id{0};
 
+    /** Returns the next monotonically increasing tree id (thread-safe). */
     int GUITree::nextId() {
         return g_tree_id.fetch_add(1, std::memory_order_relaxed);
     }
 
+    /** Constructs a GUI tree with root node and owning activity package/class names. */
     GUITree::GUITree(GUITreeNodePtr root, std::string activity_package, std::string activity_class)
         : id_(nextId()),
           root_(std::move(root)),
           activity_package_(std::move(activity_package)),
           activity_class_(std::move(activity_class)) {}
 
+    /** Returns whether any node in the current naming groups reported focused state at last rebuild. */
     bool GUITree::hasFocusedNode() const {
         return has_focused_node_;
     }
 
+    /**
+     * Replaces parallel name and node-group vectors: sorts by XPath key, refreshes caches,
+     * and recomputes whether any node is focused.
+     */
     void GUITree::rebuild(std::vector<naming::NamePtr> names, std::vector<std::vector<GUITreeNodePtr>> node_groups) {
         if (names.size() != node_groups.size()) {
             throw std::invalid_argument("GUITree::rebuild: names and node_groups size mismatch");
@@ -101,6 +108,7 @@ namespace gui_tree {
         }
     }
 
+    /** Stores the naming context and rebuilds sorted names, XPath strings, and node groups. */
     void GUITree::setCurrentNaming(naming::NamingPtr naming,
                                    std::vector<naming::NamePtr> names,
                                    std::vector<std::vector<GUITreeNodePtr>> node_groups) {
@@ -110,6 +118,7 @@ namespace gui_tree {
 
     namespace {
 
+        /** Deep-clones a subtree under parentWeak; omap maps source pointers to cloned nodes for remap. */
         GUITreeNodePtr cloneSubtree(const GUITreeNode *src,
                                     std::unordered_map<const GUITreeNode *, GUITreeNodePtr> &omap,
                                     const GUITreeNodeWeakPtr &parentWeak) {
@@ -155,6 +164,7 @@ namespace gui_tree {
 
     } // namespace
 
+    /** Deep-copies the tree, timestamp, and naming; node groups point into the cloned nodes via omap. */
     GUITreePtr GUITree::cloneDeep(const GUITree &src) {
         const GUITreeNode *root = src.getRootNode();
         if (!root) {
@@ -191,6 +201,7 @@ namespace gui_tree {
         return out;
     }
 
+    /** Ensures each non-null node’s XPath name matches the parallel Name entry; throws on mismatch. */
     void GUITree::validate() const {
         const size_t n = current_names_.size();
         if (current_node_groups_.size() != n) {

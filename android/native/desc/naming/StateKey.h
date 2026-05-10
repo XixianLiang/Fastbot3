@@ -2,8 +2,8 @@
  * @authors Zhao Zhang
  */
  /*
- * Activity + Naming fingerprint + sorted widget Name XPaths.
- * Hash mixes the same way as fastbotx::State (activity term + xor-combined name hashes).
+ * Activity label + naming fingerprint + sorted widget XPath strings for abstract UI-state identity.
+ * Hash combines activity, naming chain id, and ordered XPath string hashes.
  */
 #ifndef FASTBOTX_DESC_NAMING_STATEKEY_H_
 #define FASTBOTX_DESC_NAMING_STATEKEY_H_
@@ -23,7 +23,7 @@ namespace naming {
 
     class StateKey {
     public:
-        /** Use the same activity string as State / ReuseState (e.g. Java component flatten). */
+        /** Builds from caller activity string plus naming graph and concrete `Name` list (`toXPath()` tokens). */
         static StateKey fromParts(std::string activity, NamingPtr naming, std::vector<NamePtr> names);
 
         static StateKey fromGUITree(const gui_tree::GUITree &tree);
@@ -31,7 +31,7 @@ namespace naming {
         /** Hash-only fast path for GUITree (avoids building sorted_xpaths vector). */
         static uintptr_t hashFromGUITree(const gui_tree::GUITree &tree);
 
-        /** Split at first `/` (same convention as GUITreeFactory / JNI activity). */
+        /** Split at first `/` into package and class components (same convention as UI snapshot activity strings). */
         static void splitActivityPackageClass(const std::string &activity, std::string *pkg, std::string *cls);
 
         /**
@@ -50,7 +50,7 @@ namespace naming {
         /** Sorted Name::toXPath() tokens (multiset of abstract widgets). */
         const std::vector<std::string> &sortedXPaths() const { return sorted_xpaths_; }
 
-        /** Same structure as State::create: activity term ^ naming ^ combined name hashes. */
+        /** Precomputed mixed hash of activity, naming fingerprint, and XPath multiset (see `StateKey.cpp`). */
         uintptr_t hash() const { return hashcode_; }
 
         bool operator==(const StateKey &o) const;

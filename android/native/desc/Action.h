@@ -2,6 +2,11 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file Action.h
+ *
+ * Core action model: abstract `Action` (type, Q-value, priority, hash) and `ActivityStateAction`, which binds
+ * an action to a `State` and optional target `Widget` for concrete UI operations.
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 #ifndef Action_H_
@@ -23,39 +28,25 @@ namespace fastbotx {
     class State;
 
     /**
-     * @brief Base class for all Action classes
-     * 
-     * Action represents an operation that can be performed on the UI.
-     * It inherits from Node (for visit tracking), PriorityNode (for priority),
-     * and HashNode (for hash-based comparison).
-     * 
-     * Features:
-     * - Action type enumeration
-     * - Q-value for reinforcement learning
-     * - Priority assignment
-     * - Hash-based comparison
-     * - Conversion to device operations
+     * Abstract base for executable intents: combines `Node` (visit counts), `PriorityNode` (selection bias),
+     * and `HashNode` (deduplication). Subclasses map to `DeviceOperateWrapper` payloads for the runtime.
      */
     class Action : public Node, public PriorityNode, public HashNode {
     public:
-        /**
-         * @brief Default constructor creates a NOP action
-         */
+        /** Builds a `NOP` action with zero Q-value. */
         Action();
 
         /**
-         * @brief Constructor with specific action type
-         * 
-         * @param actionType The type of action to create
+         * @param actionType Kind of gesture or meta-action (`CLICK`, `BACK`, etc.).
          */
         explicit Action(ActionType actionType);
 
-        /** LLMDroid-compat copy constructor */
+        /** Copies type, Q-value, hash, priority, visit count, and stable id (used when cloning shared actions). */
         Action(const Action &other);
 
         std::string toString() const override;
 
-        /** Short human-readable line for logs / LLMDroid graph walk (default: {@link #toString}). */
+        /** One-line summary for logs and graph tooling; default implementation forwards to `toString()`. */
         virtual std::string toDescription() const;
 
         virtual bool getEnabled() const { return true; }
@@ -111,6 +102,7 @@ namespace fastbotx {
     protected:
 
         ActionType _actionType;
+        /** Minimum spacing between physical operations on device (milliseconds); base `toOperate` randomizes below this cap. */
         static int _throttle;
     private:
         float _qValue;
@@ -119,6 +111,7 @@ namespace fastbotx {
 
     typedef std::shared_ptr<Action> ActionPtr;
 
+    /** Parameters for remote / networked action dispatch (algorithm id, package, auth tokens). */
     typedef struct NetActionParameter_ {
         int throttle;
         int netActionTaskid;
@@ -133,8 +126,8 @@ namespace fastbotx {
     typedef std::shared_ptr<ActivityStateAction> ActivityStateActionPtr;
 
     /**
-     * Optional listener for LLMDroid / MergedState (function completion tracking).
-     * Invoked from {@link ActivityStateAction::visit} after visit count increments.
+     * Optional hook after an `ActivityStateAction` records a visit (see `ActivityStateAction::visit`).
+     * Used for higher-level bookkeeping such as merged-state or coverage tracking.
      */
     class FunctionListener {
     public:
@@ -144,13 +137,17 @@ namespace fastbotx {
 
     typedef std::shared_ptr<FunctionListener> FunctionListenerPtr;
 
-/// Embedding an action with the whole activity state, the target widget and the action to perform.
+    /**
+     * Concrete action bound to a UI state snapshot and an optional widget target (bounds, editability, etc.).
+     * Identity hash mixes action type, state hash, and target widget hash at construction.
+     */
     class ActivityStateAction : public Action, public std::enable_shared_from_this<ActivityStateAction> {
     public:
-        /// Embedding an action with the whole activity state, the target targetWidget and the type of action to perform.
-        /// \param state
-        /// \param targetWidget
-        /// \param actionType
+        /**
+         * @param state Current page state (weakly held after construction).
+         * @param targetWidget Widget to act on; may be null for non-spatial actions (e.g. `BACK`).
+         * @param actionType Gesture or command to perform on `targetWidget`.
+         */
         ActivityStateAction(const std::shared_ptr<State> &state, WidgetPtr targetWidget,
                             ActionType actionType);
 
@@ -164,13 +161,12 @@ namespace fastbotx {
 
         bool isValid() const override;
 
-        // set target widget without updating hash code
+        /** Rebinds the target without recomputing `_hashcode`; callers must preserve intended identity semantics. */
         void setTarget(WidgetPtr widget) { this->_target = std::move(widget); }
 
         OperatePtr toOperate() const override;
 
-
-        // from ResolveNode
+        /** True when the target widget has empty bounds (ResolveNode compatibility). */
         bool isEmpty() const;
 
 
@@ -186,6 +182,7 @@ namespace fastbotx {
 
         void setListener(const FunctionListenerPtr &listener) { _functionListener = listener; }
 
+        /** Index within duplicate-hash widget groups when multiple nodes collapse to one hash (`ReuseState`). */
         void setWhichWidget(int which) { _whichWidget = which; }
 
         int getWhichWidget() const { return _whichWidget; }
@@ -203,6 +200,7 @@ namespace fastbotx {
         ~ActivityStateAction() override;
 
     protected:
+        /** Sentinel construction; leaves state/target unset until a concrete ctor runs. */
         ActivityStateAction();
 
         FunctionListenerPtr _functionListener;

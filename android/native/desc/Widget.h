@@ -3,6 +3,9 @@
  */
 /**
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ *
+ * @file Widget.h
+ * @brief Declares `Widget`: actionable UI node derived from `Element`, with configurable hashing for state identity.
  */
 #ifndef Widget_H_
 #define Widget_H_
@@ -32,7 +35,7 @@ namespace fastbotx {
      * - XPath generation
      * - Memory-efficient (can clear details when not needed)
      * 
-     * @note Text is used for embedding and identifying widgets by default
+     * @note When enabled, visible text participates in hashing and widget identification.
      */
     class Widget : Serializable, public HashNode {
     public:
@@ -64,7 +67,7 @@ namespace fastbotx {
 
         bool isEditable() const;
 
-        // LLMDroid compatibility accessors
+        /** Returns `getClassname()` by value (legacy accessor). */
         std::string getClass() const { return this->_clazz; }
 
         std::string getTextualInfo() const { return this->_info; }
@@ -92,26 +95,30 @@ namespace fastbotx {
         std::string buildFullXpath() const;
 
         /**
-         * LLMDroid-compatible signature; Fastbot3 returns a stable summary string (class, id, text, hash),
-         * not a DOM subtree. Parameters are ignored.
+         * Returns a stable, tab-separated summary (`type`, `class`, `resource-id`, text fields, `hash`, …).
+         * The merge/navigation parameters exist for API compatibility and are ignored here.
          */
         std::string toHTML(const std::vector<ElementPtr> &elementToMerge = {},
                           bool noChild = true, int actionId = -1) const;
 
-        /** GPT-assigned function name for this widget (LLMDroid / MergedState overlay only). */
+        /** Optional human-readable role label from planner overlays (e.g. merged-state enrichment). */
         const std::string &getFunctionLabel() const { return _functionLabel; }
 
         void setFunctionLabel(std::string label) { _functionLabel = std::move(label); }
 
-        // LLMDroid compatibility aliases.
+        /** Alias for `setFunctionLabel` (legacy name). */
         void setFunction(const std::string &function) { _functionLabel = function; }
 
+        /** Alias for `getFunctionLabel` returning by value (legacy name). */
         std::string getFunction() const { return _functionLabel; }
 
+        /** Semantic `hash()` XOR `Rect::hash2` of bounds; used when spatial position matters. */
         uintptr_t getMyHashcode() const { return _myHashcode; }
 
+        /** Clears class, text, id, and bounds to shrink memory; hash component fields zeroed. */
         virtual void clearDetails();
 
+        /** Copies detail and hash parts from `copy` (e.g. after merge or rematerialization). */
         void fillDetails(const std::shared_ptr<Widget> &copy);
 
         virtual ~Widget();

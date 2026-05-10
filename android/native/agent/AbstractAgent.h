@@ -167,8 +167,8 @@ namespace fastbotx {
          */
         virtual void onStateAbstractionChanged() {}
 
-        /// Re-resolve each targeted model action (resolveAt on newState).
-        virtual void validateAllNewActionsLikeApe(const StatePtr &newState);
+        /// Re-resolve each targeted model action (`resolveAt` on `newState`) using the current graph timestamp.
+        virtual void validateAllNewActions(const StatePtr &newState);
 
         /**
          * @brief Optional: return LLM-generated input text for an action (e.g. content-aware input).
@@ -182,12 +182,12 @@ namespace fastbotx {
         }
 
         /**
-         * LLMDroid overlay: invoked from Model::getOperateOpt only when max.llm.llmdroid=true, after
-         * addState/visit and recordTransition — canonical graph `state` identity matches the closed APE block.
-         * Updates MergedStateGraph, queues STATE_OVERVIEW / REANALYSIS to GPTAgent worker (MIGRATION_LLMDROID_B2 §4.7 A).
-         * HTTP calls need max.llm.enabled + URL/key so Model::getLlmClient() is non-null.
-         * Hard rule (§3.3): do not call applyDynamicAbstractionIdentityHash, touch naming::StateKey for RL id,
-         * or use getMergedState() inside resolveNewAction/selectAction for DoubleSarsa / curiosity features.
+         * LLMDroid overlay: called from `Model::getOperateOpt` when `max.llm.llmdroid` is enabled, after
+         * `addState` / visit / `recordTransition`, once canonical graph state identity is fixed.
+         * Updates `MergedStateGraph` and queues `STATE_OVERVIEW` / `REANALYSIS` work to `GPTAgent`.
+         * Requires a non-null LLM client (`max.llm.enabled` with URL/key) from `Model::getLlmClient()`.
+         * Must not call `applyDynamicAbstractionIdentityHash`, mutate `naming::StateKey` for RL identity,
+         * or use `getMergedState()` inside `resolveNewAction` / `selectAction` (DoubleSarsa / curiosity).
          */
         virtual void processState(const std::shared_ptr<ReuseState> &state);
 

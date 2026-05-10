@@ -1,8 +1,12 @@
 /**
  * @authors Zhao Zhang
  */
+
 /**
- * CuriosityAgent: curiosity-driven exploration (WebRLED-aligned dual novelty + ε-greedy).
+ * @file CuriosityAgent.cpp
+ *
+ * Implements visit-count bookkeeping (`moveForward`), intrinsic scoring (`selectNewAction`),
+ * optional embedding/cluster assignment, and ε-greedy exploration over curiosity-ranked actions.
  */
 
 #ifndef FASTBOTX_CURIOSITY_AGENT_CPP_
@@ -24,6 +28,8 @@
 namespace fastbotx {
 
     namespace {
+
+        /** Compact debug line: L2 norm, mean/variance, and first `headK` coordinates of an embedding vector. */
         inline std::string embeddingSummary(const std::vector<double> &emb, int headK) {
             if (emb.empty()) return "empty";
             double sum = 0.0;
@@ -58,19 +64,21 @@ namespace fastbotx {
     CuriosityAgent::CuriosityAgent(const ModelPtr &model)
             : AbstractAgent(model) {
         this->_algorithmType = AlgorithmType::Curiosity;
-        _clusterDim = 16;  // handcrafted default (HandcraftedStateEncoder::kHandcraftedDim)
+        // Default embedding width matches `HandcraftedStateEncoder` until `setStateEncoder` overrides it.
+        _clusterDim = 16;
         BLOG("CuriosityAgent: initialized (curiosity-driven, WebRLED-style dual novelty)");
     }
 
     void CuriosityAgent::setStateEncoder(const IStateEncoderPtr &encoder) {
         _stateEncoder = encoder;
-        _clusterDim = encoder ? encoder->getOutputDim() : 16;
+        _clusterDim = encoder ? encoder->getOutputDim() : 16; // handcrafted path stays at 16 dims
     }
 
     void CuriosityAgent::updateStrategy() {
-        // No Q-values or reuse model; curiosity is purely count-based.
+        // No TD backups or replay buffer; intrinsic rewards drive exploration directly from counts and embeddings.
     }
 
+    // Refine/coarsen changes state hashes: drop all statistics that were keyed on the old abstraction.
     void CuriosityAgent::onStateAbstractionChanged() {
         _episodeStateCount.clear();
         _episodeSteps = 0;
@@ -88,12 +96,16 @@ namespace fastbotx {
         BDLOG("CuriosityAgent: state abstraction changed, cleared episode and global counts");
     }
 
+    /**
+     * After delegating to `AbstractAgent::moveForward`, updates episode/global counts, optional cluster embedding,
+     * path signatures, and empirical successor distributions for each `(state, action)` key.
+     */
     void CuriosityAgent::moveForward(StatePtr nextState) {
         StatePtr fromState = this->_newState;
         ActivityStateActionPtr actionTaken = this->_newAction;
         AbstractAgent::moveForward(nextState);
         _moveForwardCount++;
-        // Reset episode on CLEAN_RESTART (new "episode" in WebRLED terms)
+        // Explicit episode boundary from the runner (abstraction rebuild / fresh exploration segment).
         if (actionTaken && actionTaken->getActionType() == ActionType::CLEAN_RESTART) {
             _episodeStateCount.clear();
             _episodeSteps = 0;
@@ -102,7 +114,7 @@ namespace fastbotx {
             _lastPathSignatureValid = false;
             BDLOG("CuriosityAgent: moveForward CLEAN_RESTART, reset episode");
         }
-        // Finite-length episode: reset episode counts after kMaxEpisodeSteps (align with WebRLED §3.6)
+        // Truncate long episodes so local novelty signals refresh periodically (paper uses finite horizons).
         _episodeSteps++;
         if (_episodeSteps >= kMaxEpisodeSteps) {
             _episodeStateCount.clear();
@@ -111,6 +123,7 @@ namespace fastbotx {
         }
         if (nextState) {
             uintptr_t toHash = nextState->hash();
+            // Dual bookkeeping: repeat visits within the episode vs lifetime visits for global novelty.
             _episodeStateCount[toHash] = _episodeStateCount[toHash] + 1;
             _globalStateCount[toHash] = _globalStateCount[toHash] + 1;
             if (kEnableCountSmoothing) {
@@ -119,7 +132,7 @@ namespace fastbotx {
                 if (itS != _smoothedGlobalStateCount.end()) prev = itS->second;
                 _smoothedGlobalStateCount[toHash] = (1.0 - kSmoothBeta) * prev + kSmoothBeta * static_cast<double>(_globalStateCount[toHash]);
             }
-            // Bottleneck (3.1): record out-degree of state (number of actions) for hub/leaf scoring.
+            // Track branching factor when hub-avoidance shaping is compiled in.
             if (kEnableBottleneckDiversity) {
                 int outDeg = static_cast<int>(nextState->getActions().size());
                 auto itOd = _stateOutDegree.find(toHash);
@@ -128,7 +141,7 @@ namespace fastbotx {
                 else if (outDeg > itOd->second)
                     itOd->second = outDeg;
             }
-            // Cluster novelty (learned embedding + online clustering): compute embedding, assign to nearest cluster, update centroid.
+            // Optional embedding → nearest-cluster assignment with moving-average centroid updates.
             if (kEnableClusterNovelty) {
                 std::vector<double> emb = computeStateEmbedding(nextState);
                 if (emb.size() == static_cast<size_t>(_clusterDim)) {
@@ -141,6 +154,7 @@ namespace fastbotx {
                     }
                 }
             }
+            // Diagnostics only: compare local episode map size to full graph size from the model.
             size_t graphStates = 0;
             {
                 auto modelPtr = _model.lock();
@@ -165,7 +179,8 @@ namespace fastbotx {
                     _recentStates.pop_front();
                 }
                 if (_recentStates.size() >= static_cast<size_t>(kPathMinLengthForPenalty)) {
-                    std::uint64_t h = 1469598103934665603ULL; // FNV offset basis
+                    // Fixed-length hash over the deque (same mixing as `selectNewAction` path replay).
+                    std::uint64_t h = 1469598103934665603ULL;
                     for (uintptr_t sh : _recentStates) {
                         std::uint64_t v = static_cast<std::uint64_t>(sh);
                         h ^= v + 0x9e3779b97f4a7c15ULL + (h << 6) + (h >> 2);
@@ -223,6 +238,7 @@ namespace fastbotx {
         }
     }
 
+    // Maps action visit count plus episode/state modifiers into a capped intrinsic score (<= `kRewardCap`).
     double CuriosityAgent::getCuriosityScore(const ActivityStateActionPtr &action, double episodeMod, double stateFactor) const {
         if (!action || !action->isValid()) return -1.0;
         int visitCount = action->getVisitedCount();
@@ -234,6 +250,7 @@ namespace fastbotx {
         return (raw > kRewardCap) ? kRewardCap : raw;
     }
 
+    // Last resort when no scored action: prefer least-used valid action, then random filter pick, then BACK.
     ActionPtr CuriosityAgent::fallbackPickAction() const {
         StatePtr state = this->_newState;
         if (!state) return nullptr;
@@ -293,11 +310,11 @@ namespace fastbotx {
             }
         }
 
-        // ---------- Collect valid actions and curiosity scores (WebRLED §3.5: episodic = 1/√(1+n)) ----------
+        // ---------- Score candidates: base curiosity + optional successor/path/cluster factors ----------
         auto it = _episodeStateCount.find(currentHash);
         int episodeCount = (it != _episodeStateCount.end()) ? it->second : 0;
         int n = (episodeCount < kEpisodeCap) ? episodeCount : kEpisodeCap;
-        // Performance optimization: use precomputed lookup table instead of std::sqrt
+        // `kEpisodeModTable[n]` stores 1/sqrt(1+n); avoids `sqrt` in the hot path.
         double episodeMod = kEpisodeModTable[n];
         int globalCount;
         if (kEnableCountSmoothing) {
@@ -308,6 +325,7 @@ namespace fastbotx {
             globalCount = (git != _globalStateCount.end()) ? git->second : 0;
         }
         int gcap = (globalCount < kGlobalStateCap) ? globalCount : kGlobalStateCap;
+        // Encourage leaving states that have been visited often anywhere in the run (global stagnation).
         double stateFactor = 1.0 + kGlobalStateBonus * static_cast<double>(gcap);
         if (kEnableCurriculum) {
             double progress = std::min(1.0, static_cast<double>(_selectCount) / static_cast<double>(kCurriculumSteps));
@@ -341,7 +359,7 @@ namespace fastbotx {
         const ActivityStateActionPtrVec &actions = state->getActions();
         std::vector<std::pair<ActivityStateActionPtr, double>> scored;
         scored.reserve(actions.size());
-        // Path-level diversity factor (optional; use cached signature from last moveForward when valid).
+        // Penalize revisiting the same rolling path signature when path diversity is enabled.
         double pathFactor = 1.0;
         if (kEnablePathDiversity && _recentStates.size() >= static_cast<size_t>(kPathMinLengthForPenalty)) {
             std::uint64_t pathSig = _lastPathSignatureValid ? _lastPathSignature : 0;
@@ -366,8 +384,7 @@ namespace fastbotx {
             if (_validateFilter && !_validateFilter->include(a)) continue;
             double s = getCuriosityScore(a, episodeMod, stateFactor);
             if (s > 0.0) {
-                // Apply self-loop penalty: if this (state, action) has repeatedly resulted in the same state
-                // hash, down-weight its score so that CuriosityAgent is less likely to keep trying it.
+                // Repeated self-loops for this action key indicate a trap; damp the intrinsic score.
                 uintptr_t actionHash = a->hash();
                 auto itSelf = _selfLoopCount.find(actionHash);
                 if (itSelf != _selfLoopCount.end() && itSelf->second >= kSelfLoopPenaltyThreshold) {
@@ -404,7 +421,7 @@ namespace fastbotx {
                         s *= succFactor;
                     }
 
-                    // Bottleneck (3.1): down-weight actions that tend to lead to hub states (high out-degree).
+                    // Optional penalty for successors that land in high out-degree "hub" states.
                     if (kEnableBottleneckDiversity) {
                         double weightedOutDeg = 0.0;
                         int usedB = 0;
@@ -472,7 +489,7 @@ namespace fastbotx {
             return fallbackPickAction();
         }
 
-        // ---------- ε-greedy: decay from kEpsilonInitial to kEpsilonMin over kEpsilonDecaySteps ----------
+        // Exploration probability decreases linearly with `_selectCount`, floored at `kEpsilonMin`.
         _selectCount++;
         double decayProgress = static_cast<double>(_selectCount < kEpsilonDecaySteps ? _selectCount : kEpsilonDecaySteps) / static_cast<double>(kEpsilonDecaySteps);
         double epsilon = kEpsilonInitial - (kEpsilonInitial - kEpsilonMin) * decayProgress;
@@ -510,7 +527,7 @@ namespace fastbotx {
             return scored[chosenIdx].first;
         }
 
-        // Greedy: max curiosity score; tie-break by type priority then random
+        // Exploitation: highest score; ties resolved by `getPriorityByActionType()` then RNG.
         double bestScore = -1.0;
         std::vector<size_t> bestIndices;
         bestIndices.reserve(32);
@@ -548,6 +565,7 @@ namespace fastbotx {
         return scored[chosen].first;
     }
 
+    // Prefer injected encoder when dimensions match `_clusterDim`; otherwise handcrafted features.
     std::vector<double> CuriosityAgent::computeStateEmbedding(const StatePtr &state) const {
         if (_stateEncoder) {
             std::vector<double> enc = _stateEncoder->encode(state);
@@ -556,13 +574,15 @@ namespace fastbotx {
         return computeStateEmbeddingHandcrafted(state);
     }
 
+    // Fixed 16-D widget statistics when no neural encoder is configured.
     std::vector<double> CuriosityAgent::computeStateEmbeddingHandcrafted(const StatePtr &state) {
         return HandcraftedStateEncoder().encode(state);
     }
 
+    // Online vector quantization: seed `kNumClusters` centroids from early visits, then nearest-centroid + EMA drift.
     int CuriosityAgent::assignStateToCluster(uintptr_t stateHash, const std::vector<double> &embedding) {
         if (embedding.size() != static_cast<size_t>(_clusterDim)) return -1;
-        // Bootstrap: use first kNumClusters distinct states as initial centroids.
+        // Seed phase: each new centroid slot copies the first embedding observed for that slot.
         if (_clusterCentroids.size() < static_cast<size_t>(kNumClusters)) {
             size_t idx = _clusterCentroids.size();
             _clusterCentroids.push_back(embedding);

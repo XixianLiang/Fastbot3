@@ -2,6 +2,13 @@
  * @authors Zhao Zhang
  */
 
+/**
+ * @file LLMTaskAgent.cpp
+ *
+ * Session lifecycle, UI fingerprinting, Planner/Executor `predictWithPayload` flow, response parsing, and
+ * `LlmActionSpec` → `ActionPtr` conversion (click, back, scroll, input, etc.).
+ */
+
 #include "LLMTaskAgent.h"
 
 #include <algorithm>
@@ -17,13 +24,14 @@
 
 namespace fastbotx {
 
+    // Millisecond clock + caps used across session bookkeeping and LLM retry logic.
     namespace {
         long long currentTimeMillis() {
             using namespace std::chrono;
             return duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
         }
 
-        // Centralized limits (see LLM_TASK_AGENT_CODE_REVIEW.md)
+        // Tunable caps shared across the implementation (history length, failure thresholds, etc.).
         constexpr size_t kMaxHistory = 10;
         constexpr size_t kMaxHistoryEntries = 20;
         constexpr size_t kMaxScreenHashes = 15;
@@ -34,6 +42,7 @@ namespace fastbotx {
         constexpr size_t kMaxSummaryLen = 200;
     }
 
+    // Session starts empty; `maybeStartSession` runs from `selectNextAction` when a task checkpoint matches.
     LLMTaskAgent::LLMTaskAgent(const PreferencePtr &preference,
                                std::shared_ptr<LlmClient> llmClient)
         : _preference(preference),
@@ -56,6 +65,7 @@ namespace fastbotx {
         _session.reset();
     }
 
+    // Binds a new `LlmSessionState` when the activity/XML matches a configured task and run limits allow it.
     bool LLMTaskAgent::maybeStartSession(const ElementPtr &rootXml,
                                          const std::string &activity,
                                          const std::string &deviceId,
@@ -132,6 +142,7 @@ namespace fastbotx {
         return false;
     }
 
+    // DFS over the widget tree: first 64 clickable / long-clickable / scrollable nodes define INDEX order and the text fingerprint.
     LLMTaskAgent::InteractiveElementsResult LLMTaskAgent::getScreenFingerprintWithElements(const ElementPtr &rootXml) const {
         InteractiveElementsResult result;
         if (!rootXml) return result;
@@ -159,6 +170,7 @@ namespace fastbotx {
         return getScreenFingerprintWithElements(rootXml).fingerprint;
     }
 
+    // Legacy all-in-one text prompt (v1 path). v3 uses JSON payloads; this string still encodes task, UI list, todos, and planner sub-task.
     std::string LLMTaskAgent::buildPrompt(const ElementPtr &rootXml,
                                           const std::string &activity,
                                           std::string *outCurrentScreenHash,
@@ -303,6 +315,7 @@ namespace fastbotx {
         return oss.str();
     }
 
+    // Structured request body for the "executor" prompt: mirrors `buildPrompt` content but as JSON for the HTTP client.
     std::string LLMTaskAgent::buildExecutorPayload(const ElementPtr &rootXml,
                                                    const std::string &activity,
                                                    std::string *outCurrentScreenHash,
@@ -374,6 +387,7 @@ namespace fastbotx {
         return j.dump();
     }
 
+    // Minimal task/todos/history bundle for the "planner" prompt (no full widget tree).
     std::string LLMTaskAgent::buildPlannerPayload() const {
         using nlohmann::json;
         if (!_session || !_session->taskConfig) return "{}";
@@ -407,6 +421,7 @@ namespace fastbotx {
         return j.dump();
     }
 
+    // Single-step facts for the optional "step_summary" follow-up call.
     std::string LLMTaskAgent::buildStepSummaryPayload(const StepHistoryEntry &entry) const {
         using nlohmann::json;
         json j;
@@ -418,8 +433,9 @@ namespace fastbotx {
         return j.dump();
     }
 
+    // Pull JSON objects out of raw LLM text; shared by Executor/Planner parsers.
     namespace {
-        /** Try to get a single JSON object string from content that may be wrapped in markdown/code fence. */
+        /** Extract `{...}` from responses that include markdown fences or leading prose. */
         std::string extractJsonObjectString(const std::string &s) {
             size_t start = s.find('{');
             if (start == std::string::npos) return "";
@@ -639,6 +655,7 @@ namespace fastbotx {
             return true;
     }
 
+    // String entry point: normalize with `tryParseResponseToJson`, then reuse the struct parser.
     bool LLMTaskAgent::parseLlmResponse(const std::string &response,
                                         LlmActionSpec &outSpec) const {
         nlohmann::json j;
@@ -696,7 +713,7 @@ namespace fastbotx {
             }
         }
         if (by == "INDEX") {
-            // Find element by index (matching the index used in buildPrompt)
+            // Same traversal order as `getScreenFingerprintWithElements` / executor INDEX list.
             int targetIndex = -1;
             try {
                 targetIndex = std::stoi(value);
@@ -743,6 +760,7 @@ namespace fastbotx {
         return findTargetElement(by, value, rootXml);
     }
 
+    // Maps normalized LLM output to engine actions; INDEX selectors must match `interactiveElements` ordering when provided.
     ActionPtr LLMTaskAgent::convertToAction(const LlmActionSpec &spec,
                                             const ElementPtr &rootXml,
                                             const std::string &activity,
@@ -823,8 +841,8 @@ namespace fastbotx {
                     scrollAction->bounds[3] = static_cast<float>(bounds->bottom);
                 }
             }
-            // If no bounds set, the Java layer will use default viewport scrolling
-            
+            // If bounds stay empty, the runtime applies default viewport-centered scrolling.
+
             return scrollAction;
         }
 
@@ -897,6 +915,7 @@ namespace fastbotx {
         return customAction;
     }
 
+    // Deterministic one-line step text for planner/history when LLM summaries are disabled or fail.
     void LLMTaskAgent::appendLocalSummary(const LlmActionSpec &spec) {
         if (!_session) {
             return;
@@ -914,6 +933,7 @@ namespace fastbotx {
         }
     }
 
+    // Secondary small LLM call (`step_summary`) to compress the step into natural language for `_session->historySummaries`.
     std::string LLMTaskAgent::requestStepSummaryFromLlm(const StepHistoryEntry &entry) const {
         if (!_llmClient || !_session || !_session->taskConfig) {
             return {};
@@ -1023,6 +1043,10 @@ namespace fastbotx {
         }
     }
 
+    /**
+     * Per-step pipeline: open session → expiry checks → optional Planner JSON → Executor JSON → parse JSON →
+     * honor COMPLETED/ABORT → `convertToAction` → history/summary → clear planner step when layering is on.
+     */
     ActionPtr LLMTaskAgent::selectNextAction(const ElementPtr &rootXml,
                                              const std::string &activity,
                                              const std::string &deviceId,
@@ -1068,7 +1092,7 @@ namespace fastbotx {
             std::vector<ImageData> noImages;
             if (!_llmClient->predictWithPayload("planner", plannerPayload, noImages, plannerResponse)) {
                 _session->consecutiveFailures += 1;
-                BDLOGE("LLMTaskAgent: Planner LLM predict failed (consecutiveFailures=%d); check HttpLlmClient/LLM Java HTTP logs for cause (disabled? runner not registered? Java null? response parse?)", _session->consecutiveFailures);
+                BDLOGE("LLMTaskAgent: Planner LLM predict failed (consecutiveFailures=%d); check HttpLlmClient / LLM HTTP logs (disabled client? runner not registered? empty response? parse error?)", _session->consecutiveFailures);
                 if (isSessionExpired()) {
                     _session->abortReason = "llm_error";
                     _session->aborted = true;
@@ -1111,7 +1135,7 @@ namespace fastbotx {
             BDLOG("LLMTaskAgent: Planner step: %s intent=%s text=%.40s", step.tool.c_str(), step.intent.c_str(), step.text.c_str());
         }
 
-        // 3) Build payload and call LLM (Executor); Java assembles prompt from payload to reduce JNI copy.
+        // 3) Executor step: JSON payload is turned into the full prompt inside `HttpLlmClient` / backend.
         InteractiveElementsResult interactive = getScreenFingerprintWithElements(rootXml);
         std::string currentScreenHash;
         std::string executorPayload = buildExecutorPayload(rootXml, activity, &currentScreenHash, &interactive.fingerprint);
@@ -1122,7 +1146,7 @@ namespace fastbotx {
             }
         }
         std::string rawResponse;
-        std::vector<ImageData> images;  // Empty on Java path; image obtained in Java on demand.
+        std::vector<ImageData> images; // Usually empty here; screenshot bytes attach inside `HttpLlmClient` when required.
 
         BDLOG("LLMTaskAgent: [Executor] payload len=%zu", executorPayload.size());
         bool ok = _llmClient->predictWithPayload("executor", executorPayload, images, rawResponse);
@@ -1136,7 +1160,7 @@ namespace fastbotx {
                     BDLOG("LLMTaskAgent: Planner step failed %d times, asking Planner for next step", kMaxPlannerStepFailures);
                 }
             }
-            BDLOGE("LLMTaskAgent: Executor LLM predict failed (consecutiveFailures=%d); check HttpLlmClient/LLM Java HTTP logs for cause", _session->consecutiveFailures);
+            BDLOGE("LLMTaskAgent: Executor LLM predict failed (consecutiveFailures=%d); check HttpLlmClient / LLM HTTP logs for cause", _session->consecutiveFailures);
             if (isSessionExpired()) {
                 _session->abortReason = "llm_error";
                 _session->aborted = true;

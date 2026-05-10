@@ -2,6 +2,13 @@
  * @authors Zhao Zhang, Tianming Liu, Chenxu Wang
  */
 
+/**
+ * @file GPTAgent.cpp
+ *
+ * Implements the GPTAgent worker: queue routing, `getResponseJson` retry/parse, and handlers that build
+ * JSON requests for state overview, widget reanalysis, navigation guide targets, and test-function actions.
+ */
+
 #include "GPTAgent.h"
 
 #include "LLMTaskAgent.h"
@@ -20,6 +27,7 @@ namespace fastbotx {
 
 namespace {
 
+/** Bound prompt size for overview prompts (state descriptions can be large). */
 std::string trimStateDescription(std::string s, size_t maxLen) {
     if (s.size() > maxLen) {
         s.resize(maxLen);
@@ -31,6 +39,7 @@ std::string trimStateDescription(std::string s, size_t maxLen) {
 
 GPTAgent::GPTAgent(MergedStateGraphPtr graph, std::shared_ptr<LlmClient> llm, std::string startPrompt)
     : _mergedStateGraph(std::move(graph)), _llm(std::move(llm)), _startPrompt(std::move(startPrompt)) {
+    // Consumer starts immediately; destructor joins after setting `_stop`.
     _worker = std::thread(&GPTAgent::pageAnalysisLoop, this);
 }
 
@@ -47,6 +56,7 @@ void GPTAgent::resetPromise(PromiseIntPtr promInt, PromiseActionPtr promAction) 
     _promiseAction = std::move(promAction);
 }
 
+/** Maps logical question kind to `predictWithPayload` prompt-type key expected by the LLM backend. */
 std::string GPTAgent::promptTypeForAsk(AskModel type) {
     switch (type) {
         case AskModel::REANALYSIS:
@@ -61,6 +71,10 @@ std::string GPTAgent::promptTypeForAsk(AskModel type) {
     }
 }
 
+/**
+ * Enqueues work and wakes the worker. REANALYSIS may go to the low queue only if its merged state id is in the
+ * top slice of `_topValuedMergedState`; GUIDE/TEST_FUNCTION and other types use the high-priority queue.
+ */
 void GPTAgent::pushStateToQueue(QuestionPayload payload) {
     if (!_llm) {
         BLOG("GPTAgent: no LlmClient, drop payload (enable max.llm.* HTTP for LLMDroid overview)");
@@ -109,6 +123,7 @@ void GPTAgent::pushStateToQueue(QuestionPayload payload) {
     }
 }
 
+/** Busy-waits with sleeps until `_questionRemained` returns to zero (all dispatched handlers finished). */
 void GPTAgent::waitUntilQueueEmpty() {
     BLOG("[LLMDroid] waitUntilQueueEmpty");
     for (;;) {
@@ -134,6 +149,7 @@ void GPTAgent::addTestedFunction() {
 
 void GPTAgent::clearExecutedEvents() { _executedFunctions.clear(); }
 
+/** Drains `_stateQueue` before `_lowQueue`; decrements `_questionRemained` after each handled payload. */
 void GPTAgent::pageAnalysisLoop() {
     while (!_stop.load()) {
         QuestionPayload payload;
@@ -179,6 +195,7 @@ void GPTAgent::pageAnalysisLoop() {
     }
 }
 
+/** Wraps a legacy string prompt as `{ "prompt": ... }` before sending through the JSON overload. */
 nlohmann::json GPTAgent::getResponseJson(const std::string &prompt, AskModel type) {
     if (!_llm || prompt.empty()) {
         return {};
@@ -188,6 +205,9 @@ nlohmann::json GPTAgent::getResponseJson(const std::string &prompt, AskModel typ
     return getResponseJson(wrapper, type);
 }
 
+/**
+ * Calls `predictWithPayload` up to three times; trims to outermost `{...}` when the model wraps JSON in prose.
+ */
 nlohmann::json GPTAgent::getResponseJson(const nlohmann::json &payload, AskModel type) {
     if (!_llm || payload.is_null()) {
         return {};
@@ -215,6 +235,7 @@ nlohmann::json GPTAgent::getResponseJson(const nlohmann::json &payload, AskModel
     return {};
 }
 
+/** Requests screen/function overview JSON and optionally refreshes the cached top-five merged-state ordering. */
 void GPTAgent::askForStateOverview(QuestionPayload &payload) {
     if (!payload.from) {
         return;
@@ -301,6 +322,7 @@ void GPTAgent::askForStateOverview(QuestionPayload &payload) {
     }
 }
 
+/** Sends diff-widget HTML vs root reuse state; merges classifier output back into the merged state. */
 void GPTAgent::askForReanalysis(QuestionPayload &payload) {
     if (!payload.from || !_mergedStateGraph) {
         return;
@@ -360,6 +382,7 @@ void GPTAgent::askForReanalysis(QuestionPayload &payload) {
     payload.from->updateFromReanalysis(jsonResp, uniqueWidgets, widgetsDict);
 }
 
+/** Parses table-rendered HTML to append a human-readable executed-step line for TEST_FUNCTION follow-ups. */
 void GPTAgent::addExecutedEvent(const std::string &html, int widget_id, const ActivityStateActionPtr &act) {
     if (!act) {
         return;
@@ -381,6 +404,7 @@ void GPTAgent::addExecutedEvent(const std::string &html, int widget_id, const Ac
     }
 }
 
+/** Chooses target merged state id + function name; fulfills `_promiseInt` with matching `ReuseState` id or -1. */
 void GPTAgent::askForGuiding(QuestionPayload & /*payload*/) {
     if (!_promiseInt) {
         return;
@@ -458,6 +482,7 @@ void GPTAgent::askForGuiding(QuestionPayload & /*payload*/) {
     _promiseInt->set_value(rs ? rs->getIdi() : -1);
 }
 
+/** Resolves widget element id + action opcode from JSON and fulfills `_promiseAction`. */
 void GPTAgent::askForTestFunction(QuestionPayload &payload) {
     if (!_promiseAction || !payload.reuseState) {
         return;

@@ -1,4 +1,9 @@
 /**
+ * @file ApeTextNormalize.h
+ *
+ * Lightweight string normalization for UI snapshot fields: strip ASCII double-quote characters and optionally
+ * bound visible text length in UTF-8 codepoints so hashing / naming stays compact and stable.
+ *
  * @authors Zhao Zhang
  */
 
@@ -10,8 +15,10 @@
 #include <string>
 
 namespace fastbotx {
+/** Helpers shared by GUI tree and naming code paths (`normalizeTextFor*` entry points below). */
 namespace ape_text {
 
+/** Returns a copy of `input` without `"` characters; null `input` yields an empty string. */
 inline std::string removeDoubleQuotes(const char *input) {
     if (!input) {
         return std::string();
@@ -28,6 +35,11 @@ inline std::string removeDoubleQuotes(const char *input) {
     return out;
 }
 
+/**
+ * Truncates at a maximum number of Unicode scalar values (UTF-8 codepoints), not bytes.
+ * Walks valid leading bytes; if a sequence would run past `s.size()`, the last byte is advanced one step
+ * to avoid hanging on truncated input.
+ */
 inline std::string truncateUtf8Codepoints(const std::string &s, size_t maxCodepoints) {
     if (s.empty() || maxCodepoints == 0) {
         return std::string();
@@ -55,10 +67,12 @@ inline std::string truncateUtf8Codepoints(const std::string &s, size_t maxCodepo
     return s.substr(0, i);
 }
 
+/** Primary widget `text`: quotes removed, then at most 8 codepoints (compact key for state / tree layers). */
 inline std::string normalizeTextForApe(const char *input) {
     return truncateUtf8Codepoints(removeDoubleQuotes(input), 8);
 }
 
+/** Content-description field: strip quotes only (full length retained for longer accessibility strings). */
 inline std::string normalizeContentDescForApe(const char *input) {
     return removeDoubleQuotes(input);
 }

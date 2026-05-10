@@ -1,5 +1,8 @@
 /**
  * @authors Zhao Zhang
+ *
+ * @file GraphPath.cpp
+ * @brief Implements `pathToString` formatting for debugging and logs.
  */
 
 #include "GraphPath.h"

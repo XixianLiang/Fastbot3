@@ -16,6 +16,10 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
+/**
+ * Evaluates an ordered list of namelets against a `GUITree` DOM bridge: XPath matching, per-node namelet
+ * selection, `Namer::naming`, grouping by semantic key, sorted output, and per-tree result caching.
+ */
 
 #include "Naming.h"
 #include "BitmaskNamer.h"
@@ -39,6 +43,7 @@
 namespace fastbotx {
 namespace naming {
 namespace {
+    /** Compact debug line for exception messages when naming fails on a widget node. */
     std::string describeNodeForNamingError(const gui_tree::GUITreeNode *n) {
         if (!n) {
             return "node=null";
@@ -53,6 +58,7 @@ namespace {
         return os.str();
     }
 
+    /** Serializes candidate namelets as `B:`/`R:` plus expression for diagnostics. */
     std::string describeNameletCandidates(const std::vector<NameletPtr> *candidates) {
         if (!candidates || candidates->empty()) {
             return "[]";
@@ -74,6 +80,7 @@ namespace {
         return os.str();
     }
 
+    /** Writes the current DOM snapshot under `/sdcard/fastbot_naming_error_<id>.xml` when debugging failures. */
     std::string saveXmlOnError(const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) {
         if (!dom) {
             return std::string();
@@ -94,10 +101,12 @@ namespace {
         return path;
     }
 
+    /** Population count of set bits in a namer mask (fineness heuristic). */
     int bitCount(uint32_t x) {
         return __builtin_popcount(x);
     }
 
+    /** Builds the `v3|…` content key from ordered namelets and namer dimension masks. */
     std::string computeFingerprintString(
         const std::vector<std::shared_ptr<Namelet>> &namelets) {
         auto appendHex32 = [](std::string &dst, uint32_t v) {
@@ -106,9 +115,8 @@ namespace {
                 dst.push_back(kHex[(v >> shift) & 0xF]);
             }
         };
-        // Collision-resistant fingerprint for Naming identity / blacklist keys. Ordering of namelets
-        // matters for StateKey identity; do not canonicalize by sorting.
-        // Keep it printable (no control chars) so it stays stable across logs/JSON/persistence.
+        // Order-sensitive fingerprint for naming identity and blacklist keys—do not sort namelets.
+        // Printable `v3|…` format for stable logging and persistence.
         std::string out;
         out.reserve(namelets.size() * 48);
         out.append("v3");
@@ -130,6 +138,7 @@ namespace {
         return out;
     }
 
+    /** Tie-break for namelet selection: depth, then expression string, then pointer address. */
     bool nameletSelectLess(const NameletPtr &a, const NameletPtr &b) {
         if (!a || !b) return a.get() < b.get();
         if (a->getDepth() != b->getDepth()) return a->getDepth() < b->getDepth();
@@ -138,6 +147,10 @@ namespace {
         return a.get() < b.get();
     }
 
+    /**
+     * Picks the applicable namelet for one DOM node: single base only, or the deepest candidate whose
+     * ancestor chain stays within the sorted candidate set.
+     */
     NameletPtr selectNameletForNode(const std::vector<NameletPtr> &candidates) {
         if (candidates.empty()) {
             throw std::invalid_argument("Empty namelet candidates.");
@@ -173,6 +186,7 @@ namespace {
         throw std::runtime_error("A node has no namelet.");
     }
 
+    /** RAII: publishes `node → namer` for ancestor bitmask evaluation, cleared on scope exit. */
     struct NamingEvalGuard {
         explicit NamingEvalGuard(const std::unordered_map<const gui_tree::GUITreeNode *, const Namer *> *m) {
             namingEvalSetNodeToNamer(m);
@@ -182,6 +196,7 @@ namespace {
         NamingEvalGuard &operator=(const NamingEvalGuard &) = delete;
     };
 
+    /** True if every node pointer in `result.node_groups` belongs to the widget tree rooted at `tree`. */
     bool namingResultBelongsToTree(const Naming::NamingResult &result, gui_tree::GUITree &tree,
                                    size_t *foreignCount = nullptr) {
         std::unordered_set<gui_tree::GUITreeNode *> owned;
@@ -222,16 +237,20 @@ namespace {
 
 }
 
+    /** Monotonic id suffix for debug names (`Naming[…]`). */
     std::atomic<int> Naming::naming_counter_{0};
 
+    /** Root naming: delegates to the parent-taking constructor with no parent link. */
     Naming::Naming(std::vector<std::shared_ptr<Namelet>> namelets)
         : Naming(nullptr, std::move(namelets)) {}
 
+    /** Builds a child refinement node in the lattice with optional parent back-pointer. */
     std::shared_ptr<Naming> Naming::createChild(std::shared_ptr<Naming> parent,
                                                  std::vector<std::shared_ptr<Namelet>> namelets) {
         return std::shared_ptr<Naming>(new Naming(std::move(parent), std::move(namelets)));
     }
 
+    /** Registers `child` reachable via refinement edge `from → to` namelets. */
     void Naming::addRefinementChild(const NamingEdge &edge, std::shared_ptr<Naming> child) {
         if (!child) {
             return;
@@ -239,6 +258,7 @@ namespace {
         children_[edge] = std::move(child);
     }
 
+    /** Lookup of the refinement child along edge `(from, to)`, if registered. */
     std::shared_ptr<Naming> Naming::getRefinementChild(const std::shared_ptr<Namelet> &from,
                                                        const std::shared_ptr<Namelet> &to) const {
         if (!from || !to) {
@@ -252,6 +272,10 @@ namespace {
         return it->second;
     }
 
+    /**
+     * Stores namelet chain, assigns `naming_name_`, computes `fineness_` from bitmask width or type count,
+     * and caches `fingerprint_cached_`.
+     */
     Naming::Naming(std::shared_ptr<Naming> parent, std::vector<std::shared_ptr<Namelet>> namelets)
         : parent_(parent),
           namelets_(std::move(namelets)) {
@@ -276,6 +300,7 @@ namespace {
         fingerprint_cached_ = computeFingerprintString(namelets_);
     }
 
+    /** Total widget nodes across all parallel groups. */
     size_t Naming::NamingResult::getNodeSize() const {
         size_t s = 0;
         for (const auto &g : node_groups) {
@@ -284,6 +309,7 @@ namespace {
         return s;
     }
 
+    /** Writes each group’s `Name` and selected `Namelet` onto the corresponding `GUITreeNode` fields. */
     void Naming::NamingResult::updateNames() {
         for (size_t i = 0; i < names.size(); ++i) {
             if (i >= node_groups.size()) break;
@@ -298,13 +324,16 @@ namespace {
         }
     }
 
+    /** Stable content fingerprint derived from the ordered namelet list (see `computeFingerprintString`). */
     const std::string &Naming::fingerprintString() const { return fingerprint_cached_; }
 
+    /** Drops cached `NamingResult` for `tree` when the widget snapshot is rebuilt or invalidated. */
     void Naming::releaseTreeCache(const gui_tree::GUITree &tree) const {
         std::lock_guard<std::mutex> lk(naming_cache_mu_);
         tree_to_naming_result_.erase(tree.getId());
     }
 
+    /** Final namelet in the refinement sequence (empty chain → null). */
     std::shared_ptr<Namelet> Naming::getLastNamelet() const {
         if (namelets_.empty()) {
             return nullptr;
@@ -312,6 +341,7 @@ namespace {
         return namelets_.back();
     }
 
+    /** True when `namelet` is REFINE and matches the tail entry (eligible for in-place replacement). */
     bool Naming::isReplaceable(const std::shared_ptr<Namelet> &namelet) const {
         if (!namelet || namelets_.empty()) {
             return false;
@@ -322,6 +352,11 @@ namespace {
         return namelets_.back() == namelet;
     }
 
+    /**
+     * Core evaluation: optional memoized result per `tree` id; matches XPath per namelet; BFS assigns a
+     * namelet and namer per node; groups nodes by `(namer key | name key)`; sorts groups by `Name::operator<`;
+     * caches successful output. Throws with DOM dump paths when invariants break.
+     */
     Naming::NamingResult Naming::namingInternal(
         gui_tree::GUITree &tree, const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) const {
         static std::atomic<uint64_t> g_naming_internal_diag{0};

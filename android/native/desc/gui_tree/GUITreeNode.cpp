@@ -23,20 +23,28 @@
 namespace fastbotx {
 namespace gui_tree {
 
+    /** Default destructor; child nodes are owned via `children_`. */
     GUITreeNode::~GUITreeNode() = default;
 
+    /** Stores the Namelet currently matched for this node during XPath/naming (may be null). */
     void GUITreeNode::setCurrentNamelet(std::shared_ptr<naming::Namelet> nl) {
         current_namelet_ = std::move(nl);
     }
 
+    /** Returns the active Namelet for this node, or nullptr if none was set. */
     std::shared_ptr<naming::Namelet> GUITreeNode::getCurrentNamelet() const {
         return current_namelet_;
     }
 
+    /**
+     * Factory: allocates a node with the given parent weak ref (root passes an empty weak_ptr).
+     * Must be used so nodes are always held by `shared_ptr` (`enable_shared_from_this`).
+     */
     GUITreeNodePtr GUITreeNode::create(const GUITreeNodeWeakPtr &parent) {
         return GUITreeNodePtr(new GUITreeNode(parent));
     }
 
+    /** Sets `depth_` to parent depth + 1 when a parent exists; otherwise keeps default depth. */
     GUITreeNode::GUITreeNode(GUITreeNodeWeakPtr parent)
         : parent_(std::move(parent)) {
         if (auto p = parent_.lock()) {
@@ -44,12 +52,14 @@ namespace gui_tree {
         }
     }
 
+    /** Links `child` as a direct descendant and rewires its parent weak pointer to this node. */
     void GUITreeNode::appendChild(GUITreeNodePtr child) {
         if (!child) return;
         child->parent_ = GUITreeNodeWeakPtr(shared_from_this());
         children_.push_back(std::move(child));
     }
 
+    /** True when the widget class name is the standard Android WebView type. */
     bool GUITreeNode::isWebView() const {
         return class_name_ == "android.webkit.WebView";
     }

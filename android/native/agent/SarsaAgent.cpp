@@ -5,6 +5,12 @@
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 
+/**
+ * @file SarsaAgent.cpp
+ *
+ * Reward and Q-updates, reuse count maintenance, FBM load/save, action-selection cascade, and LLM hook throttles.
+ */
+
 #ifndef fastbotx_SarsaAgent_CPP_
 #define fastbotx_SarsaAgent_CPP_
 
@@ -30,8 +36,10 @@ namespace fastbotx {
     // C++14: odr-use (e.g. std::max(kDefaultAlpha, …)) requires a namespace-scope definition.
     constexpr double SarsaAgent::kDefaultAlpha;
 
+    // Default on-device filename; `loadReuseModel(packageName)` rebases this with `ModelStorageConstants::StoragePrefix`.
     std::string SarsaAgent::DefaultModelSavePath = "/sdcard/fastbot.model.fbm";
 
+    // Hooks default LLM providers for optional widget ranking and editable-widget fill text.
     SarsaAgent::SarsaAgent(const ModelPtr &model)
             : AbstractAgent(model),
               _alpha(kDefaultAlpha),
@@ -46,6 +54,7 @@ namespace fastbotx {
              _alpha, _gamma, _epsilon);
     }
 
+    // Agent-only ctor (no model weak ptr): mainly for tests or deferred model wiring.
     SarsaAgent::SarsaAgent()
             : AbstractAgent(),
               _alpha(kDefaultAlpha),
@@ -58,6 +67,7 @@ namespace fastbotx {
         this->_algorithmType = AlgorithmType::Sarsa;
     }
 
+    // Final flush to `_modelSavePath`, then drop in-memory reuse counts under lock.
     SarsaAgent::~SarsaAgent() {
         BLOG("SarsaAgent: destructor called, saving model");
         this->saveReuseModel(this->_modelSavePath);
@@ -77,13 +87,12 @@ namespace fastbotx {
 
     void SarsaAgent::moveForward(StatePtr nextState) {
         AbstractAgent::moveForward(nextState);
-        _stepCount++;
+        _stepCount++; // drives `getInputTextForAction` throttling
     }
 
     void SarsaAgent::onStateAbstractionChanged() {
-        // State abstraction (APE Naming / StateKey) updates change state/action hashes.
-        // Instead of clearing all learned experience, drop only entries belonging to states pruned
-        // from the graph by Model::pruneStaleApeStatesForActivity().
+        // Refine/coarsen changes abstract identities: remove reuse rows for action hashes the model marked invalid
+        // instead of wiping the entire reuse map.
         if (auto modelPtr = this->_model.lock()) {
             const auto &invalidActionHashes = modelPtr->getPendingInvalidatedReuseActionHashes();
             if (!invalidActionHashes.empty()) {
@@ -129,6 +138,7 @@ namespace fastbotx {
         return result;
     }
 
+    // Shapes reward from global visit mass, per-action reuse statistics, and optional `ReuseDecisionTuning` prior.
     double SarsaAgent::getNewReward() {
         double reward = 0.0;
         if (nullptr != this->_newState) {
@@ -192,6 +202,7 @@ namespace fastbotx {
         return reward;
     }
 
+    // Posterior-style signal: among recorded transitions for this action hash, fraction hitting activities not yet visited this run (Beta-smoothed).
     double SarsaAgent::getReuseActionValue(const ActivityStateActionPtr &action,
                                            const stringPtrSet &visitedActivities) const {
         double value = 0.0;
@@ -232,6 +243,7 @@ namespace fastbotx {
         return value;
     }
 
+    // Delegates to `ReuseDecisionTuning` statistics for same-activity self-loop tendency.
     double SarsaAgent::computeLoopBias(uint64_t actionHash, const stringPtr &currentActivity) const {
         std::lock_guard<std::mutex> lock(this->_reuseModelLock);
         auto it = this->_reuseModel.find(actionHash);
@@ -239,6 +251,7 @@ namespace fastbotx {
         return ReuseDecisionTuning::computeLoopBiasFromEntry(it->second, currentActivity);
     }
 
+    // Distinct target-activity mass seen for this action hash (spread vs repetition).
     double SarsaAgent::computeCoverageDiversity(uint64_t actionHash) const {
         std::lock_guard<std::mutex> lock(this->_reuseModelLock);
         auto it = this->_reuseModel.find(actionHash);
@@ -246,6 +259,7 @@ namespace fastbotx {
         return ReuseDecisionTuning::computeCoverageDiversityFromEntry(it->second);
     }
 
+    // Sums lightweight per-action heuristics (unknown-in-model bonus, visit hints, reuse values on targeted actions).
     double SarsaAgent::getStateActionValue(const StatePtr &state,
                                            const stringPtrSet &visitedActivities) const {
         double value = 0.0;
@@ -268,6 +282,7 @@ namespace fastbotx {
         return value;
     }
 
+    // TD-style backup over the short `_previousActions` / `_rewardHistory` window (SARSA on stored Q).
     void SarsaAgent::updateStrategy() {
         if (nullptr == this->_newAction) {
             return;
@@ -283,6 +298,7 @@ namespace fastbotx {
             const int limit = std::min(historySize, rewardSize);
             BLOG("SarsaAgent: updateStrategy(history=%d,reward=%d,limit=%d,alpha=%.4f,gamma=%.4f)",
                  historySize, rewardSize, limit, this->_alpha, this->_gamma);
+            // Back up from most recent aligned slot toward older transitions (returns accumulate backward).
             for (int i = limit - 1; i >= 0; --i) {
                 auto act = std::dynamic_pointer_cast<ActivityStateAction>(this->_previousActions[i]);
                 if (!act) continue;
@@ -303,6 +319,7 @@ namespace fastbotx {
         }
     }
 
+    // Increment per-(action hash, target activity) counts for the transition that just completed.
     void SarsaAgent::updateReuseModel() {
         if (this->_previousActions.empty()) return;
         ActionPtr lastAction = this->_previousActions.back();
@@ -325,6 +342,7 @@ namespace fastbotx {
         }
     }
 
+    // With probability `1-epsilon`, greedy max-Q; else uniform random over filtered actions.
     ActivityStateActionPtr SarsaAgent::selectNewActionEpsilonGreedyRandomly() const {
         if (this->eGreedy()) {
             BDLOG("%s", "SarsaAgent: Try to select the max value action");
@@ -340,6 +358,7 @@ namespace fastbotx {
         return !(r < this->_epsilon);
     }
 
+    // Explore brand-new model actions (never seen in `_reuseModel`) via roulette over priority × optional widget weight.
     ActionPtr SarsaAgent::selectActionNotInModel() const {
         ActionPtr chosen = nullptr;
         double totalWeight = 0.0;
@@ -370,6 +389,7 @@ namespace fastbotx {
         return nullptr;
     }
 
+    // Gumbel-max trick for stochastic argmax in reuse/Q selection paths.
     namespace {
         inline double sampleGumbelNoise() {
             // Sample a value in (0,1) and transform to standard Gumbel(0,1).
@@ -380,6 +400,7 @@ namespace fastbotx {
         }
     }
 
+    // Among `targetActions()` still unvisited, pick highest `10 * reuseValue - Gumbel` when reuse value is meaningful.
     ActionPtr SarsaAgent::selectActionInModel(const stringPtrSet &visitedActivities) const {
         float maxValue = -MAXFLOAT;
         ActionPtr retAct = nullptr;
@@ -406,6 +427,7 @@ namespace fastbotx {
         return retAct;
     }
 
+    // Softmax-style competition: (reuse prior + stored Q) / temperature minus Gumbel noise; fast-path first unseen hash missing from reuse map.
     ActionPtr SarsaAgent::selectActionByQValue(const stringPtrSet &visitedActivities) const {
         ActionPtr retAct = nullptr;
         float maxQ = -MAXFLOAT;
@@ -436,9 +458,10 @@ namespace fastbotx {
     }
 
     void SarsaAgent::adjustActions() {
-        AbstractAgent::adjustActions();
+        AbstractAgent::adjustActions(); // base class handles priority boosts; SARSA logic stays in selection helpers
     }
 
+    // One-shot LLM batch per abstract state hash: fills `_actionPriority` for later multiplicative weighting.
     void SarsaAgent::ensureWidgetPrioritiesForState(const StatePtr &state) {
         if (!state || !_widgetPriorityProvider) {
             if (state && !_widgetPriorityProvider) BDLOG("SarsaAgent: widget_priority skip (no provider)");
@@ -514,6 +537,7 @@ namespace fastbotx {
         }
     }
 
+    // Hard reset after bad/missing FBM so stale statistics never mix with a new run.
     void SarsaAgent::clearReuseModelOnLoadFailure() {
         std::lock_guard<std::mutex> lock(this->_reuseModelLock);
         this->_reuseModel.clear();
@@ -526,6 +550,7 @@ namespace fastbotx {
         return 1.0;
     }
 
+    // Preference order: fresh model actions → reuse-valued unvisited → random unvisited → Q/Gumbel → ε-greedy.
     ActionPtr SarsaAgent::selectNewAction() {
         ActionPtr action = nullptr;
 
@@ -578,6 +603,7 @@ namespace fastbotx {
         return handleNullAction();
     }
 
+    // Sets storage paths from package name; historical load is currently short-circuited (fresh run snapshot only).
     void SarsaAgent::loadReuseModel(const std::string &packageName) {
         const bool useStatic = Preference::inst() && Preference::inst()->useStaticReuseAbstraction();
         std::string basePath = std::string(ModelStorageConstants::StoragePrefix) + packageName;
@@ -677,6 +703,7 @@ namespace fastbotx {
         BLOG("SarsaAgent: loaded model contains %zu actions", this->_reuseModel.size());
     }
 
+    // Serialize decayed snapshot → FlatBuffers → atomic rename onto final `.fbm` path.
     void SarsaAgent::saveReuseModel(const std::string &modelFilepath) {
         flatbuffers::FlatBufferBuilder builder;
         std::vector<flatbuffers::Offset<fastbotx::ReuseEntry>> entries;
@@ -775,12 +802,14 @@ namespace fastbotx {
         BLOG("SarsaAgent: Model saved successfully to: %s (entries=%zu)", finalPath.c_str(), snapshot.size());
     }
 
+    // Synchronous save hook for host/test harness (no background thread required).
     void SarsaAgent::saveReuseModelNow() {
         if (!_modelSavePath.empty()) {
             saveReuseModel(_modelSavePath);
         }
     }
 
+    // Same cadence as `DoubleSarsaAgent`: wait full interval before first save, then repeat until the weak ptr expires.
     void SarsaAgent::threadModelStorage(const std::weak_ptr<SarsaAgent> &agent) {
         int saveIntervalMs = 1000 * 60 * 10; // 10 minutes
         // Sleep one full interval before first save, so we do not overwrite a good

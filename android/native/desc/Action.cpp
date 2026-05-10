@@ -2,6 +2,11 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file Action.cpp
+ *
+ * Implements hashing, string formatting, priority rules, `OperatePtr` conversion, and `ActivityStateAction`
+ * lifecycle for Fastbot's action layer.
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang, Zhengwei Lv
  */
 #ifndef Action_CPP_H_
@@ -15,22 +20,10 @@
 
 namespace fastbotx {
 
-    /**
-     * @brief Default constructor creates a NOP (no operation) action
-     * 
-     * Initializes action with NOP type and zero Q-value.
-     */
     Action::Action()
             : Node(), PriorityNode(), _actionType(ActionType::NOP), _qValue(0) {
     }
 
-    /**
-     * @brief Constructor with specific action type
-     * 
-     * Initializes action with the given type and zero Q-value.
-     * 
-     * @param actionType The type of action to create
-     */
     Action::Action(ActionType actionType)
             : Node(), PriorityNode(), _actionType(actionType), _qValue(0) {
     }
@@ -43,22 +36,10 @@ namespace fastbotx {
         this->_id = other.getIdi();
     }
 
-    /// Static throttle value for action execution (default: 100ms)
+    /** Upper bound (ms) for randomized throttle in `toOperate`; first dispatch uses a random delay up to this value. */
     int Action::_throttle = 100;
 
-    /**
-     * @brief Get priority value based on action type
-     * 
-     * Returns a priority value that determines action selection order.
-     * Higher priority actions are preferred during selection.
-     * 
-     * Priority levels:
-     * - CLICK: 4 (highest priority)
-     * - LONG_CLICK, SCROLL actions: 2 (medium priority)
-     * - Others: 1 (lowest priority)
-     * 
-     * @return Priority value (higher = more important)
-     */
+    /** Fixed heuristic ordering: tap beats scroll beats generic actions during competing selection. */
     int Action::getPriorityByActionType() const {
         switch (this->_actionType) {
             case ActionType::CLICK:
@@ -78,11 +59,13 @@ namespace fastbotx {
         return true;
     }
 
+    /** True for standard widget-driven gestures (from `BACK` through extended scroll variants). */
     bool Action::isModelAct() const {
         return this->_actionType >= ActionType::BACK &&
                this->_actionType <= ActionType::SCROLL_BOTTOM_UP_N;
     }
 
+    /** Spatial actions need bounds on a widget; meta-actions such as `NOP` do not. */
     bool Action::requireTarget() const {
         return this->_actionType >= ActionType::CLICK &&
                this->_actionType <= ActionType::SCROLL_BOTTOM_UP_N;
@@ -123,12 +106,14 @@ namespace fastbotx {
         OperatePtr opt = std::make_shared<DeviceOperateWrapper>();
         opt->act = this->_actionType;
         opt->aid = this->getId();
+        // Jitter early executions to spread device load; repeat visits leave throttle unset elsewhere.
         if (this->_visitedCount <= 1) {
             opt->throttle = static_cast<float>(randomInt(10, Action::_throttle));
         }
         return opt;
     }
 
+    /** Shared singletons for non-widget meta-actions used across agents. */
     std::shared_ptr<Action> Action::NOP = std::make_shared<Action>(ActionType::NOP);
     std::shared_ptr<Action> Action::ACTIVATE = std::make_shared<Action>(ActionType::ACTIVATE);
     std::shared_ptr<Action> Action::RESTART = std::make_shared<Action>(ActionType::RESTART);
@@ -139,16 +124,11 @@ namespace fastbotx {
     PropertyIDPrefixImpl(Action, "g0a");
     const int Action::DefaultValue = 0;
 
-/// Construct an empty ActivityStateAction object with no action, state or target.
     ActivityStateAction::ActivityStateAction()
             : Action(), _target(nullptr), _functionListener(nullptr), _whichWidget(-1) {
 
     }
 
-/// Construct an ActivityStateAction object constituted of state, targetWidget and the corresponding action type
-/// \param state The StatePtr object, describing the current page
-/// \param targetWidget The WidgetPtr object, describing the targetWidget on the page for acting, could be type of Widget
-/// \param actionType The corresponding action type
     ActivityStateAction::ActivityStateAction(const StatePtr &state, WidgetPtr targetWidget,
                                              ActionType actionType)
             : Action(actionType), _state(state), _target(std::move(targetWidget)),
@@ -158,6 +138,7 @@ namespace fastbotx {
         uintptr_t stateHash = this->_state.expired() ? 0x1 : this->_state.lock()->hash();
         uintptr_t targetHash = nullptr == this->_target ? 0x1 : this->_target->hash();
 
+        // Mix action enum, abstract state id, and widget identity into a stable uintptr key.
         this->_hashcode =
                 0x9e3779b9 + (hashcode << 2) ^ (((stateHash << 4) ^ (targetHash << 3)) << 1);
     }
@@ -183,9 +164,7 @@ namespace fastbotx {
         return this->_hashcode;
     }
 
-/// check if two actions are the same
-/// \param action the action to compare with
-/// \return if two actions are the same return true
+    /** Equality uses the precomputed identity hash (state + widget + action type mix). */
     bool ActivityStateAction::operator==(const ActivityStateAction &action) const {
         return this->hash() == action.hash();
     }
@@ -215,9 +194,10 @@ namespace fastbotx {
     }
 
     OperatePtr ActivityStateAction::toOperate() const {
-        auto opt = Action::toOperate(); // call base virtual method
+        auto opt = Action::toOperate();
         opt->sid = this->getState().expired() ? "" : this->getState().lock()->getId();
         if (this->getTarget()) {
+            // Populate geometry and editability for injectors that operate on raw rectangles.
             opt->pos = *(this->getTarget()->getBounds());
             opt->editable = this->getTarget()->isEditable();
         }

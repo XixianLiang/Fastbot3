@@ -17,8 +17,7 @@
  * @authors Tianxiao Gu, Zhao Zhang
  */
 /*
- * Naming: ordered Namelets + refinement child map.
- * extend / replaceLast — lattice ops; factory helpers on NamingFactory.
+ * Naming graph: ordered namelets plus refinement edges to child `Naming` instances (see `NamingFactory`).
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMING_H_
 #define FASTBOTX_DESC_NAMING_NAMING_H_
@@ -61,7 +60,7 @@ namespace naming {
 
     class Naming : public std::enable_shared_from_this<Naming> {
     public:
-        /** Result of evaluating a Naming on a GUITree (Java inner class NamingResult). */
+        /** Output of `namingInternal`: parallel names, widget groups, and chosen namelets per node group. */
         struct NamingResult {
             std::vector<NamePtr> names;
             std::vector<std::vector<gui_tree::GUITreeNodePtr>> node_groups;
@@ -71,17 +70,17 @@ namespace naming {
 
             size_t getNodeSize() const;
 
-            /** Propagate Name / Namelet to nodes (Java NamingResult.updateNames). */
+            /** Copies each group’s `Name` / current namelet onto matching `GUITreeNode` handles. */
             void updateNames();
         };
 
-        /** Naming.namingInternal equivalent on a concrete tree+dom. */
+        /** Runs XPath matching and grouping for this naming policy on `tree` + DOM bridge `dom`. */
         NamingResult namingInternal(gui_tree::GUITree &tree,
                                     const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) const;
 
         explicit Naming(std::vector<std::shared_ptr<Namelet>> namelets);
 
-        /** Child Naming in the refinement lattice (Java: children map). */
+        /** Allocates a refinement child linked back to `parent`. */
         static std::shared_ptr<Naming> createChild(std::shared_ptr<Naming> parent,
                                                    std::vector<std::shared_ptr<Namelet>> namelets);
 
@@ -91,15 +90,13 @@ namespace naming {
 
         const std::vector<std::shared_ptr<Namelet>> &getNamelets() const { return namelets_; }
 
-        /** Last namelet in this naming sequence (Java Naming.getLastNamelet). */
+        /** Tail namelet in this refinement sequence. */
         std::shared_ptr<Namelet> getLastNamelet() const;
 
-        /**
-         * Java Naming.isReplaceable: must be REFINE and equal to the last namelet.
-         */
+        /** True when `namelet` is REFINE and identical to the tail entry (safe to replace in-place). */
         bool isReplaceable(const std::shared_ptr<Namelet> &namelet) const;
 
-        /** True when this naming has no refinement lattice children (Java Naming.hasChild / NamingManager.isLeaf). */
+        /** True when no refinement children are registered under this naming. */
         bool hasChild() const { return children_.empty(); }
 
         int getFineness() const { return fineness_; }
@@ -113,7 +110,7 @@ namespace naming {
         std::shared_ptr<Naming> getRefinementChild(const std::shared_ptr<Namelet> &from,
                                                    const std::shared_ptr<Namelet> &to) const;
 
-        /** Stable fingerprint for StateKey / lattice (same serialization as StateKey::fromParts). */
+        /** Stable string fingerprint of the ordered namelet chain (identity / lattice bookkeeping). */
         const std::string &fingerprintString() const;
 
         /** drop cached NamingResult for this GUITree. */

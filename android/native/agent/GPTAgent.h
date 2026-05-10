@@ -1,9 +1,16 @@
 /*
- * LLMDroid-style GPT worker: high/low priority queues, single consumer thread.
- * HTTP via LlmClient::predictWithPayload (Java path: promptType llmdroid_* + payload JSON).
+ * LLMDroid GPT worker: dedicated consumer thread, dual priority queues, HTTP via `LlmClient`.
+ * Prompt types (`llmdroid_*`) and JSON payloads must match the configured LLM backend / runner.
  */
 /**
  * @authors Zhao Zhang, Tianming Liu, Chenxu Wang
+ */
+
+/**
+ * @file GPTAgent.h
+ *
+ * Background worker that turns merged-state questions into `predictWithPayload` calls and applies JSON results
+ * back into `MergedState` / navigation promises. The UI thread only enqueues `QuestionPayload` items.
  */
 
 #ifndef FASTBOTX_GPT_AGENT_H_
@@ -28,8 +35,10 @@ class LlmClient;
 typedef std::shared_ptr<std::promise<int>> PromiseIntPtr;
 typedef std::shared_ptr<std::promise<ActivityStateActionPtr>> PromiseActionPtr;
 
+/** Kind of LLM request; drives JSON shape and `promptTypeForAsk` string sent to `LlmClient`. */
 enum class AskModel { STATE_OVERVIEW, GRAPH_OVERVIEW, GUIDE, TEST_FUNCTION, GUIDE_FAILURE, REANALYSIS };
 
+/** Work item for the worker thread; only fields relevant to `type` are populated. */
 struct QuestionPayload {
     AskModel type{AskModel::STATE_OVERVIEW};
     MergedStatePtr from;
@@ -40,7 +49,11 @@ struct QuestionPayload {
 };
 
 /**
- * Worker owns LLM calls; monkey thread only pushes payloads (overview / reanalysis / guide / test).
+ * Single-consumer queue processor for LLMDroid LLM round-trips.
+ *
+ * High-priority queue (`_stateQueue`): overview, guide, test-function payloads.
+ * Low-priority queue (`_lowQueue`): reanalysis for merged states that still rank in the top slice.
+ * `_questionRemained` tracks outstanding items for `waitUntilQueueEmpty`.
  */
 class GPTAgent {
 public:
@@ -51,15 +64,17 @@ public:
     GPTAgent(const GPTAgent &) = delete;
     GPTAgent &operator=(const GPTAgent &) = delete;
 
+    /** Install fresh promises before enqueueing GUIDE / TEST_FUNCTION (caller waits on futures). */
     void resetPromise(PromiseIntPtr promInt, PromiseActionPtr promAction);
 
     void pushStateToQueue(QuestionPayload payload);
 
+    /** Blocks until all pushed items have been processed (polls `_questionRemained`). */
     void waitUntilQueueEmpty();
 
     std::string getFunctionToTest() const { return _targetFunction; }
 
-    /** Main thread: mark guided function tested (stub for full guide flow). */
+    /** Record that the guided function under test has been exercised (updates merged state bookkeeping). */
     void addTestedFunction();
 
     void clearExecutedEvents();
@@ -75,7 +90,7 @@ private:
 
     void askForTestFunction(QuestionPayload &payload);
 
-    /** Calls LlmClient; parses JSON object from assistant content. */
+    /** POST payload to LLM; extracts first `{...}` JSON object from text responses when needed. */
     nlohmann::json getResponseJson(const std::string &prompt, AskModel type);
     nlohmann::json getResponseJson(const nlohmann::json &payload, AskModel type);
 
@@ -95,6 +110,7 @@ private:
     std::mutex _questionMtx;
     int _questionRemained{0};
 
+    /** Top merged states considered high-value for overview / guide context (see `_P2` window). */
     static constexpr unsigned long _P2 = 10;
     MergedStateVecPtr _topValuedMergedState = std::make_shared<MergedStateVec>();
 
@@ -111,4 +127,4 @@ private:
 
 } // namespace fastbotx
 
-#endif
+#endif // FASTBOTX_GPT_AGENT_H_

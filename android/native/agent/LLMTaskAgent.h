@@ -1,17 +1,13 @@
 /**
- * LLMTaskAgent: LLM-based GUI agent that can temporarily take over action selection
- * for predefined tasks (e.g. login flows) based on checkpoints configured in
- * external files. The agent runs on the C++ side and always returns standard
- * ActionPtr objects that are later converted to Operate and executed by the
- * existing Java layer.
- *
- * NOTE:
- * - This header only defines the core interfaces and data structures.
- * - The actual LLM integration is abstracted behind LlmClient; production
- *   implementations should provide a concrete client (e.g. HTTP-based).
- */
- /**
  * @authors Zhao Zhang
+ */
+
+/**
+ * @file LLMTaskAgent.h
+ *
+ * LLM-assisted GUI task runner: matches checkpoints from configuration, holds `LlmSessionState`,
+ * queries `LlmClient`, and returns native `ActionPtr` values. `Model` converts actions to runtime
+ * operations for execution; networking is behind `LlmClient` (HTTP/RPC implementations).
  */
 
 #ifndef FASTBOTX_LLM_TASK_AGENT_H
@@ -54,8 +50,8 @@ namespace fastbotx {
                              std::string &outResponse) = 0;
 
         /**
-         * Predict using payload JSON; Java assembles the prompt (reduces JNI copy).
-         * promptType: "executor" | "planner" | "step_summary".
+         * Predict using structured payload JSON; the runtime may assemble the final prompt outside native code.
+         * Typical `promptType` values: `"executor"`, `"planner"`, `"step_summary"` (must match `HttpLlmClient` / backend).
          */
         virtual bool predictWithPayload(const std::string &promptType,
                                         const std::string &payloadJson,
@@ -70,18 +66,11 @@ namespace fastbotx {
     };
 
     /**
-    /**
-     * LLMTaskAgent:
+     * Stateful LLM task controller:
+     * - Opens a session when a configured checkpoint matches the current screen.
+     * - Each step calls `LlmClient`, parses JSON into `LlmActionSpec`, and maps widgets to `ActionPtr`.
      *
-     * - Maintains session state for currently running LLM tasks.
-     * - At each step, optionally starts a new session (when checkpoint matches)
-     *   or continues an existing one.
-     * - Uses LlmClient to query the LLM and converts its output into ActionPtr.
-     *
-     * IMPORTANT:
-     * - This class does NOT execute any operations directly.
-     * - It only returns ActionPtr, which Model later converts into OperatePtr
-     *   via Model::convertActionToOperate() and sends to the Java layer.
+     * Does not inject events itself; callers execute returned actions after `Model::convertActionToOperate()`.
      */
     class LLMTaskAgent {
     public:
@@ -95,7 +84,7 @@ namespace fastbotx {
             _llmClient = std::move(llmClient);
         }
 
-        /** Return the current LLM client (may be null). Used by other agents (e.g. LLMExplorerAgent). */
+        /** Returns the active client (may be null); shared with other LLM-assisted components when wired through `Model`. */
         std::shared_ptr<LlmClient> getLlmClient() const { return _llmClient; }
 
         /**
@@ -104,9 +93,9 @@ namespace fastbotx {
          * @param rootXml   Current page XML root element (may have been resolvePage'd).
          * @param activity  Current activity name.
          * @param deviceId  Device identifier (for future multi-device support).
-         * @param preMatchedLlmTask  If non-null, LLM task already matched on raw tree (before resolvePage); used to start session.
-         * Image for LLM is obtained in Java on demand when native triggers HTTP (LlmScreenshotProvider).
-         * @return ActionPtr chosen by the LLM agent, or nullptr if no match / session ended / LLM failed.
+         * @param preMatchedLlmTask  If non-null, task matched on raw tree before `resolvePage`; used to start session.
+         * Screenshots for multimodal calls are supplied by `LlmScreenshotProvider` when the HTTP layer requests them.
+         * @return Chosen action, or nullptr if no task / session ended / LLM failure.
          */
         ActionPtr selectNextAction(const ElementPtr &rootXml,
                                    const std::string &activity,
@@ -239,14 +228,14 @@ namespace fastbotx {
         /** Build prompt for Planner LLM (task, todos, scratchpad, history; no full UI tree). */
         std::string buildPlannerPrompt() const;
 
-        /** Build payload JSON for Java to assemble Executor prompt. Sets outCurrentScreenHash if non-null. */
+        /** JSON body for `promptType` `"executor"` (UI fingerprint + planner step). Sets `outCurrentScreenHash` when non-null. */
         std::string buildExecutorPayload(const ElementPtr &rootXml,
                                          const std::string &activity,
                                          std::string *outCurrentScreenHash = nullptr,
                                          const std::string *precomputedFingerprint = nullptr) const;
-        /** Build payload JSON for Java to assemble Planner prompt. */
+        /** JSON body for `promptType` `"planner"` (task metadata and scratchpad; no full widget tree). */
         std::string buildPlannerPayload() const;
-        /** Build payload JSON for Java to assemble StepSummary prompt. */
+        /** JSON body for `promptType` `"step_summary"` (single history row for optional LLM summaries). */
         std::string buildStepSummaryPayload(const StepHistoryEntry &entry) const;
         /** Parse Planner LLM response into one semantic step (tool, intent, text). Returns true if valid. */
         bool parsePlannerResponse(const std::string &response, PlannerStep &outStep) const;

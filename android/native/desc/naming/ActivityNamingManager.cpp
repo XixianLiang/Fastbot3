@@ -23,6 +23,10 @@
 namespace fastbotx {
 namespace naming {
 
+    /**
+     * Returns the stored `Naming` for `activity_key`, or lazily inserts `NamingFactory::getBaseNaming()`
+     * on first access and returns that instance.
+     */
     NamingPtr ActivityNamingManager::getNaming(const std::string &activity_key) const {
         auto it = current_.find(activity_key);
         if (it == current_.end()) {
@@ -33,16 +37,20 @@ namespace naming {
         return it->second;
     }
 
+    /** Associates `activity_key` with `n`, replacing any previous entry. */
     void ActivityNamingManager::setNaming(const std::string &activity_key, NamingPtr n) {
         current_[activity_key] = std::move(n);
     }
 
+    /** True if `activity_key` exists in the map (including entries created lazily by `getNaming`). */
     bool ActivityNamingManager::hasNaming(const std::string &activity_key) const {
         return current_.find(activity_key) != current_.end();
     }
 
+    /** Removes all per-activity naming roots. */
     void ActivityNamingManager::clear() { current_.clear(); }
 
+    /** Collects every non-null `NamingPtr` currently stored (for cache teardown or traversal). */
     std::vector<NamingPtr> ActivityNamingManager::getAllNamings() const {
         std::vector<NamingPtr> out;
         out.reserve(current_.size());

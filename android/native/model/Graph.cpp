@@ -3,6 +3,10 @@
  */
 /**
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang, Tianming Liu
+ *
+ * @file Graph.cpp
+ * @brief Exploration graph: state deduplication, action indexing, naming fingerprints (optional build),
+ *        transition classification for listeners, and optional activity-level graph export when enabled via config.
  */
 #ifndef  Graph_CPP_
 #define  Graph_CPP_
@@ -29,7 +33,8 @@
 namespace fastbotx {
 
     namespace {
-        uint64_t apeMixSrcActionKey(uintptr_t srcHash, uintptr_t actionHash) {
+        /** Mixes source-state and action hashes for deduplicating (src, action) → target identity buckets. */
+        uint64_t mixSrcActionKey(uintptr_t srcHash, uintptr_t actionHash) {
             uint64_t x = static_cast<uint64_t>(srcHash);
             uint64_t y = static_cast<uint64_t>(actionHash);
             return x ^ (y + UINT64_C(0x9e3779b97f4a7c15) + (x << 6) + (x >> 2));
@@ -140,6 +145,10 @@ namespace fastbotx {
         return state;
     }
 
+    /**
+     * Lightweight visit accounting without inserting a new `State` node: merges details into `canonical` when needed,
+     * updates distributions, indexes actions, and extends the reuse-state graph when that mode is active.
+     */
     void Graph::recordStateVisit(StatePtr canonical, StatePtr freshlyBuilt) {
         if (!canonical) {
             return;
@@ -188,6 +197,7 @@ namespace fastbotx {
         buildStateGraph(std::dynamic_pointer_cast<ReuseState>(canonical));
     }
 
+    /** Erases states whose hash appears in `stateHashes`, dropping related actions and naming index entries. */
     size_t Graph::removeStatesByHash(const std::unordered_set<uintptr_t> &stateHashes) {
         if (stateHashes.empty()) {
             return 0;
@@ -248,12 +258,17 @@ namespace fastbotx {
         return it != this->_activityStateCount.end() ? it->second : 0;
     }
 
+    /** Bumps the structural id string and clears (source, action) → seen-target bookkeeping after a naming epoch change. */
     void Graph::syncApeStructuralEpoch(uint64_t epoch) {
         this->_structureId = std::string("g") + std::to_string(static_cast<unsigned long long>(epoch));
-        // Graph edge identity resets with a new naming epoch.
+        // Edge novelty classification resets when naming structure changes.
         this->_apeSrcActionToSeenTargets.clear();
     }
 
+    /**
+     * Notifies listeners of a transition; for model-targeted actions, tags visits as first hop vs additional targets
+     * using per-(source, action) target deduplication.
+     */
     void Graph::notifyVisitStateTransition(const StatePtr &fromState,
                                            const ActivityStateActionPtr &action,
                                            const StatePtr &toState) {
@@ -262,7 +277,7 @@ namespace fastbotx {
             const uintptr_t sh = fromState->hash();
             const uintptr_t ah = action->hash();
             const uintptr_t th = toState->hash();
-            const uint64_t key = apeMixSrcActionKey(sh, ah);
+            const uint64_t key = mixSrcActionKey(sh, ah);
             auto &targets = this->_apeSrcActionToSeenTargets[key];
             if (targets.count(th) != 0) {
                 kind = GraphTransitionVisitKind::Existing;
@@ -282,6 +297,7 @@ namespace fastbotx {
     }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** Maintains bidirectional state ↔ naming-fingerprint index used by dynamic abstraction code paths. */
     void Graph::apeNamingIndexUpsert(const StatePtr &state, const std::string &namingFingerprint) {
         if (!state || namingFingerprint.empty()) {
             return;
@@ -305,6 +321,7 @@ namespace fastbotx {
         _apeStatesByNamingFingerprint[namingFingerprint].insert(state);
     }
 
+    /** Removes `state` from naming fingerprint buckets (pair of maps stays consistent). */
     void Graph::apeNamingIndexRemoveState(const StatePtr &state) {
         if (!state) {
             return;
@@ -323,6 +340,7 @@ namespace fastbotx {
         _apeStateToNamingFingerprint.erase(itPrev);
     }
 
+    /** Collects deduplicated states matching any fingerprint in `fingerprints`. */
     void Graph::apeCollectStatesByNamingFingerprints(
         const std::unordered_set<std::string> &fingerprints,
         std::vector<StatePtr> *out) const {
@@ -407,6 +425,10 @@ namespace fastbotx {
               this->_visitedActions.size());
     }
 
+    /**
+     * When activity-graph export is enabled in preferences (`Preference::isLlmdroidEnabled()`), maintains a linear
+     * chain of reuse states and wires `Activity` summaries for brief descriptions / Mermaid flow output.
+     */
     void Graph::buildStateGraph(const ReuseStatePtr &reuseState) {
         const PreferencePtr pref = Preference::inst();
         if (!pref || !pref->isLlmdroidEnabled() || !reuseState) {
@@ -425,6 +447,7 @@ namespace fastbotx {
         buildActivityGraph(reuseState, edgeAction);
     }
 
+    /** Ensures an `Activity` exists for `state`, merges valuable widgets, and links activities along `edgeAction`. */
     void Graph::buildActivityGraph(const ReuseStatePtr &state, const ActionPtr &edgeAction) {
         if (!state || !state->getActivityString() || !state->getActivityString().get()) {
             return;
@@ -453,6 +476,7 @@ namespace fastbotx {
         _currentActivity = activity;
     }
 
+    /** Linear scan of `_states` by numeric id (small graphs; logs if missing). */
     ReuseStatePtr Graph::findReuseStateById(int id) {
         auto result = std::find_if(_states.begin(), _states.end(), [id](const StatePtr &s) {
             return s && s->getIdi() == id;
@@ -464,6 +488,7 @@ namespace fastbotx {
         return nullptr;
     }
 
+    /** Sorts paths by length/time, keeps up to three candidates, and applies `transformPath` for logging continuity. */
     void Graph::processPaths(std::vector<Path> &paths, int source, int dest) {
         std::sort(paths.begin(), paths.end(), [](const Path &a, const Path &b) { return a.length < b.length; });
         if (paths.size() >= 2) {
@@ -479,6 +504,7 @@ namespace fastbotx {
         }
     }
 
+    /** Rewrites a path queue into logged steps anchored at the current reuse-state id (handles RESTART / NOP prefix). */
     Path Graph::transformPath(Path origin, int source, int dest) {
         Path res;
         std::stringstream ss;
@@ -513,6 +539,7 @@ namespace fastbotx {
         return res;
     }
 
+    /** DFS helper enumerating precursor chains from `dest` toward `source` (bounded depth). */
     std::vector<std::vector<Step>> Graph::traceback(std::vector<bool> &is_used,
                                                     std::vector<std::vector<Step>> &parent,
                                                     int source,
@@ -544,6 +571,7 @@ namespace fastbotx {
         return out;
     }
 
+    /** Shortest-hop paths over reuse-state edges; duplicates widget-aware action copies when alternate targets exist. */
     std::vector<Path> Graph::dijkstra(int source, int dest) {
         const int stateNum = static_cast<int>(_states.size());
         if (stateNum <= 0 || source < 0 || dest < 0 || source >= stateNum || dest >= stateNum) {
@@ -640,6 +668,7 @@ namespace fastbotx {
         return ret;
     }
 
+    /** Paths from the current reuse state to `dest`, optionally restarting from state id 0 first. */
     std::vector<Path> Graph::findPath(int dest, bool forceRestart) {
         ReuseStatePtr destination = findReuseStateById(dest);
         if (!destination || !_llmdroidCurrentState) {
@@ -667,6 +696,7 @@ namespace fastbotx {
         return {};
     }
 
+    /** Mermaid-friendly node labels: activity name plus brief widget summary lines. */
     std::string Graph::generateNodeCodeForActivity() {
         std::string code;
         for (const auto &it : _activityMap) {
@@ -675,6 +705,7 @@ namespace fastbotx {
         return code;
     }
 
+    /** Full Mermaid `flowchart LR` snippet for the activity graph starting at `_firstActivity`. */
     std::string Graph::generateGraphCodeForActivity() {
         if (_activityMap.empty() || !_firstActivity) {
             return "flowchart LR\n";

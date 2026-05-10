@@ -5,6 +5,13 @@
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 
+/**
+ * @file SarsaAgent.h
+ *
+ * Tabular SARSA agent with a FlatBuffers-backed reuse model (per-action transition counts by activity),
+ * optional LLM-assisted widget priorities and content-aware input, and tunable exploration policies.
+ */
+
 #ifndef SarsaAgent_H_
 #define SarsaAgent_H_
 
@@ -28,6 +35,10 @@ namespace fastbotx {
     class Model;
     typedef std::shared_ptr<Model> ModelPtr;
 
+    /**
+     * Single-Q SARSA with sparse reuse statistics and weighted exploration (unvisited actions,
+     * reuse-valued picks, softmax/Q blending). Persists counts to `.fbm` under the app storage prefix.
+     */
     class SarsaAgent : public AbstractAgent {
     public:
         // Default SARSA hyper-parameters (kept from legacy ReuseAgent).
@@ -61,21 +72,21 @@ namespace fastbotx {
         /// Save reuse model to FBM file.
         void saveReuseModel(const std::string &modelFilepath);
 
-        /// Save reuse model to current _modelSavePath (for JNI when test ends normally).
+        /// Persist to `_modelSavePath` immediately (e.g. normal test teardown / host-triggered flush).
         void saveReuseModelNow();
 
-        /// Background thread: periodically save reuse model.
+        /** Background saver loop: periodic `saveReuseModel` until the agent is destroyed. */
         static void threadModelStorage(const std::weak_ptr<SarsaAgent> &agent);
 
         virtual void moveForward(StatePtr nextState) override;
 
-        /// Optional: content-aware input (same as LLMExplorerAgent). When max.llm.contextAwareInput=true, editable widgets get LLM-suggested text.
+        /// Optional fill text for editable widgets via `IContentAwareInputProvider` when LLM context-aware input is enabled.
         std::string getInputTextForAction(const StatePtr &state, const ActionPtr &action) const override;
 
-        /// Set custom content-aware input provider (default: LlmContentAwareInputProvider).
+        /// Override the default `LlmContentAwareInputProvider` implementation.
         void setContentAwareInputProvider(const std::shared_ptr<IContentAwareInputProvider> &provider);
 
-        /// Set custom widget priority provider (default: LlmWidgetPriorityProvider). When set and max.llm.knowledge=true, pre-allocates widgetPriorities for each new state.
+        /// Override the default `LlmWidgetPriorityProvider`; used when LLM "knowledge" widget ranking is enabled.
         void setWidgetPriorityProvider(const std::shared_ptr<IWidgetPriorityProvider> &provider);
 
         /// Dynamic state abstraction: clear any state/action-hash keyed caches to avoid cross-abstraction leakage.
@@ -127,7 +138,7 @@ namespace fastbotx {
         static std::string DefaultModelSavePath;
         mutable std::mutex _reuseModelLock;
 
-        /// Pluggable content-aware input (same as LLMExplorerAgent); only used when max.llm.contextAwareInput=true.
+        /// Lazy LLM fill-text helper; respects step throttle and call probability in `getInputTextForAction`.
         std::shared_ptr<IContentAwareInputProvider> _contentAwareInputProvider;
 
         /// Step count (incremented in moveForward); used to throttle content-aware input LLM calls.
@@ -135,7 +146,7 @@ namespace fastbotx {
         /// Last step at which we called content-aware input provider (0 = never); throttle: at most once every kMinStepsBetweenContentAwareInputCalls.
         mutable size_t _lastContentAwareInputStep = 0;
 
-        /// Widget priorities from knowledge_org: (stateHash, actionHash) -> priority (about 1.0~5.0 after amplification). Default 1.0 when not set.
+        /// Cached per-(state,action) weights from the widget-priority LLM pass; default weight 1.0 when missing.
         std::unordered_map<uintptr_t, double> _actionPriority;
         /// State hashes for which we have already requested knowledge_org (one request per new state).
         std::unordered_set<uintptr_t> _stateWidgetPrioritiesRequested;

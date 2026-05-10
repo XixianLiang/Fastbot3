@@ -3,6 +3,10 @@
  */
 /**
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ *
+ * @file Graph.h
+ * @brief State–action graph: hashed state store, action indexing, transition notifications, optional naming
+ *        fingerprint index (dynamic abstraction), and optional activity-level export when enabled in preferences.
  */
 #ifndef  Graph_H_
 #define  Graph_H_
@@ -20,6 +24,7 @@
 
 namespace fastbotx {
 
+    /** Classifies a transition for listeners: new (action, first target) vs another target vs duplicate. */
     enum class GraphTransitionVisitKind {
         NewAction,
         NewActionTarget,
@@ -157,8 +162,11 @@ namespace fastbotx {
          */
         time_t getTimestamp() const { return this->_timeStamp; }
         const std::string &getStructureId() const { return _structureId; }
+
+        /** Updates structural id after a naming-epoch change and clears per-edge target novelty caches. */
         void syncApeStructuralEpoch(uint64_t epoch);
-        /// After a model action with target: (source state, action, destination state).
+
+        /** For model actions with a widget target: notifies listeners and classifies repeat vs new destination. */
         void notifyVisitStateTransition(const StatePtr &fromState,
                                         const ActivityStateActionPtr &action,
                                         const StatePtr &toState);
@@ -196,22 +204,24 @@ namespace fastbotx {
         size_t removeStatesByHash(const std::unordered_set<uintptr_t> &stateHashes);
 
         /**
-         * LLMDroid RL transition chain + shortest paths over {@link ReuseState} edges
-         * ({@link ReuseState::addSubSequentState}). Gated build in {@link #addState} when
-         * {@link Preference::isLlmdroidEnabled()}.
+         * Shortest-hop paths over `ReuseState` edges (`ReuseState::addSubSequentState`). The underlying reuse-state
+         * chain is populated from `addState` / `recordStateVisit` when `Preference::isLlmdroidEnabled()` enables
+         * activity-graph bookkeeping.
          */
         std::vector<Path> findPath(int dest, bool forceRestart);
 
         ReuseStatePtr findReuseStateById(int id);
 
+        /** Reuse state used as the path-finding origin when the optional activity-graph chain is active. */
         ReuseStatePtr getLlmdroidGraphCursorState() const { return _llmdroidCurrentState; }
 
         /**
-         * LLMDroid legacy-compatible activity-level graph export.
-         * This is observational/debug output and does not affect RL logic.
+         * Activity-level graph text for debugging (e.g. Mermaid-style flow fragments). Does not affect exploration
+         * scoring.
          */
         std::string generateGraphCodeForActivity();
 
+        /** Per-activity node labels for `generateGraphCodeForActivity()` (brief widget summaries). */
         std::string generateNodeCodeForActivity();
 
         /**
@@ -236,11 +246,12 @@ namespace fastbotx {
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         /**
-         * Java Graph.namingToStates: maintain states grouped by StateKey naming fingerprint.
-         * Upsert when Model records a unique StateKey for a state; remove on graph eviction.
+         * Maintain states grouped by naming fingerprint (StateKey string). Upsert when a state is assigned a
+         * fingerprint; remove when the state is evicted from the graph.
          */
         void apeNamingIndexUpsert(const StatePtr &state, const std::string &namingFingerprint);
         void apeNamingIndexRemoveState(const StatePtr &state);
+        /** Collects deduplicated states whose fingerprints appear in `fingerprints`. */
         void apeCollectStatesByNamingFingerprints(const std::unordered_set<std::string> &fingerprints,
                                                   std::vector<StatePtr> *out) const;
 #endif
@@ -258,6 +269,7 @@ namespace fastbotx {
          */
         void notifyNewStateEvents(const StatePtr &node);
 
+        /** Extends the optional reuse-state / activity chain used for path finding and graph export. */
         void buildStateGraph(const ReuseStatePtr &reuseState);
 
     private:
@@ -273,8 +285,11 @@ namespace fastbotx {
                                                    int dest,
                                                    int layer);
 
+        /// Head of the reuse-state chain when activity-graph mode is enabled (see `Preference::isLlmdroidEnabled()`).
         ReuseStatePtr _llmdroidFirstState;
+        /// Latest reuse state in the linear exploration chain (path queries start here unless restarted).
         ReuseStatePtr _llmdroidCurrentState;
+        /// Cursor into the reuse-state list for incremental graph walks.
         ReuseStatePtr _llmdroidCursor;
         ActivityPtr _firstActivity;
         ActivityPtr _currentActivity;
@@ -289,6 +304,7 @@ namespace fastbotx {
          */
         void addActionFromState(const StatePtr &node);
 
+        /** Links or updates `Activity` nodes along the exploration edge that entered `state`. */
         void buildActivityGraph(const ReuseStatePtr &state, const ActionPtr &edgeAction);
 
         /// Set of all unique states in the graph (deduplicated by hash)
@@ -325,6 +341,7 @@ namespace fastbotx {
         time_t _timeStamp;
 
         std::string _structureId{"g0"};
+        /// Mixed (source, action) key → destination state hashes already seen (transition novelty for listeners).
         std::unordered_map<uint64_t, std::unordered_set<uintptr_t>> _apeSrcActionToSeenTargets;
 
         /// Per-activity count of unique states (updated only when a new state is added)
@@ -332,7 +349,9 @@ namespace fastbotx {
         std::unordered_map<std::string, size_t> _activityStateCount;
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        /// Naming fingerprint → states currently indexed under that key.
         std::unordered_map<std::string, std::unordered_set<StatePtr>> _apeStatesByNamingFingerprint;
+        /// State → naming fingerprint (inverse index for upsert/remove).
         std::unordered_map<StatePtr, std::string> _apeStateToNamingFingerprint;
 #endif
 

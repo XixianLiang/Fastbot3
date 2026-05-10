@@ -18,7 +18,7 @@
  */
 
 /*
- * Refinement neighborhood on the NamerFactory bitmask cube.
+ * Refinement graph over the pre-built bitmask namers from `NamerFactory`: one-bit up/down neighbors and the sorted finer set.
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMERLATTICE_H_
 #define FASTBOTX_DESC_NAMING_NAMERLATTICE_H_
@@ -37,13 +37,13 @@ namespace naming {
     public:
         explicit NamerLattice(const NamerFactory &factory = NamerFactory::current());
 
-        /** Namers obtained by adding exactly one NamerType w.r.t. {@code coarse}; sorted by bitmask for stable picks. */
+        /** One-bit refinements of `coarse` (see `NamerLattice.cpp`); deterministic order by mask. */
         std::vector<NamerPtr> immediateRefinements(const NamerPtr &coarse) const;
 
-        /** Namers obtained by removing exactly one NamerType w.r.t. {@code fine}; sorted by bitmask for stable picks. */
+        /** One-bit abstractions of `fine`; deterministic order by mask. */
         std::vector<NamerPtr> immediateAbstractions(const NamerPtr &fine) const;
 
-        /** Java NamerLattice.getSortedAbove: all strict finer namers sorted by (|types|, sum(type ordinal)). */
+        /** All strictly finer namers, sorted by popcount then sum of set-bit indices then mask. */
         std::vector<NamerPtr> sortedAbove(const NamerPtr &coarse) const;
 
     private:

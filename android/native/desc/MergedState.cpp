@@ -1,4 +1,11 @@
 /**
+ * @file MergedState.cpp
+ *
+ * Implements merged logical screens: aggregates multiple `ReuseState` snapshots, attaches GPT-derived function
+ * labels to widgets, tracks completion via `FunctionListener`, and maintains a higher-level `MergedStateGraph`
+ * for scripted walks and path lookup. GPT-facing updates run under `_mergedStateMutex`; exploration callbacks
+ * must coordinate using the same locks documented in `MergedState.h`.
+ *
  * @authors Zhao Zhang, Tianming Liu, Chenxu Wang
  */
 
@@ -14,7 +21,9 @@
 
 namespace fastbotx {
 
+/** Records one transition between merged screens; `_hash` combines action and successor for ordering. */
 MergedStateGraphEdge::MergedStateGraphEdge(MergedStatePtr next, ActionPtr action, bool shouldStop) {
+    // Cheap identity mix for edge dedup/set ordering (not a cryptographic hash).
     _next = std::move(next);
     _action = std::move(action);
     _hash = (_action ? _action->hash() : 0) | (_next ? _next->hash() : 0);
@@ -22,7 +31,9 @@ MergedStateGraphEdge::MergedStateGraphEdge(MergedStatePtr next, ActionPtr action
     _shouldStop = shouldStop;
 }
 
+/** Seeds the cluster with one `ReuseState`, copies its hash into `_hashcode`, and queues `_cursor` as a walk start. */
 MergedState::MergedState(ReuseStatePtr state, int id) {
+    // Single-screen cluster initially; `_starts` seeds linear walks from entry reuse states.
     _states.insert(state);
     _root = std::move(state);
     _cursor = _root;
@@ -31,17 +42,24 @@ MergedState::MergedState(ReuseStatePtr state, int id) {
     _hashcode = _root->hash();
 }
 
+/** Thread-safe read of the GPT-generated overview paragraph cached on this merged state. */
 std::string MergedState::getOverview() const {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     return _overview;
 }
 
+/** Returns a snapshot copy of function-name → importance / anchor state (same mutex as overview). */
 std::map<std::string, FunctionDetail> MergedState::getFunctionList() const {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     return _functionList;
 }
 
+/**
+ * Appends a mini-edge from the current cursor and optionally adopts `state` as the new cursor.
+ * `toOutside` stops membership growth when the transition leaves this merged state's subgraph.
+ */
 void MergedState::addState(ReuseStatePtr state, ActionPtr action, bool fromOutside, bool toOutside) {
+    // Extends the mini transition graph on `_cursor`; `fromOutside` records alternate entry states.
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
 
     if (fromOutside) {
@@ -55,31 +73,36 @@ void MergedState::addState(ReuseStatePtr state, ActionPtr action, bool fromOutsi
         _cursor = state;
         if (success.second && !_functionList.empty()) {
             _needReanalysed = true;
-            updateLaterJoinedState(state);
+            updateLaterJoinedState(state); // propagate function labels from `_root` onto the new snapshot
         }
     }
 }
 
+/** Stores a coarse merged-graph edge (parallel timeline) alongside mini-edges on reuse states. */
 void MergedState::addEdge(MergedStateGraphEdgePtr edge) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     _edges.push_back(std::move(edge));
 }
 
+/** Registers another merged node that can transition into this one (reverse link set). */
 void MergedState::addPrevious(MergedStatePtr state) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     _previous.insert(std::move(state));
 }
 
+/** Registers a successor merged node reachable from this one. */
 void MergedState::addNext(MergedStatePtr state) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     _next.insert(std::move(state));
 }
 
+/** Delegates to the root reuse state's textual summary for planner prompts. */
 std::string MergedState::stateDescription() {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     return _root->getStateDescriptionForMergedState();
 }
 
+/** DFS-style string of one mini-walk per start state; clears visit flags via `reset()` after building text. */
 std::string MergedState::walk() {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
 
@@ -101,6 +124,7 @@ std::string MergedState::walk() {
     return graphStream.str();
 }
 
+/** Clears visit marks on all `_miniEdges` under every aggregated reuse state so `walk()` can rerun. */
 void MergedState::reset() {
     for (ReuseStatePtr state : _states) {
         for (MiniGraphEdge &edge : state->_miniEdges) {
@@ -109,10 +133,14 @@ void MergedState::reset() {
     }
 }
 
+/**
+ * Ingests planner JSON (`Overview`, `Function List`), merges new functions with importance ordering,
+ * dedupes keys, refreshes navigation weights, pushes labels to widgets, and re-hooks action listeners.
+ */
 void MergedState::updateFromStateOverview(nlohmann::json &jsonData) {
     const PreferencePtr pref = Preference::inst();
     if (!pref || !pref->isLlmdroidEnabled()) {
-        return;
+        return; // merged-state / planner payloads disabled
     }
 
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
@@ -154,6 +182,7 @@ void MergedState::updateFromStateOverview(nlohmann::json &jsonData) {
     BLOG("updateFromStateOverview complete!");
 }
 
+/** Bulk-updates importance scores from an external completion map (creates entries when missing). */
 void MergedState::updateCompletedFunctions(std::map<std::string, int> completedFunctions) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     for (auto it : completedFunctions) {
@@ -166,6 +195,7 @@ void MergedState::updateCompletedFunctions(std::map<std::string, int> completedF
     }
 }
 
+/** Linear scan of `_edges` for temporal walks (`MergedStateGraph::temporalWalk`). */
 MergedStateGraphEdgePtr MergedState::getUnvisitedEdge() {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     for (const auto &edge : _edges) {
@@ -176,6 +206,7 @@ MergedStateGraphEdgePtr MergedState::getUnvisitedEdge() {
     return nullptr;
 }
 
+/** Marks one function as satisfied (importance 0) or seeds it with zero importance if newly named. */
 void MergedState::updateCompletedFunction(std::string func) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     auto it = _functionList.find(func);
@@ -186,18 +217,22 @@ void MergedState::updateCompletedFunction(std::string func) {
     }
 }
 
+/** Cached scalar combining navigation-function count and distance from the newest merged id. */
 int MergedState::getNavigationValue() const {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     return _navigationValue;
 }
 
+/** Recomputes `_navigationValue` from planner horizon `total` and internal `_navigationCount`. */
 void MergedState::updateNavigationValue(int total) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     int weight = total - _id;
-    _navigationValue = weight * _navigationCount;
+    _navigationValue = weight * _navigationCount; // scales "navigate-*" richness by distance from newest merged id
 }
 
+/** Removes undecorated duplicate keys when a `**name**` pair exists in `_functionList`. */
 void MergedState::filterFunctionList() {
+    // Drop bare keys when a `**key**` decorated variant exists (duplicate labeling from the overview parser).
     std::set<std::string> keyToDelete;
 
     for (const auto &pair : _functionList) {
@@ -218,7 +253,9 @@ void MergedState::filterFunctionList() {
     }
 }
 
+/** Counts function entries whose name contains "navigate" to feed `updateNavigationValue`. */
 void MergedState::updateNavigationCount() {
+    // Heuristic: count GPT functions whose name mentions "navigate" for weighting `updateNavigationValue`.
     int navigateFunctionNum = 0;
     for (const auto &it : _functionList) {
         if (it.first.find("navigate") != std::string::npos) {
@@ -228,10 +265,11 @@ void MergedState::updateNavigationCount() {
     _navigationCount = navigateFunctionNum;
 }
 
+/** Attaches `this` as `FunctionListener` on every action under all member states and syncs completion flags. */
 void MergedState::updateCompletedFunctions2() {
     const PreferencePtr pref = Preference::inst();
     if (!pref || !pref->isLlmdroidEnabled()) {
-        return;
+        return; // listener wiring only needed when merged-state tooling is on
     }
     for (ReuseStatePtr state : _states) {
         for (ActivityStateActionPtr action : state->getActions()) {
@@ -241,6 +279,7 @@ void MergedState::updateCompletedFunctions2() {
     }
 }
 
+/** Maps planner element ids to widgets on `_root`, then copies labels onto matching widgets in sibling reuse states. */
 void MergedState::setFunctionToWidget(const std::vector<std::pair<std::string, int>> &functionList) {
     for (size_t i = 0; i < functionList.size(); i++) {
         if (_functionList.find(functionList[i].first) == _functionList.end()) {
@@ -282,10 +321,12 @@ void MergedState::setFunctionToWidget(const std::vector<std::pair<std::string, i
     }
 }
 
+/** `FunctionListener` entry: forwards to `updateCompletedFunction2` after each executed action. */
 void MergedState::onActionExecuted(ActivityStateActionPtr action) {
-    updateCompletedFunction2(0, action);
+    updateCompletedFunction2(0, action); // invoked from `ActivityStateAction::visit` after visit count updates
 }
 
+/** When an action targeting a labeled widget runs, drop that function's importance to zero (treated as covered). */
 void MergedState::updateCompletedFunction2(int /*caller*/, ActivityStateActionPtr action) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     if (action->getVisitedCount() > 0) {
@@ -305,6 +346,7 @@ void MergedState::updateCompletedFunction2(int /*caller*/, ActivityStateActionPt
     }
 }
 
+/** Embeds overview text plus up to five highest-importance function names into `top5["State<id>"]`. */
 void MergedState::writeOverviewAndTop5Tojson(nlohmann::json &top5, bool ignoreImportance) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     std::string key = "State" + std::to_string(_id);
@@ -316,6 +358,7 @@ void MergedState::writeOverviewAndTop5Tojson(nlohmann::json &top5, bool ignoreIm
     top5[key]["FunctionList"] = sortedFunctions;
 }
 
+/** Minimal JSON export: overview string plus ordered function names (no importance values). */
 nlohmann::json MergedState::toJson() {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     nlohmann::json data;
@@ -328,6 +371,7 @@ nlohmann::json MergedState::toJson() {
     return data;
 }
 
+/** Sorts functions by descending importance; skips zero-importance rows unless `ignoreImportance` is true. */
 std::vector<std::string> MergedState::sortFunctionsByValue(bool ignoreImportance) {
     std::vector<std::pair<int, std::string>> pairs;
 
@@ -351,6 +395,7 @@ std::vector<std::string> MergedState::sortFunctionsByValue(bool ignoreImportance
     return sortedKeys;
 }
 
+/** Propagates widget function labels from `_root` onto a newly joined `state` and registers listeners there. */
 void MergedState::updateLaterJoinedState(ReuseStatePtr state) {
     const PreferencePtr pref = Preference::inst();
     if (!pref || !pref->isLlmdroidEnabled()) {
@@ -381,6 +426,7 @@ void MergedState::updateLaterJoinedState(ReuseStatePtr state) {
     }
 }
 
+/** True while at least one tracked function still has positive importance (not marked exercised). */
 bool MergedState::hasUntestedFunctions() const {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     bool flag = false;
@@ -393,6 +439,7 @@ bool MergedState::hasUntestedFunctions() const {
     return flag;
 }
 
+/** Applies a secondary labeling pass keyed by widget id string → function name; clears `_needReanalysed` on success. */
 void MergedState::updateFromReanalysis(nlohmann::json &jsonResp,
                                         std::unordered_map<std::string, std::vector<int>> &uniqueWidgets,
                                         std::unordered_map<int, WidgetInfo> &widgetDict) {
@@ -403,6 +450,7 @@ void MergedState::updateFromReanalysis(nlohmann::json &jsonResp,
 
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
 
+    // Keys are numeric widget ids as strings; values are canonical function labels from re-analysis.
     for (auto &it : jsonResp.items()) {
         try {
             int id = std::stoi(it.key());
@@ -426,12 +474,15 @@ void MergedState::updateFromReanalysis(nlohmann::json &jsonResp,
     _needReanalysed = false;
 }
 
+/** True after a late-joined state triggers relabeling; cleared when `updateFromReanalysis` finishes. */
 bool MergedState::needReanalysed() {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     return _needReanalysed;
 }
 
+/** Owns the timeline of merged logical screens plus an RL `Graph` used for concrete replay paths. */
 MergedStateGraph::MergedStateGraph(GraphPtr graph) {
+    // `_graph` supplies concrete RL paths; merged nodes layer GPT/temporal navigation on top.
     BLOG("MergedStateGraph init");
     _root = nullptr;
     _cursor = nullptr;
@@ -440,6 +491,7 @@ MergedStateGraph::MergedStateGraph(GraphPtr graph) {
     _graph = std::move(graph);
 }
 
+/** Appends the temporal chain `_root → … → _cursor`; `timeup` marks edges where exploration hit a time budget. */
 void MergedStateGraph::addNode(MergedStatePtr mergedState, ActionPtr action, bool timeup) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateGraphMutex);
     if (mergedState == _cursor) {
@@ -462,6 +514,7 @@ void MergedStateGraph::addNode(MergedStatePtr mergedState, ActionPtr action, boo
     }
 }
 
+/** Looks up a merged state in the set gathered by `addNode`; logs on miss. */
 MergedStatePtr MergedStateGraph::findMergedStateById(int id) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateGraphMutex);
 
@@ -474,6 +527,7 @@ MergedStatePtr MergedStateGraph::findMergedStateById(int id) {
     return nullptr;
 }
 
+/** Greedy walk from `_gptCursor` along unvisited merged edges, up to `transitCount` hops (for UTG / logs). */
 std::string MergedStateGraph::temporalWalk(int transitCount) {
     if (transitCount == 0) {
         return "No transition during this period.";
@@ -504,16 +558,19 @@ std::string MergedStateGraph::temporalWalk(int transitCount) {
     return ret;
 }
 
+/** Accumulates optional UTG / walk transcript lines (newline-terminated) for external reporting. */
 void MergedStateGraph::appendUtgString(std::string value) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateGraphMutex);
     _utgString.append(std::move(value)).append("\n");
 }
 
+/** Returns the concatenated UTG transcript built via `appendUtgString`. */
 std::string MergedStateGraph::getUtgString() const {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateGraphMutex);
     return _utgString;
 }
 
+/** Delegates to underlying RL `Graph` for concrete replay paths into `reuseStateId`. */
 std::vector<Path> MergedStateGraph::findPaths(int reuseStateId, bool forceRestart) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateGraphMutex);
     if (!_graph) {
@@ -522,6 +579,7 @@ std::vector<Path> MergedStateGraph::findPaths(int reuseStateId, bool forceRestar
     return _graph->findPath(reuseStateId, forceRestart);
 }
 
+/** Resolves which reuse snapshot anchored a function label (for replay targeting). */
 ReuseStatePtr MergedState::getTargetState(const std::string &function) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     auto it = _functionList.find(function);

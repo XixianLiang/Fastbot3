@@ -16,6 +16,10 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
+/**
+ * Adjacency queries on the boolean lattice of naming dimensions: one-step refinements / abstractions and the
+ * ordered list of all strictly finer namers, with memoization keyed by bitmask.
+ */
 
 #include "NamerLattice.h"
 
@@ -25,16 +29,23 @@ namespace fastbotx {
 namespace naming {
 namespace {
 
+    /** Number of set bits in `x`. */
     int popcount32(uint32_t x) {
         return __builtin_popcount(x);
     }
 
+    /** Dimension bitmask for `n` (same as `typeDimensionMask()`). */
     uint32_t maskOf(const Namer &n) { return n.typeDimensionMask(); }
 
 } // namespace
 
+    /** Holds a pointer into the shared `NamerFactory` cube (default is `NamerFactory::current()`). */
     NamerLattice::NamerLattice(const NamerFactory &factory) : factory_(&factory) {}
 
+    /**
+     * Namers whose mask adds exactly one bit vs `coarse`, still contains every bit of `coarse`, and satisfies
+     * `refinesTo(coarse)`. Results are sorted by mask value and cached per coarse mask.
+     */
     std::vector<NamerPtr> NamerLattice::immediateRefinements(const NamerPtr &coarse) const {
         std::vector<NamerPtr> out;
         if (!coarse) {
@@ -83,6 +94,10 @@ namespace {
         return out;
     }
 
+    /**
+     * Namers whose mask removes exactly one bit vs `fine`, with `fine` still refining them (`fine->refinesTo`).
+     * Empty when `fine` has no bits set. Cached per fine mask.
+     */
     std::vector<NamerPtr> NamerLattice::immediateAbstractions(const NamerPtr &fine) const {
         std::vector<NamerPtr> out;
         if (!fine) {
@@ -134,6 +149,10 @@ namespace {
         return out;
     }
 
+    /**
+     * Every namer strictly finer than `coarse` (strict superset mask, `refinesTo` holds), ordered first by
+     * increasing popcount, then by the sum of set-bit indices (`ordinalSum`), then by raw mask.
+     */
     std::vector<NamerPtr> NamerLattice::sortedAbove(const NamerPtr &coarse) const {
         std::vector<NamerPtr> out;
         if (!coarse) {
@@ -145,6 +164,7 @@ namespace {
             return itCached->second;
         }
 
+        /** Sum of bit positions that are 1 in `mask` (clears lowest set bit each iteration). Secondary sort key. */
         auto ordinalSum = [](uint32_t mask) -> unsigned {
             unsigned s = 0;
             while (mask != 0) {

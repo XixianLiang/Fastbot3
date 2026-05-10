@@ -1,4 +1,9 @@
 /**
+ * @file XPathNodeMapper.cpp
+ *
+ * pugixml-backed implementation of DOM storage, node registration, XPath evaluation, and optional
+ * stubs when the library is disabled at compile time.
+ *
  * @authors Zhao Zhang
  */
 
@@ -18,14 +23,17 @@ namespace gui_tree {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 
+    // --- pugixml implementation: document, DOM↔GUI map, XPath compile cache (all under `impl_->mu`) ---
+
+    /** Owning document plus bidirectional lookup from DOM nodes to GUI nodes; guarded by `mu`. */
     struct XPathNodeMapper::Impl {
         pugi::xml_document doc;
+        /** Populated by `registerNode`; XPath hits outside this map are skipped (no `GUITreeNode` to return). */
         std::map<pugi::xml_node, GUITreeNodePtr> node_map;
-        // Protects doc/node_map and the XPath caches for future parallel callers.
         mutable std::mutex mu;
-        // Cache compiled XPath queries to avoid repeated query compilation.
-        // nodesForXPath() is const, so caches are mutable.
+        /** Compiled expressions keyed by source string (`nodesForXPath` is logically const). */
         mutable std::unordered_map<std::string, pugi::xpath_query> xpath_cache;
+        /** Expressions that failed XPath compilation and must short-circuit without retrying compile. */
         mutable std::unordered_set<std::string> xpath_invalid_cache;
     };
 
@@ -35,6 +43,7 @@ namespace gui_tree {
     XPathNodeMapper &XPathNodeMapper::operator=(XPathNodeMapper &&) noexcept = default;
 
     bool XPathNodeMapper::loadXmlString(const std::string &utf8) {
+        // New `Impl` drops prior DOM, node_map, and XPath caches in one shot.
         impl_ = std::make_unique<Impl>();
         std::lock_guard<std::mutex> lk(impl_->mu);
         pugi::xml_parse_result pr =
@@ -42,6 +51,7 @@ namespace gui_tree {
         return static_cast<bool>(pr);
     }
 
+    /** Empty tag name clears `impl_` and yields a null node; otherwise allocates a fresh `Impl` and root. */
     pugi::xml_node XPathNodeMapper::initEmptyDocumentWithRoot(const char *tagName) {
         if (!tagName || !*tagName) {
             impl_.reset();
@@ -52,6 +62,7 @@ namespace gui_tree {
         return impl_->doc.append_child(tagName);
     }
 
+    /** Same document element `GUITreeFactory` uses as XPath evaluation context (`/` queries). */
     pugi::xml_node XPathNodeMapper::documentElement() const {
         if (!impl_) {
             return {};
@@ -65,6 +76,7 @@ namespace gui_tree {
             return;
         }
         std::lock_guard<std::mutex> lk(impl_->mu);
+        // Only element nodes participate in GUI mapping; attributes/text nodes are ignored.
         if (xmlNode && xmlNode.type() == pugi::node_element) {
             impl_->node_map[xmlNode] = gn;
         }
@@ -78,7 +90,6 @@ namespace gui_tree {
 
         std::lock_guard<std::mutex> lk(impl_->mu);
 
-        // Fast path: previously-known invalid expressions.
         if (impl_->xpath_invalid_cache.count(expr) != 0) {
             return out;
         }
@@ -88,20 +99,20 @@ namespace gui_tree {
             return out;
         }
 
-        // Compile once, reuse many times.
+        // Compile path: failures are permanent for this `expr` until process restart (cache lifetime).
         auto it = impl_->xpath_cache.find(expr);
         if (it == impl_->xpath_cache.end()) {
             try {
                 pugi::xpath_query q(expr.c_str());
                 it = impl_->xpath_cache.emplace(expr, std::move(q)).first;
             } catch (...) {
-                // Only mark invalid when compilation fails.
                 impl_->xpath_invalid_cache.insert(expr);
                 return out;
             }
         }
 
         try {
+            // Evaluate relative to the document element node-set context.
             pugi::xpath_node_set ns = it->second.evaluate_node_set(ctx);
             for (size_t i = 0; i < ns.size(); ++i) {
                 pugi::xpath_node xn = ns[i];
@@ -115,12 +126,12 @@ namespace gui_tree {
                 }
             }
         } catch (...) {
-            // Evaluation failure should behave like the original implementation:
-            // return empty without permanently poisoning the expression.
+            // Unlike compile failures, evaluation errors do not blacklist `expr` (transient data / context).
         }
         return out;
     }
 
+    /** Pretty-printed XML snapshot; not used on the hot path. */
     std::string XPathNodeMapper::dumpXmlString() const {
         if (!impl_) {
             return std::string();
@@ -133,6 +144,9 @@ namespace gui_tree {
 
 #else
 
+    // --- Stub build: factory can still link; XPath and DOM helpers are absent from this TU ---
+
+    /** Placeholder so `XPathNodeMapper` stays constructible when pugixml is compiled out. */
     struct XPathNodeMapper::Impl {};
 
     XPathNodeMapper::XPathNodeMapper() = default;
@@ -145,7 +159,7 @@ namespace gui_tree {
     }
 
     std::string XPathNodeMapper::dumpXmlString() const {
-        return std::string();
+        return {};
     }
 
 #endif

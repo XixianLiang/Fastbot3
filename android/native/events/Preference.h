@@ -3,6 +3,11 @@
  */
 /**
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ *
+ * @file Preference.h
+ * @brief Configuration singleton: loads `max.config` and related files, applies UI-tree preprocessing,
+ *        and exposes feature toggles for exploration, naming, and optional LLM-assisted modes.
+ *        External keys often keep the `max.ape*` prefix for compatibility with shared tooling.
  */
 #ifndef Preference_H_
 #define Preference_H_
@@ -21,7 +26,7 @@
 
 namespace fastbotx {
 
-    /// The class for describing the actions that user specified in preference file
+    /// User-defined action template parsed from preference files (xpath, bounds, shell command, throttling).
     class CustomAction : public Action {
     public:
         OperatePtr toOperate() const override;
@@ -86,6 +91,9 @@ namespace fastbotx {
         std::vector<XpathActionStep> steps;
     };
 
+    /**
+     * Global settings and XML preprocessing. Thread-safety follows `inst()` usage in the rest of the codebase.
+     */
     class Preference {
     public:
         Preference();
@@ -93,18 +101,18 @@ namespace fastbotx {
         static std::shared_ptr<Preference> inst();
 
         /**
-         * Resolve the page: apply black widgets, tree pruning, valid texts, etc. to the element tree.
-         * Call this before using the element for state/LLMTaskAgent when custom actions (max.xpath.actions) are not used.
+         * Preprocess the accessibility XML tree: avoid/modify rules, WebView policies, clickable patching,
+         * optional pseudo-text for icon buttons, and valid-text pruning. Call before building `State` / tasks.
          */
         void resolvePage(const std::string &activity, const ElementPtr &rootXML);
 
-        //@brief patch operate: 1. fuzz input text 2. ..
+        /** Mutates an executed operate (e.g. fuzzed input text) according to loaded fuzzing settings. */
         void patchOperate(const OperatePtr &opt);
 
-        // load resource mapping file, override the mapings from default file max.mapping,
+        /** Load resource id aliasing from the given path (overrides entries from the default `max.mapping`). */
         void loadMixResMapping(const std::string &resourceMappingPath);
 
-        // load label, text, button valid text dumped from apk
+        /** Load allowed vocabulary strings (labels, buttons) used when pruning non-listed text nodes. */
         void loadValidTexts(const std::string &pathOfValidTexts);
 
         bool checkPointIsInBlackRects(const std::string &activity, int pointX, int pointY);
@@ -119,10 +127,11 @@ namespace fastbotx {
          */
         bool useStaticReuseAbstraction() const;
 
+        /** When true, graph logic may collapse transitions by identical StateKey (max.apeGraphDedupByStateKey). */
         bool useApeGraphDedupByStateKey() const;
 
         /**
-         * Greedy Naming lattice steps in Model::buildApeStateKeyFromElementTree (0 = off).
+         * Greedy naming lattice steps in Model::buildApeStateKeyFromElementTree (0 = off).
          * max.config: max.apeNamingFixedPointSteps=N (capped, e.g. 256).
          */
         int getApeNamingFixedPointMaxIter() const { return _apeNamingFixedPointMaxIter; }
@@ -134,23 +143,23 @@ namespace fastbotx {
          */
         bool useApeNamingPeriodicRefinement() const { return _apeNamingPeriodicRefinement; }
         /**
-         * L-input normalization: WebView pruning.
+         * UI-tree normalization: WebView pruning.
          * max.config: max.apeAlwaysIgnoreWebView=true|false
          */
         bool useApeAlwaysIgnoreWebView() const { return _apeAlwaysIgnoreWebView; }
         /**
-         * L-input normalization: ignore actions inside WebView subtree.
+         * UI-tree normalization: ignore actions inside WebView subtree.
          * max.config: max.apeAlwaysIgnoreWebViewAction=true|false
          */
         bool useApeAlwaysIgnoreWebViewAction() const { return _apeAlwaysIgnoreWebViewAction; }
         /**
-         * L-input normalization: if a WebView subtree descendant count exceeds this threshold,
+         * UI-tree normalization: if a WebView subtree descendant count exceeds this threshold,
          * its children are cleared (keep WebView shell node).
          * max.config: max.apeIgnoreWebViewThreshold=N (0 disables)
          */
         int getApeIgnoreWebViewThreshold() const { return _apeIgnoreWebViewThreshold; }
         /**
-         * L-input normalization: extra WebView class patterns.
+         * UI-tree normalization: extra WebView class patterns.
          *
          * Comma/semicolon-separated patterns. Supported forms:
          * - Exact match:   android.webkit.WebView
@@ -163,17 +172,15 @@ namespace fastbotx {
             return _apeWebViewClassPatterns;
         }
         /**
-         * L-input normalization: compute stable pseudo text for icon-only widgets.
+         * UI-tree normalization: compute stable pseudo text for icon-only widgets.
          *
-         * Since native has no screenshot bitmap, we compute a deterministic hash from widget attributes
-         * (class/resource-id/bounds/index) and write it into @text when both text and content-desc are empty.
-         * This approximates the Java computeImageText() behavior.
+         * Without bitmap OCR, native builds a deterministic hash from widget attributes (class, resource id,
+         * bounds, index) and writes it into @text when both text and content-desc are empty (reference parity).
          * Default true. max.config: max.apeComputeImageText=true|false
-         * max.config: max.apeComputeImageText=true|false
          */
         bool useApeComputeImageText() const { return _apeComputeImageText; }
         /**
-         * L-input normalization: clickable patching (container->child) based on bounds.
+         * UI-tree normalization: clickable patching (container->child) based on bounds.
          * max.config: max.apePatchGUITree=true|false
          */
         bool useApePatchGUITree() const { return _apePatchGUITree; }
@@ -201,7 +208,7 @@ namespace fastbotx {
         bool useApeExcludeInvisibleNode() const { return _apeExcludeInvisibleNode; }
         /**
          * Only used when native is built without pugixml (no GUITree). If true, skip legacy widget/mask batch
-         * and run only runApeNamingAbstractionBatch (often empty). With FASTBOT_HAS_PUGIXML, Model always
+         * and run only the naming abstraction batch (often empty). With FASTBOT_HAS_PUGIXML, Model always
          * uses the naming batch for periodic refinement; this flag is ignored.
          */
         bool useApeNamingOnly() const { return _apeNamingOnly; }
@@ -231,9 +238,9 @@ namespace fastbotx {
 
         /**
          * Candidate selection mode among acceptable refinement hops.
-         * Values: first_accept | deepest_accept. (ND `refineActivityApeNaming` with Java candidates
-         * always sorts with NamingFactory::comparator and takes the first — see Model.cpp; this key
-         * mainly affects other naming-factory batch paths.)
+         * Values: first_accept | deepest_accept. Non-deterministic refinement sorts candidates with
+         * NamingFactory::comparator and typically accepts the first match in Model; this key mainly affects
+         * other naming-factory batch paths.
          * max.config: max.apeNamingActionRefineSelectionMode=<mode>
          */
         const std::string &getApeNamingActionRefineSelectionMode() const {
@@ -279,7 +286,8 @@ namespace fastbotx {
 
         /**
          * Rule profile for periodic action refinement baseline.
-         * Values: baseline | strict_baseline | java_rule_01_preview | java_rule_02_preview | java_rule_03_preview.
+         * Values: baseline | strict_baseline | java_rule_01_preview | java_rule_02_preview | java_rule_03_preview
+         * (legacy identifier strings for preview rule packs).
          * max.config: max.apeNamingActionRefineRuleProfile=<profile>
          */
         const std::string &getApeNamingActionRefineRuleProfile() const {
@@ -314,7 +322,7 @@ namespace fastbotx {
 
         /**
          * Mirrors Config.maxGUITreesPerState — NamingFactory.refine second gate bounds GUI trees recorded
-         * on the representative source state (Java: state.getGUITrees().size()).
+         * on the representative source state (GUI trees attached to that state).
          * max.config: max.apeMaxGuitreesPerState=N
          */
         int getApeMaxGuitreesPerState() const { return _apeMaxGuitreesPerState; }
@@ -328,13 +336,13 @@ namespace fastbotx {
 
         /**
          * Merged-widget / resolved-node count must exceed this to trigger evolveModel action refinement
-         * (Config.actionRefinementThreshold). max.config: max.apeActionRefinementThreshold=N (default 3, same as java)
+         * (Config.actionRefinementThreshold). max.config: max.apeActionRefinementThreshold=N (default 3, reference default)
          */
         int getApeActionRefinementThreshold() const { return _apeActionRefinementThreshold; }
 
         /**
          * Upper bound on StateKey sorted XPath count after rebuild (maxInitialNamesPerStateThreshold).
-         * max.config: max.apeMaxInitialNamesPerState=N (clamped, default 20, same as Java)
+         * max.config: max.apeMaxInitialNamesPerState=N (clamped, default 20, reference default)
          */
         int getApeMaxInitialNamesPerState() const { return _apeMaxInitialNamesPerState; }
 
@@ -348,21 +356,21 @@ namespace fastbotx {
         const LlmRuntimeConfig &getLlmRuntimeConfig() const { return this->_llmRuntimeConfig; }
 
         /**
-         * Whether the LLMDroid pipeline is on (MergedState / GPT exploration modes).
-         * Named under max.llm.* for discoverability; orthogonal to max.llm.enabled (LLMTaskAgent HTTP gate).
+         * Enables merged-state / planner-heavy exploration wiring (e.g. optional enrichment phases).
+         * Named under max.llm.* for discoverability; orthogonal to max.llm.enabled (LLM HTTP task gate).
          * Default false. Only the literal value "true" enables; omitted key or any other value stays off after reload.
-         * max.config: max.llm.llmdroid=true|false — see android/docs/MIGRATION_LLMDROID_B2.md.
+         * max.config: max.llm.llmdroid=true|false
          */
         bool isLlmdroidEnabled() const { return this->_llmdroidEnabled; }
         /**
-         * EXPLORE stage window in seconds for LLMDroid time-mode switching.
+         * EXPLORE stage window in seconds for time-mode switching when planner pipeline features are on.
          * max.config: max.llm.llmdroid.exploreWindowSec=N (default 120s).
          */
         int getLlmdroidExploreWindowSec() const { return this->_llmdroidExploreWindowSec; }
 
         /**
-         * Native unit tests only (`test_merged_state` / MIGRATION_LLMDROID_B2 §3.5).
-         * Production monkey code should rely on max.config `max.llm.llmdroid`, not this.
+         * Test hook to toggle planner pipeline features without rewriting config files.
+         * Production runs should prefer max.config `max.llm.llmdroid`.
          */
         void setLlmdroidEnabledForTests(bool enabled) { this->_llmdroidEnabled = enabled; }
 
@@ -507,7 +515,7 @@ namespace fastbotx {
         bool _apeEvolveModel{true};
         int _apeActionRefinementThreshold{3};
         int _apeMaxInitialNamesPerState{20};
-        // APE-aligned L-input normalization switches (WebView + clickable patch).
+        // UI-tree normalization switches (WebView handling + clickable patch), keyed by max.ape* in config.
         bool _apeAlwaysIgnoreWebView{false};
         bool _apeAlwaysIgnoreWebViewAction{false};
         int _apeIgnoreWebViewThreshold{64};
@@ -532,7 +540,7 @@ namespace fastbotx {
         /// Runtime LLM HTTP configuration loaded from base config.
         LlmRuntimeConfig _llmRuntimeConfig;
 
-        /// max.llm.llmdroid: LLMDroid B2 pipeline (default off). Invalid/missing value treated as false.
+        /// max.llm.llmdroid: planner / merged-state enrichment pipeline (default off). Invalid/missing => false.
         bool _llmdroidEnabled{false};
         /// max.llm.llmdroid.exploreWindowSec: time-mode EXPLORE window in seconds (default 120).
         int _llmdroidExploreWindowSec{120};
@@ -561,7 +569,7 @@ namespace fastbotx {
 
     public:
         static std::string InvalidProperty;
-        // static configs for android
+        // Default on-device paths when running under Android (see runtime initialization).
         static std::string DefaultResMappingFilePath;
         static std::string BaseConfigFilePath;      // /sdcard/max.config
         static std::string InputTextConfigFilePath; // /sdcard/max.strings

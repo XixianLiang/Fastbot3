@@ -5,6 +5,13 @@
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang, Tianming Liu, Chenxu Wang
  */
 
+/**
+ * @file AbstractAgent.cpp
+ *
+ * Core logic for the abstract agent base class: graph listener callbacks, action priority tuning,
+ * action resolution (including optional LLMDroid explore / navigate / test-function overlay when enabled).
+ */
+
 #ifndef AbstractAgent_CPP_
 #define AbstractAgent_CPP_
 
@@ -18,41 +25,56 @@
 #include "../desc/reuse/ReuseState.h"
 #include "../events/Preference.h"
 #include "LLMTaskAgent.h"
+/** Optional external coverage scalar for LLMDroid stagnation (host/runtime bridge; see implementation header). */
 #include "../llm/LlmJavaHttp.h"
 #include <cmath>
 #include <future>
 
 namespace fastbotx {
 
+    /** High-level LLMDroid scheduling phase. */
     enum class LlmdroidMode { EXPLORE, NAVIGATE, TEST_FUNCTION };
 
+    /**
+     * Bundles all LLMDroid-only runtime data: merged-state graph + GPT queue, explore/navigate scheduling,
+     * path replay during NAVIGATE, and optional external coverage stagnation detection.
+     */
     struct LlmdroidAgentOverlay {
         GraphPtr graph;
         MergedStateGraphPtr mergedStateGraph;
         std::unique_ptr<GPTAgent> gptAgent;
+        /** Monotonic index for newly created merged-state nodes. */
         int totalMergedState{0};
         double startTime{0};
+        /** Wall-clock deadline for the current EXPLORE window (time-based stagnation). */
         double nextStageTime{0};
         double exploreWindowMs{120000.0};
         ActivityStateActionPtr mCurrentAction;
         ReuseStatePtr mCurrentState;
 
-        /// same window/threshold defaults as LLMDroid AbstractAgent.
+        /** Code-coverage stagnation monitor (window size, initial threshold, max threshold). */
         CodeCoverageMonitor cvMonitor{80, 0.05, 1.0};
         static constexpr int kRateCapacity = 80;
+        /** Recent per-step growth rates; full window triggers stagnation under external coverage mode. */
         std::vector<double> growthRateWindow;
         double currentThreshold{0.05};
+        /** When true, EXPLORE phase requests transition to guided NAVIGATE. */
         bool shouldWait{false};
+        /** Activity-count baseline at the start of the current explore window (time-based mode). */
         size_t exploreWindowStartActivityCoverage{0};
 
         LlmdroidMode mode{LlmdroidMode::EXPLORE};
+        /** Planned route from graph search; front step supplies the next action in NAVIGATE mode. */
         Path currentPath;
         std::vector<Path> paths;
+        /** Target `ReuseState` id chosen by the GUIDE prompt; -1 if invalid. */
         int guideTarget{-1};
         int guideTime{0};
         int successGuideTime{0};
         int totalGuideTime{0};
+        /** Steps executed in TEST_FUNCTION before returning to explore. */
         int executedSteps{0};
+        /** Lower bound on reuse-state similarity when matching path steps (relaxed after retries). */
         float currentSimilarityCheck{0.6f};
         static constexpr float kMaxSimilarity = 0.6f;
         static constexpr float kMinSimilarity = 0.49f;
@@ -63,6 +85,17 @@ namespace fastbotx {
 
     namespace {
 
+        /** True when stagnation should use an externally supplied coverage scalar instead of wall-clock windows. */
+        inline bool llmdroidExternalCoverageEnabled() {
+            return isLlmdroidExternalCoverageEnabledFromJava();
+        }
+
+        /** Latest coverage scalar from the host runtime; NaN or unusable values are handled inside `CodeCoverageMonitor`. */
+        inline double llmdroidCoverageScalar() {
+            return getLlmdroidCoverageFromJava();
+        }
+
+        /** Reset GPTAgent promise/future pair so the next queued question can block until answered. */
         void llmdroidResetFuture(LlmdroidAgentOverlay &L) {
             if (!L.gptAgent) {
                 return;
@@ -74,10 +107,12 @@ namespace fastbotx {
             L.gptAgent->resetPromise(std::move(promInt), std::move(promAction));
         }
 
+        /** Placeholder for dumping merged-state debug snapshots (currently logs only). */
         void llmdroidDebugMergedStates(LlmdroidAgentOverlay & /*L*/) {
             BLOG("LLMDroid: debugMergedStates (file dump skipped)");
         }
 
+        /** Leave NAVIGATE/TEST_FUNCTION, reset timers and path state, enqueue REANALYSIS for stale merged nodes. */
         void llmdroidPrepareBackToExplore(LlmdroidAgentOverlay &L, AbstractAgent & /*agent*/) {
             BLOG("LLMDroid: prepareBackToExplore");
             L.mode = LlmdroidMode::EXPLORE;
@@ -110,6 +145,7 @@ namespace fastbotx {
             }
         }
 
+        /** Called when guided navigation finishes: either enter TEST_FUNCTION or fall back to EXPLORE. */
         void llmdroidOnNavigationOver(LlmdroidAgentOverlay &L, bool success, AbstractAgent &agent) {
             if (success) {
                 L.successGuideTime++;
@@ -127,6 +163,7 @@ namespace fastbotx {
 
         void llmdroidPrepareForNavigation(LlmdroidAgentOverlay &L, const ModelPtr &model, AbstractAgent &agent);
 
+        /** Retry with looser similarity, alternate path, or abort navigation after repeated failure. */
         void llmdroidOnNavigationFailed(LlmdroidAgentOverlay &L, const ModelPtr &model, AbstractAgent &agent) {
             BLOG("LLMDroid: onNavigationFailed guideTime=%d", L.guideTime);
             if (L.guideTime > 1 && L.currentSimilarityCheck > LlmdroidAgentOverlay::kMinSimilarity) {
@@ -147,6 +184,7 @@ namespace fastbotx {
             llmdroidOnNavigationOver(L, false, agent);
         }
 
+        /** Ask GPT for a GUIDE target id and populate `paths` / `currentPath` from the graph. */
         void llmdroidPrepareForNavigation(LlmdroidAgentOverlay &L, const ModelPtr &model, AbstractAgent &agent) {
             (void)model;
             (void)agent;
@@ -178,6 +216,10 @@ namespace fastbotx {
             }
         }
 
+        /**
+         * Advance along `currentPath` while the live reuse state matches the next hop (exact id, RESTART substitute,
+         * or fuzzy similarity). Returns 1 = continue NAVIGATE, 2 = reached guide destination, 3 = mismatch / give up.
+         */
         int llmdroidGuideCheck(LlmdroidAgentOverlay &L) {
             bool isCorrect = false;
             int targetId = -1;
@@ -234,6 +276,7 @@ namespace fastbotx {
             return 3;
         }
 
+        /** Queue at most five TEST_FUNCTION GPT actions per navigation episode. */
         void llmdroidPrepareTestFunction(LlmdroidAgentOverlay &L) {
             if (!L.gptAgent || !L.mCurrentState) {
                 return;
@@ -252,6 +295,7 @@ namespace fastbotx {
             }
         }
 
+        /** Pick an existing merged-state bucket for `state`, or nullptr to allocate a new `MergedState`. */
         MergedStatePtr findMostSimilarReuse(LlmdroidAgentOverlay &L, const ReuseStatePtr &state) {
             constexpr float kThreshold = 0.6f;
             MergedStatePtr origin = state->getMergedState();
@@ -289,14 +333,15 @@ namespace fastbotx {
             return current;
         }
 
+        /** One scheduler tick: stagnation detection in EXPLORE, path following in NAVIGATE, GPT actions in TEST_FUNCTION. */
         void llmdroidSwitchMode(LlmdroidAgentOverlay &L, const ModelPtr &model, AbstractAgent &agent) {
             const double now = currentStamp();
 
             if (L.mode == LlmdroidMode::EXPLORE) {
-                const bool useCoverageMode = isLlmdroidExternalCoverageEnabledFromJava();
-                if (useCoverageMode) {
-                    const double javaCoverageMetric = getLlmdroidCoverageFromJava();
-                    const auto res = L.cvMonitor.update(javaCoverageMetric);
+                const bool useExternalCoverage = llmdroidExternalCoverageEnabled();
+                if (useExternalCoverage) {
+                    const double coverageScalar = llmdroidCoverageScalar();
+                    const auto res = L.cvMonitor.update(coverageScalar);
                     L.currentThreshold = res.second;
                     L.growthRateWindow.push_back(res.first);
                     if (static_cast<int>(L.growthRateWindow.size()) > LlmdroidAgentOverlay::kRateCapacity) {
@@ -355,7 +400,7 @@ namespace fastbotx {
                     llmdroidOnNavigationOver(L, true, agent);
                     return;
                 }
-                else{
+                else {
                     llmdroidOnNavigationFailed(L, model, agent);
                     return;
                 }
@@ -415,6 +460,10 @@ namespace fastbotx {
         this->_validateFilter.reset();
     }
 
+    /**
+     * Lazily constructs merged-state graph + GPT worker when LLMDroid is enabled in preferences.
+     * No-op if already initialized, preferences disallow LLMDroid, or the model pointer expired.
+     */
     void AbstractAgent::ensureLlmdroidRuntime() {
         if (_llmdroid) {
             return;
@@ -441,10 +490,14 @@ namespace fastbotx {
         _llmdroid->exploreWindowStartActivityCoverage =
                 _llmdroid->graph ? _llmdroid->graph->getVisitedActivities().size() : 0;
         BLOG("LLMDroid: mode source=%s",
-             isLlmdroidExternalCoverageEnabledFromJava() ? "external-coverage(jacoco/androlog)" : "time-mode");
-        BLOG("LLMDroid: time-mode explore window configured to %d sec", exploreWindowSec);
+             llmdroidExternalCoverageEnabled() ? "external-coverage(instrumentation)" : "time-window");
+        BLOG("LLMDroid: explore window (time-window mode) configured to %d sec", exploreWindowSec);
     }
 
+    /**
+     * Attach an incoming reuse snapshot to the merged-state graph, optionally notify GPT (STATE_OVERVIEW),
+     * then run one LLMDroid scheduling step (`llmdroidSwitchMode`).
+     */
     void AbstractAgent::processState(const ReuseStatePtr &state) {
         if (!state) {
             return;
@@ -488,6 +541,7 @@ namespace fastbotx {
             L.totalMergedState++;
             state->setMergedState(mergedState);
             const stringPtr actStr = state->getActivityString();
+            // Skip LLM prompts for obvious framework/system screens.
             if (actStr && actStr.get() && actStr->find("com.android.") == std::string::npos) {
                 QuestionPayload qp;
                 qp.type = AskModel::STATE_OVERVIEW;
@@ -554,7 +608,7 @@ namespace fastbotx {
         } else {
             _activityStableCounter = 0;
         }
-        // APE uses edge.isCircle() && theta==0; approximate with same abstract state identity.
+        // Self-loop on the abstract state hash: treat as a stable "no progress" transition for counting.
         if (fromState->hash() == toState->hash()) {
             _stateStableCounter++;
         } else {
@@ -591,7 +645,11 @@ namespace fastbotx {
         _newAction = nullptr;  // Clear new action, wait for next selection
     }
 
-    void AbstractAgent::validateAllNewActionsLikeApe(const StatePtr &newState) {
+    /**
+     * Re-run `resolveAt` for every model-backed targeted action on `newState` so coordinates and targets
+     * match the graph timestamp before execution (same ordering as the legacy host pipeline).
+     */
+    void AbstractAgent::validateAllNewActions(const StatePtr &newState) {
         if (!newState) {
             return;
         }
@@ -713,6 +771,7 @@ namespace fastbotx {
         this->adjustActions();
 
         const PreferencePtr pref = Preference::inst();
+        // LLMDroid overrides RL selection while navigating the computed path or executing GPT test actions.
         if (pref && pref->isLlmdroidEnabled() && _llmdroid) {
             LlmdroidAgentOverlay &L = *_llmdroid;
             if (L.mode == LlmdroidMode::NAVIGATE) {

@@ -1,9 +1,10 @@
 /**
+ * @file FeatureSelector.h
+ *
+ * Online feature utilities for the handcrafted encoder pipeline (`FEATURE_ENGINEERING_OPTIMIZATION`, strategy 4):
+ * drop stale or redundant dimensions using running variance and Pearson correlation on a sliding window.
+ *
  * @authors Zhao Zhang
- */
-/**
- * Runtime dynamic feature selection (FEATURE_ENGINEERING_OPTIMIZATION strategy 4).
- * Variance-based and correlation-based selectors for optional use with HandcraftedStateEncoder.
  */
 #ifndef FASTBOTX_FEATURE_SELECTOR_H
 #define FASTBOTX_FEATURE_SELECTOR_H
@@ -17,13 +18,16 @@
 namespace fastbotx {
 
     /**
-     * Variance-based feature selection: online Welford variance, mask out low-variance dimensions.
-     * Output dimension is unchanged; disabled dimensions are zeroed so L2 renormalization can be applied.
+     * Variance gate per coordinate: Welford's online algorithm updates mean and sum of squared deviations.
+     * After each observation, dimensions whose sample variance falls below `MIN_VARIANCE_THRESHOLD` are masked off.
+     * Vector length is preserved (`applyMask` zeros disabled slots; `selectFeatures` compacts).
      */
     class FeatureSelector {
     public:
+        /** Dimensions at or below this variance (after at least two samples) are treated as inactive. */
         static constexpr double MIN_VARIANCE_THRESHOLD = 0.01;
 
+        /** Ingests one feature vector; no-op on size mismatch with the first seen dimension. */
         void updateStatistics(const std::vector<double> &features) {
             if (features.empty()) return;
             const size_t dim = features.size();
@@ -44,15 +48,16 @@ namespace fastbotx {
             updateMaskFromVariance();
         }
 
-        /** Returns variance for dimension i (sample variance). */
+        /** Sample variance for index `i` (Bessel-corrected when `_sampleCount` >= 2). */
         double getVariance(size_t i) const {
             if (i >= _m2.size() || _sampleCount < 2) return 0.0;
             return _m2[i] / static_cast<double>(_sampleCount - 1);
         }
 
+        /** Per-dimension enable bits (true = pass variance check). */
         const std::vector<bool> &getMask() const { return _mask; }
 
-        /** Same-size output: disabled dimensions set to 0 (caller may L2-renormalize). */
+        /** Elementwise product with the mask; disabled indices become 0.0. */
         std::vector<double> applyMask(const std::vector<double> &features) const {
             std::vector<double> out = features;
             if (out.size() != _mask.size()) return out;
@@ -61,7 +66,7 @@ namespace fastbotx {
             return out;
         }
 
-        /** Subset of features (only enabled); dimension may change. */
+        /** Contiguous vector of only active coordinates (length can be less than input). */
         std::vector<double> selectFeatures(const std::vector<double> &features) const {
             std::vector<double> selected;
             selected.reserve(features.size());
@@ -75,6 +80,7 @@ namespace fastbotx {
 
     private:
         std::vector<double> _mean;
+        /** Aggregated second moment helper for Welford variance (`m2 / (n-1)` gives sample variance). */
         std::vector<double> _m2;
         std::vector<bool> _mask;
         size_t _sampleCount = 0;
@@ -89,25 +95,28 @@ namespace fastbotx {
     };
 
     /**
-     * Correlation-based feature selection: keep a sliding window of samples,
-     * compute Pearson correlation matrix, drop one of each high-correlation pair (keep higher variance).
+     * Redundancy pruning: maintains a FIFO of recent feature vectors, estimates Pearson correlations,
+     * and disables the lower-variance member of each pair whose |r| exceeds `CORRELATION_THRESHOLD`.
+     * Greedy `buildMask` may disable multiple indices when several pairs overlap.
      */
     class CorrelationBasedSelector {
     public:
         static constexpr double CORRELATION_THRESHOLD = 0.7;
         static constexpr size_t DEFAULT_MAX_SAMPLES = 200;
+        /** Below this window length `computeCorrelation` is a no-op (stable correlations need mass). */
         static constexpr size_t MIN_SAMPLES_FOR_CORRELATION = 30;
 
         explicit CorrelationBasedSelector(size_t maxSamples = DEFAULT_MAX_SAMPLES)
                 : _maxSamples(maxSamples) {}
 
+        /** Pushes a sample; drops the oldest when the deque exceeds `_maxSamples`. */
         void addSample(const std::vector<double> &features) {
             if (features.empty()) return;
             if (_samples.size() >= _maxSamples) _samples.pop_front();
             _samples.push_back(features);
         }
 
-        /** Call after addSample(); recomputes correlation and mask when enough samples. */
+        /** Recomputes means, variances, full correlation matrix, then `buildMask()` when sample count allows. */
         void computeCorrelation() {
             const size_t n = _samples.size();
             if (n < MIN_SAMPLES_FOR_CORRELATION) return;
@@ -172,6 +181,7 @@ namespace fastbotx {
         std::vector<std::vector<double>> _correlationMatrix;
         std::vector<bool> _mask;
 
+        /** For each highly correlated pair (i,j), disable the index with smaller marginal variance. */
         void buildMask() {
             _mask.assign(_featureCount, true);
             for (size_t i = 0; i < _featureCount; ++i) {

@@ -2,6 +2,10 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file DeviceOperateWrapper.cpp
+ *
+ * JSON parse/serialize helpers and text helpers for `DeviceOperateWrapper`.
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 #include "DeviceOperateWrapper.h"
@@ -11,13 +15,6 @@
 
 namespace fastbotx {
 
-
-    /**
-     * @brief Default constructor creates a NOP operation
-     * 
-     * Initializes all fields to default values. The operation will be
-     * a no-operation (NOP) by default.
-     */
     DeviceOperateWrapper::DeviceOperateWrapper()
             : act(ActionType::NOP), throttle(0), waitTime(0), editable(false), clear(false),
               rawInput(false) {
@@ -49,28 +46,13 @@ namespace fastbotx {
         return *this;
     }
 
-    /**
-     * @brief Set text content for text input operations
-     * 
-     * Sets the text to be input, truncating if it exceeds 1000 characters
-     * to prevent excessively long input operations.
-     * 
-     * Performance optimization:
-     * - Truncates text to 1000 chars to limit operation size
-     * 
-     * @param text The text to set (will be truncated if too long)
-     * @return The actual text that was set (may be truncated)
-     * 
-     * @warning Logs a warning if text is set on a non-editable element
-     */
     std::string DeviceOperateWrapper::setText(const std::string &text) {
         this->_text = text;
-        // Performance: Limit text length to prevent excessive input operations
         if (this->_text.length() > 1000) {
             this->_text = this->_text.substr(0, 999);
         }
         if (!this->editable) {
-            LOGW("set text to a none editable node %s", this->toString().c_str());
+            LOGW("set text on a non-editable node %s", this->toString().c_str());
         }
         return this->_text;
     }
@@ -87,7 +69,7 @@ namespace fastbotx {
             ActionType jact = stringToActionType(actionStr);
             if (jact == ActionType::ActTypeSize) {
                 BLOGE("Error action Type: %s (length: %zu), keeping default NOP", actionStr.c_str(), actionStr.length());
-                // Keep default NOP action instead of returning, to avoid leaving object in invalid state
+                // Leave freshly constructed defaults (NOP) instead of half-parsed state.
                 return;
             }
             this->act = jact;
@@ -100,16 +82,15 @@ namespace fastbotx {
                     this->pos.right = positionArray[2];
                     this->pos.bottom = positionArray[3];
                 } else if (jact > ActionType::BACK && jact < ActionType::SHELL_EVENT) {
-                    BLOG(" ERROR: server action Parse pos length %d", (int) positionArray.size());
+                    BLOG(" ERROR: remote action JSON pos length %d", (int) positionArray.size());
                 }
             } else {
-                BLOGE("no pos element in server action %s", optJsonStr.c_str());
+                BLOGE("no pos element in remote action %s", optJsonStr.c_str());
             }
             this->throttle = static_cast<float>(getJsonValue<int>(retJson, "throttle", 0));
             this->waitTime = getJsonValue<int>(retJson, "wait_time", 0);
         }
-        catch (nlohmann::json::exception &e) // may some char encoding error
-        {
+        catch (nlohmann::json::exception &e) {
             BLOGE("Parse Operate For Device Error! %s", e.what());
         }
     }
@@ -142,8 +123,7 @@ namespace fastbotx {
             retJson["widget"] = this->widget;
             ret = retJson.dump();
         }
-        catch (nlohmann::json::exception &e) // may some char encoding error
-        {
+        catch (nlohmann::json::exception &e) {
             BLOGE("Parse Operate For Device Error! %s", e.what());
             std::string actStr;
             if (this->act >= 0 && this->act < ActionType::ActTypeSize) {
@@ -168,6 +148,7 @@ namespace fastbotx {
     }
 
 
+    /** Shared NOP envelope for callers that need a non-null `OperatePtr` default. */
     std::shared_ptr<DeviceOperateWrapper> DeviceOperateWrapper::OperateNop = std::make_shared<DeviceOperateWrapper>();
 
 }

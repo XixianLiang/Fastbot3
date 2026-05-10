@@ -1,11 +1,4 @@
 /**
- * @authors Zhao Zhang, Tianming Liu, Chenxu Wang
- */
-
-#ifndef MergedState_H_
-#define MergedState_H_
-
-/**
  * Screen-level merge graph for LLMDroid GPT / navigation path planning.
  * Does not replace Graph for RL. GPT-mutating entry points (overview / reanalysis / listeners) are
  * gated by Preference::isLlmdroidEnabled();
@@ -22,7 +15,12 @@
  *   `appendUtgString`, `getUtgString`.
  * Phase 4 should **serialize** one in-flight GPT apply with graph updates or rely on locks below.
  * `MergedState::_mergedStateMutex` is **recursive** so `walk`→`reset` and overview→`sortFunctionsByValue` nest safely.
+ 
+ * @authors Zhao Zhang, Tianming Liu, Chenxu Wang
  */
+
+#ifndef MergedState_H_
+#define MergedState_H_
 
 #include "Action.h"
 #include "../model/GraphPath.h"
@@ -47,12 +45,14 @@ typedef std::shared_ptr<MergedState> MergedStatePtr;
 typedef std::vector<MergedStatePtr> MergedStateVec;
 typedef std::shared_ptr<MergedStateVec> MergedStateVecPtr;
 
+/** Directed edge in the merged-state timeline (`MergedStateGraph`): successor, label action, visit flags. */
 class MergedStateGraphEdge {
 public:
     MergedStatePtr _next;
     ActionPtr _action;
     uintptr_t _hash{};
     bool _isVisited{false};
+    /** When true, exploration stopped at a time/resource budget on this transition. */
     bool _shouldStop{false};
 
     MergedStateGraphEdge(MergedStatePtr next, ActionPtr action, bool shouldStop);
@@ -66,6 +66,7 @@ public:
 
 typedef std::shared_ptr<MergedStateGraphEdge> MergedStateGraphEdgePtr;
 
+/** Associates a widget record with a named function during reanalysis (`updateFromReanalysis`). */
 struct WidgetInfo {
     std::string function;
     ReuseStatePtr state;
@@ -73,11 +74,16 @@ struct WidgetInfo {
     WidgetPtr widget;
 };
 
+/** Planner prioritization: remaining importance score and which reuse state anchored the label. */
 struct FunctionDetail {
     int importance{};
     ReuseStatePtr state;
 };
 
+/**
+ * One merged logical screen: set of related `ReuseState` rows, mini transition edges on those rows,
+ * and planner bookkeeping (`_overview`, `_functionList`).
+ */
 class MergedState : public HashNode,
                     public FunctionListener,
                     public std::enable_shared_from_this<MergedState> {
@@ -88,76 +94,78 @@ public:
 
     int getId() { return _id; }
 
-    /** GPT worker: snapshot of overview (locked). */
+    /** Thread-safe copy of the overview paragraph (same mutex as `_functionList`). */
     std::string getOverview() const;
 
-    /** GPT worker: copy of function list (locked, same mutex as overview mutations). */
+    /** Thread-safe snapshot map function name → detail (importance + anchor state). */
     std::map<std::string, FunctionDetail> getFunctionList() const;
 
     uintptr_t hash() const override { return _hashcode; }
 
-    /** Monkey / exploration thread. */
+    /** Reverse link in the merged-state DAG (`MergedStateGraph`). */
     void addPrevious(MergedStatePtr state);
 
-    /** Monkey / exploration thread. */
+    /** Forward link in the merged-state DAG. */
     void addNext(MergedStatePtr state);
 
-    /** Monkey / exploration thread. */
+    /** Stores one coarse graph hop (`MergedStateGraph` timeline). */
     void addEdge(MergedStateGraphEdgePtr edge);
 
-    /** Monkey / exploration thread. */
+    /** Extends intra-screen mini-graph and membership; see implementation for `fromOutside` / `toOutside`. */
     void addState(ReuseStatePtr state, ActionPtr action, bool fromOutside, bool toOutside);
 
-    /** Monkey / exploration thread. */
+    /** Next unvisited edge along `_edges` for temporal walks. */
     MergedStateGraphEdgePtr getUnvisitedEdge();
 
-    /** GPT worker. */
+    /** Human-readable summary from the root reuse state (planner prompts). */
     std::string stateDescription();
 
-    /** GPT worker (calls reset() with mutex held). */
+    /** Renders mini-graph lines from `_starts`; resets visit bits when done. */
     std::string walk();
 
-    /** GPT worker; or called from walk() with mutex already held. */
+    /** Clears `_miniEdges` visit marks across all aggregated reuse states. */
     void reset();
 
-    /** GPT worker: writes _overview / _functionList / widgets. */
+    /** Applies planner JSON: overview text, function list with element ids, widget labeling, listeners. */
     void updateFromStateOverview(nlohmann::json &jsonData);
 
-    /** GPT worker. */
+    /** Secondary labeling pass keyed by widget id strings from replanning output. */
     void updateFromReanalysis(nlohmann::json &jsonResp,
                               std::unordered_map<std::string, std::vector<int>> &uniqueWidgets,
                               std::unordered_map<int, WidgetInfo> &widgetDict);
 
-    /** GPT worker. */
+    /** Bulk-importance update from an external completion map. */
     void updateCompletedFunctions(std::map<std::string, int> completedFunctions);
 
-    /** Monkey / exploration thread (FunctionListener path). */
+    /** Marks a single function as exercised (importance forced to zero). */
     void updateCompletedFunction(std::string func);
 
     std::set<ReuseStatePtr> &getReuseStates() { return _states; }
 
     int getNavigationValue() const;
 
-    /** GPT worker. */
+    /** Recomputes navigation heuristic from global planner horizon `total`. */
     void updateNavigationValue(int total);
 
-    /** Monkey / exploration thread (via Action::visit). */
+    /** `FunctionListener`: marks matching function importance zero after an executed action. */
     void onActionExecuted(ActivityStateActionPtr action) override;
 
-    /** GPT worker. */
+    /** Writes `top5["State<id>"]` with overview plus top function keys. */
     void writeOverviewAndTop5Tojson(nlohmann::json &top5, bool ignoreImportance = false);
 
-    /** GPT worker. */
+    /** Minimal JSON dump for persistence/debug. */
     nlohmann::json toJson();
 
-    /** Monkey / exploration thread (often from addState with mutex held). */
+    /** Propagates widget function labels when new reuse states join after the first overview pass. */
     void updateLaterJoinedState(ReuseStatePtr state);
 
-    /** GPT worker. */
+    /** True while some tracked function still has positive importance. */
     bool hasUntestedFunctions() const;
 
+    /** Pending relabel after late join; cleared when `updateFromReanalysis` succeeds. */
     bool needReanalysed();
 
+    /** Anchor reuse state recorded for a named function (replay targeting). */
     ReuseStatePtr getTargetState(const std::string &function);
 
 private:
@@ -181,7 +189,7 @@ private:
 
     std::vector<ReuseStatePtr> _starts;
     ReuseStatePtr _cursor;
-    /// Protects _overview, _functionList, mini/course graph fields, _navigation* , _needReanalysed.
+    /** Guards overview text, function map, merged navigation fields, and mini-graph mutations on this object. */
     mutable std::recursive_mutex _mergedStateMutex;
 
     std::set<MergedStatePtr> _previous;
@@ -197,11 +205,14 @@ private:
     bool _needReanalysed = false;
 };
 
+/**
+ * Outer timeline of merged screens plus optional RL path queries into underlying reuse-state ids.
+ */
 class MergedStateGraph {
 public:
     explicit MergedStateGraph(GraphPtr graph);
 
-    /** Monkey / exploration thread. */
+    /** Appends the next merged node along exploration (`timeup` marks budget-limited hops). */
     void addNode(MergedStatePtr mergedState, ActionPtr action, bool timeup);
 
     MergedStatePtr getCurrentNode() { return _cursor; }
@@ -210,25 +221,26 @@ public:
 
     MergedStatePtr findMergedStateById(int id);
 
-    /** GPT worker. */
+    /** Format-only walk along unvisited merged edges for logging / UTG strings. */
     std::string temporalWalk(int transitCount);
 
     std::set<MergedStatePtr> &getMergedStates() { return _mergedStates; }
 
-    /** GPT worker. */
     void appendUtgString(std::string value);
 
-    /** GPT worker: returns a copy under lock. */
+    /** Returns accumulated transcript (mutex held during copy). */
     std::string getUtgString() const;
 
     /**
-     * Shortest paths on the underlying {@link Graph} reuse-state transition chain.
-     * @param reuseStateId target {@link ReuseState} id (not MergedState id).
+     * Shortest paths on the underlying `Graph` transition model (reuse-state ids, not merged-state ids).
+     *
+     * @param reuseStateId Target `ReuseState::getIdi()` value.
+     * @param forceRestart Passed through to `Graph::findPath`.
      */
     std::vector<Path> findPaths(int reuseStateId, bool forceRestart);
 
 private:
-    /// Recursive: findPaths may call findMergedStateById while holding this lock.
+    /** Guards timeline mutators and readers; recursive because `findPaths` may consult merged ids internally. */
     mutable std::recursive_mutex _mergedStateGraphMutex;
 
     MergedStatePtr _root;

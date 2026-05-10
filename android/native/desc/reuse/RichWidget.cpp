@@ -2,6 +2,11 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file RichWidget.cpp
+ *
+ * Implements rich hashing for reuse states: combines structural ids with optional descendant text,
+ * and supports masked hashes for dynamic state abstraction.
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 #ifndef RichWidget_CPP_
@@ -18,40 +23,22 @@ namespace fastbotx {
 
 
     /**
-     * @brief Constructor creates RichWidget with enhanced hash computation
-     * 
-     * Computes hash code based on:
-     * - Class name
-     * - Resource ID
-     * - Supported actions
-     * - Valid text (from widget or its children)
-     * 
-     * Performance optimization:
-     * - Uses efficient hash combination with bit shifting
-     * - Only includes text hash if text is not empty
-     * 
-     * @param parent Parent widget (moved to avoid copy)
-     * @param element XML Element to create widget from
+     * Builds `_widgetHashcodeBase` from class, resource id, and supported action kinds, then XORs in a
+     * text term when `getValidTextFromWidgetAndChildren` finds displayable copy (node or descendants).
      */
     RichWidget::RichWidget(WidgetPtr parent, const ElementPtr &element)
             : Widget(std::move(parent), element) {
-        // Performance optimization: Use fast string hash function instead of std::hash
-        // Compute hash components
         uintptr_t hashcode1 = fastbotx::fastStringHash(this->_clazz);
         uintptr_t hashcode2 = fastbotx::fastStringHash(this->_resourceID);
-        
-        // Combine action types into hash
+
         uintptr_t hashcode3 = 0x1;
         for (ActionType actionType: this->getActions()) {
             hashcode3 ^= (127U * std::hash<int>{}(static_cast<int>(actionType)));
         }
-        
-        // Combine class, resource ID, and actions
+
         this->_widgetHashcodeBase = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^ ((127U * hashcode3 << 1));
         this->_widgetHashcode = this->_widgetHashcodeBase;
-        
-        // Include text from widget or children if available
-        // Use fast string hash for better performance
+
         std::string elementText = this->getValidTextFromWidgetAndChildren(element);
         if (!elementText.empty()) {
             this->_widgetHashcode ^= (0x79b9 + (fastbotx::fastStringHash(elementText) << 1));
@@ -59,23 +46,11 @@ namespace fastbotx {
     }
 
     /**
-     * @brief Get valid text from widget or its children (iterative search)
-     * 
-     * Searches for valid text in the widget and its children using iterative
-     * depth-first search instead of recursion. This avoids stack overflow for
-     * deeply nested UI trees and reduces function call overhead.
-     * 
-     * Performance optimizations:
-     * - Uses iterative search instead of recursion (avoids stack overflow)
-     * - Pre-allocates stack space to reduce reallocations
-     * - Early return when text is found
-     * - Uses const reference for children to avoid copying
-     * 
-     * @param element Element to get text from
-     * @return Valid text from widget or its children/offspring, empty if none found
+     * Static reuse abstraction: recursive gather that skips borrowing labels from clickable children
+     * (matches the historical static-reuse text policy). Otherwise: iterative DFS over `validText` fields.
      */
     std::string RichWidget::getValidTextFromWidgetAndChildren(const ElementPtr &element) const {
-        // Legacy static reuse mode: mimic old ReuseWidget::getElementText behavior
+        // Static reuse abstraction path (distinct rules from dynamic mode below).
         if (Preference::inst() && Preference::inst()->useStaticReuseAbstraction()) {
             std::function<std::string(const ElementPtr &)> getElementText =
                 [&getElementText](const ElementPtr &elem) -> std::string {
@@ -99,7 +74,6 @@ namespace fastbotx {
             return getElementText(element);
         }
 
-        // Dynamic abstraction mode: use iterative DFS over validText (current RichWidget behavior)
         if (!element->validText.empty()) {
             return element->validText;
         }
@@ -135,6 +109,7 @@ namespace fastbotx {
     }
 
     uintptr_t RichWidget::hashWithMask(WidgetKeyMask mask) const {
+        // Start from the structural mix (class / resource / actions); fold in base `Widget` attribute hashes per mask bit.
         uintptr_t h = _widgetHashcodeBase;
         if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::Text)) h ^= _hashText;
         if (mask & static_cast<WidgetKeyMask>(WidgetKeyAttr::ContentDesc)) h ^= _hashContentDesc;

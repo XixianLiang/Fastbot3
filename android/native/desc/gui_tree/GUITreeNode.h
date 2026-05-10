@@ -34,44 +34,63 @@ namespace naming {
 namespace gui_tree {
 
     class GUITreeNode;
+    /** Shared ownership for tree nodes (required for `enable_shared_from_this` and factories). */
     using GUITreeNodePtr = std::shared_ptr<GUITreeNode>;
+    /** Parent links without extending lifetime (cycle-safe against strong parent→child edges). */
     using GUITreeNodeWeakPtr = std::weak_ptr<GUITreeNode>;
 
+    /**
+     * One widget/view in a snapshot hierarchy: accessibility-like fields, cached stats for planning,
+     * and naming hooks (`xpath_name_`, current Namelet). Built by `GUITreeFactory` from XML or Element trees.
+     */
     class GUITreeNode : public std::enable_shared_from_this<GUITreeNode> {
     public:
+        /** Allocates a node; pass an empty weak_ptr for the tree root (see `.cpp`). */
         static GUITreeNodePtr create(const GUITreeNodeWeakPtr &parent);
 
         ~GUITreeNode();
 
+        /** Non-copyable; mirror Java-side nodes by reconstruction or factory parse. */
         GUITreeNode(const GUITreeNode &) = delete;
+        /** Non-copy-assignable. */
         GUITreeNode &operator=(const GUITreeNode &) = delete;
 
+        /** Parent node, or nullptr when this is the root or the parent has expired. */
         GUITreeNodePtr getParent() const { return parent_.lock(); }
 
+        /** Direct children in DOM/XML traversal order (same as Java `addChild`). */
         const std::vector<GUITreeNodePtr> &getChildren() const { return children_; }
 
-        /** Append child (Java addChild — order preserved). */
+        /** Inserts `child` at the end of `children_` and sets its parent weak ref to this node. */
         void appendChild(GUITreeNodePtr child);
 
+        /** Index among siblings in the dumped hierarchy (uiautomator `index`). */
         int getIndex() const { return index_; }
         void setIndex(int v) { index_ = v; }
 
+        /** Depth from root (root depth is 1). */
         int getDepth() const { return depth_; }
+        /** Total nodes in this subtree including self; maintained by post-order passes (e.g. factory). */
         int getDescendantCount() const { return descendant_count_; }
         void setDescendantCount(int v) { descendant_count_ = v; }
 
+        /** Height of subtree in edges (leaf height 1); maintained with descendant_count_. */
         int getHeight() const { return height_; }
         void setHeight(int v) { height_ = v; }
 
+        /** Android `resource-id` string (may be empty). */
         const std::string &getResourceId() const { return resource_id_; }
         void setResourceId(std::string v) { resource_id_ = std::move(v); }
 
+        /** Fully qualified view class name, e.g. `android.widget.Button`. */
         const std::string &getClassName() const { return class_name_; }
         void setClassName(std::string v) { class_name_ = std::move(v); }
 
+        /** Application package owning this view. */
         const std::string &getPackageName() const { return package_name_; }
         void setPackageName(std::string v) { package_name_ = std::move(v); }
 
+        /** Visible text after APE normalization; stored in `ApeStringCache` for deduplication. */
         const std::string &getText() const {
             return text_ ? *text_ : ApeStringCache::empty();
         }
@@ -79,6 +98,7 @@ namespace gui_tree {
             text_ = &ApeStringCache::cacheStringEmptyOnNull(std::move(v), true);
         }
 
+        /** Content description after APE normalization; cached like `text_`. */
         const std::string &getContentDesc() const {
             return content_desc_ ? *content_desc_ : ApeStringCache::empty();
         }
@@ -99,6 +119,7 @@ namespace gui_tree {
         void setChecked(bool v) { checked_ = v; }
         bool isFocusable() const { return focusable_; }
         void setFocusable(bool v) { focusable_ = v; }
+        /** Scroll capability bitmask (0–3), same encoding as factory XML parsing. */
         int getScrollable() const { return scrollable_; }
         void setScrollable(int v) { scrollable_ = v; }
         bool isPassword() const { return password_; }
@@ -106,27 +127,36 @@ namespace gui_tree {
         bool isFocused() const { return focused_; }
         void setFocused(bool v) { focused_ = v; }
 
+        /** Screen bounds in pixels (`[l,t][r,b]` space). */
         const Rect &getBounds() const { return bounds_; }
         void setBounds(const Rect &r) { bounds_ = r; }
 
+        /** Resolved XPath `Name` for this widget after naming; shared across siblings with same path. */
         naming::NamePtr getXPathName() const { return xpath_name_; }
         void setXPathName(naming::NamePtr n) { xpath_name_ = std::move(n); }
 
+        /** Namelet selected for this node during the latest naming pass (nullable). */
         void setCurrentNamelet(std::shared_ptr<naming::Namelet> nl);
         std::shared_ptr<naming::Namelet> getCurrentNamelet() const;
 
+        /** True if class name is `android.webkit.WebView`. */
         bool isWebView() const;
 
     private:
+        /** Internal constructor; use `create` so `shared_from_this` is valid for children. */
         explicit GUITreeNode(GUITreeNodeWeakPtr parent);
 
+        /** Weak link upward; strong refs flow root→leaf via `children_`. */
         GUITreeNodeWeakPtr parent_{};
+        /** Owned child pointers in insertion order. */
         std::vector<GUITreeNodePtr> children_{};
 
         std::string resource_id_;
         std::string class_name_;
         std::string package_name_;
+        /** Interned pointer into `ApeStringCache` for displayed text. */
         const std::string *text_{nullptr};
+        /** Interned pointer into `ApeStringCache` for content description. */
         const std::string *content_desc_{nullptr};
 
         Rect bounds_{};

@@ -3,6 +3,9 @@
  */
 /**
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ *
+ * @file Widget.cpp
+ * @brief Implements widget construction, hashing, serialization helpers, and detail lifecycle for state snapshots.
  */
 #ifndef Widget_CPP_
 #define Widget_CPP_
@@ -21,6 +24,7 @@ namespace fastbotx {
 
     Widget::Widget() = default;
 
+    /** Predicate for stripping digits and ASCII spaces from `_text` before hashing. */
     const auto ifCharIsDigitOrBlank = [](const char &c) -> bool {
         return c == ' ' || (c >= '0' && c <= '9');
     };
@@ -114,6 +118,7 @@ namespace fastbotx {
         }
     }
 
+    /** Copies geometry, actions, flags, and string fields from `element`; seeds component hashes for `hashWithMask`. */
     void Widget::initFormElement(const ElementPtr &element) {
         if (element->getCheckable())
             enableOperate(OperateType::Checkable);
@@ -207,8 +212,7 @@ namespace fastbotx {
             this->_contextDesc.clear(); // Explicitly clear to avoid unnecessary allocation
         }
         
-        // Filter long Chinese text: if text or contentDesc has more than 8 Chinese characters, clear it
-        // This prevents long text from interfering with state abstraction or embedding
+        // Drop very long CJK runs so oversized captions do not dominate state identity or exported summaries.
         auto countChineseChars = [](const std::string &str) -> size_t {
             size_t count = 0;
             for (size_t i = 0; i < str.length(); ) {
@@ -290,7 +294,7 @@ namespace fastbotx {
         this->_hashcode = ((hashcode1 ^ (hashcode2 << 4)) >> 2) ^
                           (((127U * hashcode3 << 1) ^ (256U * hashcode4 << 3)) >> 1);
 
-        // LLMDroid compatibility hash: widget semantic hash + spatial bounds hash.
+        // Spatial variant: XOR semantic `_hashcode` with packed bounds (`Rect::hash2`).
         const uintptr_t boundsHash = this->_bounds ? this->_bounds->hash2() : 0;
         this->_myHashcode = this->_hashcode ^ boundsHash;
     }
@@ -329,6 +333,7 @@ namespace fastbotx {
         return this->toXPath();
     }
 
+    /** First non-empty among text, content description, resource id, then class (fallback label). */
     std::string Widget::getDescriptionInfo() const {
         if (!_text.empty()) return _text;
         if (!_contextDesc.empty()) return _contextDesc;
@@ -336,11 +341,12 @@ namespace fastbotx {
         return _clazz;
     }
 
+    /** Planner-style single-line record; optional numeric `actionId` prefix when >= 0. */
     std::string Widget::toHTML(const std::vector<ElementPtr> &, bool, int actionId) const {
         std::ostringstream oss;
         const std::string desc = getDescriptionInfo();
         if (_isEditable) {
-            // Keep LLMDroid-friendly format for controls_html while preserving deterministic fields.
+            // Same tab-separated schema as `type=button`, but marks editable controls as `type=input`.
             if (actionId >= 0) {
                 oss << "id=" << actionId << "\t";
             }
@@ -423,6 +429,7 @@ namespace fastbotx {
         return j.dump();
     }
 
+    /** Concatenates this widget and ancestors’ synthetic XPath fragments from leaf toward root. */
     std::string Widget::buildFullXpath() const {
         std::vector<std::string> segments;
         segments.push_back(this->toXPath());
@@ -446,10 +453,12 @@ namespace fastbotx {
         this->_parent = nullptr;
     }
 
+    /** Primary semantic hash (`_hashcode`) built in ctor / `initFormElement`. */
     uintptr_t Widget::hash() const {
         return _hashcode;
     }
 
+    /** Recombines precomputed component hashes according to `mask` for dynamic abstraction experiments. */
     uintptr_t Widget::hashWithMask(WidgetKeyMask mask) const {
         uintptr_t h;
         const auto defaultMask = static_cast<WidgetKeyMask>(DefaultWidgetKeyMask);

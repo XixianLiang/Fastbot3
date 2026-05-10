@@ -5,6 +5,13 @@
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 
+/**
+ * @file AgentFactory.cpp
+ *
+ * Factory entry point that maps `AlgorithmType` to a concrete `AbstractAgent` implementation and,
+ * for SARSA variants, starts a detached background worker that periodically persists the reuse model.
+ */
+
 #ifndef Agent_Factory_CPP_
 #define Agent_Factory_CPP_
 
@@ -21,33 +28,27 @@
 namespace fastbotx {
 
     /**
-     * @brief Create Agent instance
-     * 
-     * Creates corresponding Agent instance based on algorithm type (agentT).
-     * 
-     * Supported algorithm types:
-     * - Curiosity, Sarsa, DoubleSarsa (default): see branches below; unknown types fall through to DoubleSarsa.
-     * 
-     * Creation flow:
-     * 1. Create Agent instance based on algorithm type
-     * 2. Start background thread to periodically save model (starts after 3 second delay, saves every 10 minutes)
-     * 3. Return Agent pointer
-     * 
-     * @param agentT Algorithm type, determines which Agent to create
-     * @param model Model pointer, Agent needs access to model to get state graph info
-     * @param deviceType Device type (currently unused, reserved interface)
-     * @return Created Agent smart pointer
-     * 
-     * @note 
-     * - Uses weak_ptr passed to background thread to avoid circular references
-     * - Background thread automatically exits when Agent is destructed (weak_ptr becomes invalid)
-     * - Model save thread starts after 3 second delay to avoid frequent saves during initialization
+     * Constructs an `AbstractAgent` for `agentT` and wires optional background persistence.
+     *
+     * Dispatch:
+     * - `Curiosity` → `CuriosityAgent` with a configurable state encoder (DNN vs handcrafted).
+     * - `Sarsa` → single-Q `SarsaAgent` plus reuse-model save thread.
+     * - `LLMExplorer` and any other value → `DoubleSarsaAgent` (double Q-learning) plus save thread.
+     *
+     * For `Sarsa` / default, `threadDelayExec(3000, …)` waits three seconds, then detaches
+     * `threadModelStorage`, which periodically calls `saveReuseModel` (interval defined on the agent side,
+     * typically on the order of ten minutes). The worker captures the agent via `weak_ptr` so it stops
+     * when the agent is destroyed.
+     *
+     * @param agentT Requested RL algorithm selector.
+     * @param model Shared model handle (graph, reuse storage paths, etc.).
+     * @param deviceType Reserved; ignored today (`Normal` only).
      */
     AbstractAgentPtr
     AgentFactory::create(AlgorithmType agentT, const ModelPtr &model, DeviceType /*deviceType*/) {
         AbstractAgentPtr agent = nullptr;
 
-        // For AlgorithmType::Curiosity, use curiosity-driven agent (WebRLED-style dual novelty).
+        // Curiosity-driven exploration (dual novelty); encoder choice is compile-time (see FASTBOTX_CURIOSITY_*).
         if (agentT == AlgorithmType::Curiosity) {
             CuriosityAgentPtr curiosityAgent = std::make_shared<CuriosityAgent>(model);
 #if !defined(FASTBOTX_CURIOSITY_DISABLE_DNN_ENCODER)
@@ -65,11 +66,12 @@ namespace fastbotx {
             return agent;
         }
 
-        // LLMExplorer removed (effect not ideal); AlgorithmType::LLMExplorer falls through to DoubleSarsa.
+        // `LLMExplorer` is no longer constructed here; unknown types including it use DoubleSarsa below.
 
-        // For AlgorithmType::Sarsa, use legacy-compatible SarsaAgent (single-Q SARSA + reuse model).
+        // Classic tabular SARSA with reuse-model persistence.
         if (agentT == AlgorithmType::Sarsa) {
             SarsaAgentPtr sarsaAgent = std::make_shared<SarsaAgent>(model);
+            // Delay before spawning the saver avoids racing early-run checkpoints during startup.
             threadDelayExec(3000, false, &SarsaAgent::threadModelStorage,
                             std::weak_ptr<fastbotx::SarsaAgent>(sarsaAgent));
             agent = sarsaAgent;
@@ -77,7 +79,7 @@ namespace fastbotx {
             return agent;
         }
 
-        // Default / DoubleSarsa: use DoubleSarsaAgent with periodic model saving.
+        // Default path: double Q-learning agent (also handles `AlgorithmType::DoubleSarsa` and unknown enums).
         DoubleSarsaAgentPtr doubleSarsaAgent = std::make_shared<DoubleSarsaAgent>(model);
         threadDelayExec(3000, false, &DoubleSarsaAgent::threadModelStorage,
                         std::weak_ptr<fastbotx::DoubleSarsaAgent>(doubleSarsaAgent));
@@ -90,4 +92,4 @@ namespace fastbotx {
 
 }
 
-#endif
+#endif // Agent_Factory_CPP_

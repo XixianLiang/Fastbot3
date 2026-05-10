@@ -2,6 +2,11 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file ReuseState.cpp
+ *
+ * Implements construction of `ReuseState` from UI elements: widget trees, hashing, deduplication,
+ * stable element ids, action lists, and helpers for graph / similarity features.
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 #ifndef ReuseState_CPP_
@@ -23,7 +28,8 @@
 #include "../events/Preference.h"
 
 namespace fastbotx {
-    constexpr bool kApeStateHashWithOrder = true;
+    /** When true, `combineHash` for widgets preserves traversal order in the hash mix. */
+    constexpr bool kReuseStateCombineHashWithOrder = true;
 
 
     ReuseState::ReuseState()
@@ -164,7 +170,7 @@ namespace fastbotx {
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         // In static reuse abstraction mode, ignore WidgetKeyMask and fall back to legacy hash
         if (Preference::inst() && Preference::inst()->useStaticReuseAbstraction()) {
-            activityHash ^= (combineHash<Widget>(_widgets, kApeStateHashWithOrder) << 1);
+            activityHash ^= (combineHash<Widget>(_widgets, kReuseStateCombineHashWithOrder) << 1);
         } else {
             uintptr_t widgetsHash = 0x1;
             for (const auto &w : _widgets) {
@@ -176,7 +182,7 @@ namespace fastbotx {
         }
 #else
         // Combine with widget hash.
-        activityHash ^= (combineHash<Widget>(_widgets, kApeStateHashWithOrder) << 1);
+        activityHash ^= (combineHash<Widget>(_widgets, kReuseStateCombineHashWithOrder) << 1);
 #endif
         _hashcode = activityHash;
     }
@@ -333,6 +339,10 @@ namespace fastbotx {
     }
 #endif
 
+    /**
+     * Assigns contiguous stable ids to every `Element` under `root` (DFS preorder), then maps each
+     * widget back to its element's id for cross-layer action resolution.
+     */
     void ReuseState::rebuildElementIdMaps(const ElementPtr &root) {
         _elementByStableId.clear();
         _widgetPtrToStableElementId.clear();
@@ -379,6 +389,7 @@ namespace fastbotx {
         return nullptr;
     }
 
+    /** Returns widgets that exist in this state but have no same-hash widget in `target`. */
     std::vector<WidgetPtr> ReuseState::diffWidgets(const ReuseStatePtr &target) {
         std::vector<WidgetPtr> ret;
         if (!target) {
@@ -398,6 +409,7 @@ namespace fastbotx {
         return ret;
     }
 
+    /** Filters `_widgets` by actionability or visible text/description (does not read `_valuableWidgets`). */
     std::vector<WidgetPtr> ReuseState::getValuableWidgets() const {
         std::vector<WidgetPtr> ret;
         ret.reserve(_widgets.size());
@@ -416,6 +428,10 @@ namespace fastbotx {
         return _stateStructure.generateStateDescription(getIdi());
     }
 
+    /**
+     * Symmetric overlap score in [0,1]: counts candidate widgets that appear in the other state's flat list
+     * or in its merge groups, normalized by total widget counts on both sides.
+     */
     float ReuseState::computeSimilarityForMergedState(const ReuseStatePtr &target) const {
         if (!target) {
             return 0.f;
@@ -474,6 +490,10 @@ namespace fastbotx {
         return it == _widgetPtrToStableElementId.end() ? -1 : it->second;
     }
 
+    /**
+     * Interprets which concrete widget instance is meant when several share the same hash.
+     * `-1` = primary representative in `_widgets`; `>=0` = index within `_mergedWidgets[hash]`; `-2`/`-3` = not found.
+     */
     int ReuseState::findWhichWidget(WidgetPtr target) const {
         if (!target) {
             return -3;
@@ -496,6 +516,7 @@ namespace fastbotx {
         return static_cast<int>(found - mergedOnes.begin());
     }
 
+    /** `location == -1` selects the representative row; otherwise indexes into the merge vector for that hash. */
     WidgetPtr ReuseState::findWidgetByHashAndLocation(uintptr_t hash, int location) const {
         auto found = std::find_if(_widgets.begin(), _widgets.end(),
                                   [hash](const WidgetPtr &ptr) { return ptr && ptr->hash() == hash; });
@@ -516,6 +537,7 @@ namespace fastbotx {
         return vec[static_cast<size_t>(location)];
     }
 
+    /** Primary widgets plus any duplicates stored under `_mergedWidgets` for the same hash. */
     std::vector<WidgetPtr> ReuseState::getAllWidgets() const {
         std::vector<WidgetPtr> ret(_widgets);
         for (const WidgetPtr &widget : _widgets) {
@@ -544,6 +566,7 @@ namespace fastbotx {
         return ret;
     }
 
+    /** Bridges planner element ids to `_actions` indices; updates `whichWidget` / target on the matched action. */
     int ReuseState::findActionByElementId(int elementId, int actionType) {
         ElementPtr element = findElementById(elementId);
         if (!element) {
@@ -576,6 +599,10 @@ namespace fastbotx {
         return static_cast<int>(action - _actions.begin());
     }
 
+    /**
+     * Appends a graph edge `(this --_actionToPerform--> state)`, bumping `remainTimes` if the same
+     * action-plus-next-state pair was already recorded.
+     */
     void ReuseState::addSubSequentState(const ReuseStatePtr &state) {
         if (!state) {
             return;
@@ -604,6 +631,7 @@ namespace fastbotx {
         this->_existedStateGraphEdges.insert(edgeHash);
     }
 
+    /** Symmetric widget-overlap score in [0,1]; same counting rules as `computeSimilarityForMergedState`. */
     float ReuseState::computeSimilarity(const ReuseStatePtr &target) const {
         if (!target) {
             return 0.f;
@@ -640,6 +668,7 @@ namespace fastbotx {
                           : static_cast<float>(matchedCount * 2) / static_cast<float>(denom);
     }
 
+    /** First matching `ActivityStateAction` for widget hash and action kind in `_actions`. */
     ActivityStateActionPtr ReuseState::findActionByWidgetHash(uintptr_t h, ActionType actionType) const {
         for (const ActivityStateActionPtr &a : _actions) {
             if (!a || !a->getTarget()) {
@@ -652,6 +681,10 @@ namespace fastbotx {
         return nullptr;
     }
 
+    /**
+     * Maps an action from another state onto this state's action list (same widget hash / merge index when applicable).
+     * Copies input text when the origin action carries keyboard input.
+     */
     ActionPtr ReuseState::findSimilarAction(const ActionPtr &origin) {
         if (!origin) {
             return nullptr;

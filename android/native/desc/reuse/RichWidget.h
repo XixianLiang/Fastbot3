@@ -2,6 +2,11 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file RichWidget.h
+ *
+ * Widget wrapper used on reuse-heavy paths: derives identity hashes from class, resource id,
+ * supported actions, and harvestable text (including descendant text when the node is not independently clickable).
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 #ifndef RichWidget_H_
@@ -12,45 +17,46 @@
 namespace fastbotx {
 
     /**
-     * @brief RichWidget extends Widget with richer hash computation
-     * 
-     * RichWidget uses actions, class name, resource ID, and text (from itself
-     * or its children) to generate a more comprehensive hash code for widget
-     * identification. This is used in reuse-based algorithms for better widget matching.
-     * 
-     * Features:
-     * - Enhanced hash computation including actions and children text
-     * - Better widget identification for reuse algorithms
+     * Extends `Widget` with a stronger default hash for reuse and matching.
+     *
+     * The hash mixes class name, resource id, action kinds, optional text-derived material,
+     * and (via `hashWithMask`) selectively XORs precomputed attribute hashes from the base `Widget`.
      */
     class RichWidget : virtual public Widget {
     public:
         /**
-         * @brief Constructor creates RichWidget from Element
-         * 
-         * Uses supported actions, class name, resource ID, and text (from itself
-         * or its children) for embedding and generating hash code to identify the widget.
-         * 
-         * @param parent Parent widget of this widget
-         * @param element XML Element information of this widget
+         * Builds a rich widget from an accessibility `Element` subtree.
+         *
+         * @param parent Parent widget in the synthetic tree (may be null for the root).
+         * @param element Parsed UI element node (bounds, flags, text, children).
          */
         RichWidget(WidgetPtr parent, const ElementPtr &element);
 
         uintptr_t hash() const override;
 
+        /** Optional coarse-grained identity: toggle text / content-desc / index contributions via `mask`. */
         uintptr_t hashWithMask(WidgetKeyMask mask) const override;
 
+        /** Full rich hash including embedded text signal when present (same as `hash()`). */
         uintptr_t getActHashCode() const { return this->_widgetHashcode; }
 
     protected:
+        /** Default constructor for subclasses; leaves hashes unset until a concrete ctor runs. */
         RichWidget();
 
+        /** Cached rich hash (includes text term when non-empty). */
         uintptr_t _widgetHashcode{};
+        /** Hash of class, resource id, and actions only (maskable attributes applied in `hashWithMask`). */
         uintptr_t _widgetHashcodeBase{};
 
     private:
-        /// Get Element valid text. If parent widget are not clickable, get children's valid text
-        /// \param element
-        /// \return valid text from widget or its children or offspring.
+        /**
+         * Collects human-visible text for hashing: prefers `element->validText`, otherwise first non-empty
+         * `validText` found under descendants (behavior differs slightly when static reuse abstraction is on).
+         *
+         * @param element Root of the subtree to search.
+         * @return Non-empty display text if any descendant qualifies; otherwise empty string.
+         */
         std::string getValidTextFromWidgetAndChildren(const ElementPtr &element) const;
     };
 

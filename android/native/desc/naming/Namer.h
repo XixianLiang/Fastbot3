@@ -33,20 +33,17 @@ namespace naming {
     public:
         virtual ~Namer() = default;
 
-        /** Which attribute dimensions this namer uses (Java: EnumSet<NamerType>). */
+        /** Which naming dimensions this policy combines (`NamerType` values). */
         virtual std::vector<NamerType> getNamerTypes() const = 0;
 
-        /** Bitmask over {@code 1u << NamerType}; default derives from getNamerTypes(). */
+        /** Bit `i` is `1u << i` for each included `NamerType`; default folds `getNamerTypes()`. */
         virtual uint32_t typeDimensionMask() const;
 
         virtual NamePtr naming(gui_tree::GUITreeNode &node) = 0;
 
         /**
-         * Like {@link naming(node)} but when {@code xpathKey} is non-empty and matches the
-         * contract of {@link xpathKeyForNode(node)} (i.e. equals naming(node)->toXPath()),
-         * derived namers can avoid recomputing/allocating intermediate objects.
-         *
-         * Default implementation falls back to {@code naming(node)}.
+         * When `xpathKey` matches `xpathKeyForNode(node)` for this namer, implementations may build the `Name`
+         * from the key without recomputing from the widget tree. Default delegates to `naming(node)`.
          */
         virtual NamePtr namingWithXPathKey(gui_tree::GUITreeNode &node, const std::string &xpathKey) {
             (void)xpathKey;
@@ -54,10 +51,8 @@ namespace naming {
         }
 
         /**
-         * If non-empty, must equal naming(node)->toXPath() for that node (used to dedupe without
-         * allocating a Name when the key already exists in evaluateNaming). Default: empty → use naming()+toXPath().
-         * evaluateNaming indexes by canonical name->toXPath(); the pre-check lookup only skips naming() when
-         * this string matches that canonical key (BitmaskNamer satisfies this).
+         * Canonical XPath string used as a deduplication key before calling `naming` when the caller already
+         * has a materialized path. Empty means “derive via `naming` then `toXPath`” (default).
          */
         virtual std::string xpathKeyForNode(gui_tree::GUITreeNode &node) const {
             (void)node;
@@ -69,7 +64,7 @@ namespace naming {
 
     using NamerPtr = std::shared_ptr<Namer>;
 
-    /** Lexicographic compare on sorted namer-type sets (Java Namelet.namerComparator). */
+    /** Three-way compare on sorted `NamerType` lists (used by `Namelet` ordering). */
     int compareNamer(const Namer &a, const Namer &b);
 
     /** Stable semantic key for Namer (type-set based, independent from pointer identity). */

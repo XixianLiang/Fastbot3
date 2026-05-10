@@ -18,7 +18,7 @@
  */
 
 /*
- * NamerType.
+ * Naming dimension tags for bitmask namers and the lattice (`TYPE`, `TEXT`, hierarchy modes, etc.).
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMERTYPE_H_
 #define FASTBOTX_DESC_NAMING_NAMERTYPE_H_
@@ -28,6 +28,7 @@
 namespace fastbotx {
 namespace naming {
 
+    /** Axes that can be combined in a `BitmaskNamer`; numeric values define bit positions in masks. */
     enum class NamerType : unsigned char {
         TYPE = 0,
         INDEX,
@@ -36,13 +37,14 @@ namespace naming {
         ANCESTOR
     };
 
-    /** Ordered list used in lattice (Config.useAncestorNamer in Java). */
+    /** Canonical ordered list of dimensions included in `NamerFactory` subsets (ancestor optional). */
     const std::vector<NamerType> &namerTypesUsed();
-    /** Runtime switch for Config.useAncestorNamer-style behavior. */
+
+    /** Turns ancestor XPath naming on or off for subsequent factory cube builds. */
     void setUseAncestorNamer(bool enabled);
     bool useAncestorNamer();
 
-    /** Runtime switch for Config.usePatchNamer. */
+    /** Turns `ActionPatchNamer` wrapping on or off for bitmask namers from the factory. */
     void setUsePatchNamer(bool enabled);
     bool usePatchNamer();
 

@@ -3,6 +3,9 @@
  */
 /**
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ *
+ * @file Model.cpp
+ * @brief Core exploration model: state capture, dynamic abstraction / naming refinement, transitions, and scheduling.
  */
 #ifndef Model_CPP_
 #define Model_CPP_
@@ -32,10 +35,12 @@
 #include <sstream>
 namespace {
 using namespace fastbotx;
+/** @brief 64-bit hash of a string for log correlation and lightweight signatures. */
 uint64_t hashStringForLog(const std::string &value) {
     return static_cast<uint64_t>(std::hash<std::string>{}(value));
 }
 
+/** @brief Truncates a string to a maximum length, appending an ellipsis when needed (compact logs). */
 std::string abbreviateTextForLog(const std::string &value, size_t limit = 24) {
     if (value.size() <= limit) {
         return value;
@@ -43,6 +48,7 @@ std::string abbreviateTextForLog(const std::string &value, size_t limit = 24) {
     return value.substr(0, limit) + "...";
 }
 
+/** @brief Formats a one-line summary of an Element (class, resource id, text, bounds, first children). */
 std::string summarizeElementForLog(const fastbotx::ElementPtr &element, size_t childLimit = 3) {
     if (!element) {
         return std::string("(null)");
@@ -78,6 +84,7 @@ std::string summarizeElementForLog(const fastbotx::ElementPtr &element, size_t c
     return oss.str();
 }
 
+/** @brief Formats a one-line summary of a GUITree (root, children, sample xpaths). */
 std::string summarizeGUITreeForLog(const fastbotx::gui_tree::GUITreePtr &tree, size_t childLimit = 3,
                                    size_t xpathLimit = 3) {
     if (!tree) {
@@ -120,6 +127,7 @@ std::string summarizeGUITreeForLog(const fastbotx::gui_tree::GUITreePtr &tree, s
     return oss.str();
 }
 
+/** @brief Summarizes up to `limit` widgets from a State for logging. */
 std::string summarizeStateWidgetsForLog(const fastbotx::StatePtr &state, size_t limit = 3) {
     if (!state) {
         return std::string("(null)");
@@ -148,6 +156,7 @@ std::string summarizeStateWidgetsForLog(const fastbotx::StatePtr &state, size_t 
     return oss.str();
 }
 
+/** @brief Summarizes up to `limit` actions from a State for logging. */
 std::string summarizeStateActionsForLog(const fastbotx::StatePtr &state, size_t limit = 3) {
     if (!state) {
         return std::string("(null)");
@@ -196,6 +205,7 @@ fastbotx::gui_tree::GUITreeBuildResult buildGuitreeFromCachedXmlPreferElement(co
     return gui_tree::GUITreeFactory::buildFromXml(xml, pkg, cls);
 }
 
+/** @brief Builds a pugixml DOM and registers GUITree nodes for XPath evaluation over a GUI tree. */
 static std::shared_ptr<fastbotx::gui_tree::XPathNodeMapper> buildXPathDomBridgeForGUITree(
     const fastbotx::gui_tree::GUITreePtr &tree) {
     using namespace fastbotx;
@@ -445,6 +455,7 @@ ApeWidgetMatchMiss apeClassifyWidgetMatchMiss(const std::vector<gui_tree::GUITre
     return out;
 }
 
+/** @brief Formats a list of preorder stable IDs as a compact bracketed string for logs. */
 std::string apeJoinStableIds(const std::vector<int> &ids) {
     if (ids.empty()) {
         return "[]";
@@ -460,6 +471,7 @@ std::string apeJoinStableIds(const std::vector<int> &ids) {
     return out;
 }
 
+/** @brief Stable string key for a Name: namer semantic key plus XPath or cache key (used in refinement comparisons). */
 std::string nameIdentityKey(const naming::NamePtr &nm) {
     if (!nm) {
         return std::string();
@@ -470,6 +482,7 @@ std::string nameIdentityKey(const naming::NamePtr &nm) {
     return nk + "|" + key;
 }
 
+/** @brief Short debug line for a GUITreeNode (index, class, resource id, bounds, xpath, namelet). */
 std::string apeNodeDebugSummary(gui_tree::GUITreeNode *node) {
     if (!node) {
         return "node=null";
@@ -496,6 +509,7 @@ std::string apeNodeDebugSummary(gui_tree::GUITreeNode *node) {
     return summary;
 }
 
+/** @brief One-line summary of a nondeterministic branch source transition for logging. */
 std::string apeTransitionDebugSummary(const NondetTreeTransitionBranchPair::SourceTransition &t) {
     return std::string("seq=") + std::to_string(static_cast<unsigned long long>(t.transitionSeq)) +
            ",srcStateHash=" + std::to_string(static_cast<size_t>(t.sourceStateHash)) +
@@ -504,6 +518,7 @@ std::string apeTransitionDebugSummary(const NondetTreeTransitionBranchPair::Sour
            ",xmlLen=" + std::to_string(t.sourceXml.size());
 }
 
+/** @brief Joins debug summaries for a vector of source transitions into one log string. */
 std::string apeTransitionListDebugSummary(
     const std::vector<NondetTreeTransitionBranchPair::SourceTransition> &ts) {
     if (ts.empty()) {
@@ -542,7 +557,7 @@ struct ApeNonDetPairStat {
     size_t targetCount{0};
 };
 
-
+/** @brief Depth-first preorder traversal of a GUITree, appending each node pointer to `out`. */
 void collectGUITreeNodesPreOrder(gui_tree::GUITreeNode *node, std::vector<gui_tree::GUITreeNode *> *out) {
     if (!node || !out) {
         return;
@@ -553,6 +568,7 @@ void collectGUITreeNodesPreOrder(gui_tree::GUITreeNode *node, std::vector<gui_tr
     }
 }
 
+/** @brief Maps action targets to abstract RL identity hashes on ReuseState using GUI-tree xpaths (not raw stable IDs). */
 void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
                                              const std::vector<gui_tree::GUITreeNode *> &nodesPreOrder,
                                              const naming::StateKey &apeKey) {
@@ -694,7 +710,7 @@ void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
         state->filterActionsByKeepMask(keepMask);
     }
     if ((targetActions + noTargetActions) > 0) {
-        BLOG("ape action hash mapping: activity=%s targetActions=%zu noTargetActions=%zu mappedXPath=%zu mappedStableId=%zu fallbackConst=%zu",
+        BLOG("naming action hash mapping: activity=%s targetActions=%zu noTargetActions=%zu mappedXPath=%zu mappedStableId=%zu fallbackConst=%zu",
              apeKey.activity().c_str(), targetActions, noTargetActions, mappedXPath, mappedStableId,
              fallbackConst);
     }
@@ -707,8 +723,9 @@ void applyApeDynamicActionHashesToReuseState(const StatePtr &state,
 #include "../Base.h"
 namespace {
 /**
- * on this activity (canonical activity string match). Kept outside #if DYNAMIC_STATE_ABSTRACTION_ENABLED
- * because refineActivityApeNaming is always compiled.
+ * @brief Counts graph states whose activity matches the canonical activity key.
+ *
+ * Used across abstraction-disabled and enabled builds because naming refinement always compiles.
  */
 size_t apeGraphActivityStateCountLikeJavaActivityNode(const fastbotx::GraphPtr &graph,
                                                       const std::string &actKeyCanonical) {
@@ -746,7 +763,7 @@ size_t apeGraphActivityStateCountLikeJavaActivityNode(const fastbotx::GraphPtr &
 #include <utility>
 
 namespace {
-    /// Convert WidgetKeyMask to human-readable dimension list for logging (e.g. "Clazz|ResourceID|ContentDesc").
+    /** @brief Converts WidgetKeyMask bits to a pipe-separated label string for logging. */
     std::string maskToDimensionString(fastbotx::WidgetKeyMask m) {
         std::ostringstream os;
         const char *sep = "";
@@ -760,12 +777,12 @@ namespace {
         return os.str().empty() ? "(none)" : os.str();
     }
 
-    constexpr int kApeNDActionBlacklistMinOutEdges = 3;
+    constexpr int kNDActionBlacklistMinOutEdges = 3;
 
     /**
-     * APE NamingFactory.sortRefinementResults / filterRefinementResult tie-break:
+     * NamingFactory.sortRefinementResults / filterRefinementResult tie-break:
      * after primary keys (replay/score), prefer fewer induced partitions — proxy: smaller finenessGain;
-     * then lexicographic namelets (expr, then compareNamer — Java NamerComparator + updated expr).
+     * then lexicographic namelets (expr, then compareNamer — reference comparator on updated expr).
      */
     int compareNamingLexicographicForApeFilter(const fastbotx::naming::NamingPtr &a,
                                                const fastbotx::naming::NamingPtr &b) {
@@ -813,6 +830,7 @@ namespace {
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
 namespace {
 using ApeHashCache = std::unordered_map<uintptr_t, uintptr_t>;
+/** @brief Wraps NamingFactory::rebuildTree with optional stage-tagged logging for diagnostics. */
 bool safeRebuildTree(const fastbotx::naming::NamingPtr &nm, fastbotx::gui_tree::GUITree &tree,
                      const std::shared_ptr<fastbotx::gui_tree::XPathNodeMapper> &dom,
                      const char *stage = nullptr) {
@@ -823,7 +841,7 @@ bool safeRebuildTree(const fastbotx::naming::NamingPtr &nm, fastbotx::gui_tree::
     const fastbotx::gui_tree::GUITreePtr treeAlias(&tree, [](fastbotx::gui_tree::GUITree *) {});
     const std::string beforeSummary = shouldLog ? summarizeGUITreeForLog(treeAlias) : std::string();
     if (shouldLog) {
-        BLOG("ape rebuild: enter seq=%" PRIu64 " stage=%s namingFp=%s treePtr=%p dom=%d %s",
+        BLOG("naming rebuild: enter seq=%" PRIu64 " stage=%s namingFp=%s treePtr=%p dom=%d %s",
              seq, stageTag, nm ? nm->fingerprintString().c_str() : "(null)", &tree, dom ? 1 : 0,
              beforeSummary.c_str());
     }
@@ -831,7 +849,7 @@ bool safeRebuildTree(const fastbotx::naming::NamingPtr &nm, fastbotx::gui_tree::
     const bool ok = fastbotx::naming::NamingFactory::rebuildTree(nm, tree, dom);
     fastbotx::naming::clearRebuildLogStage();
     if (shouldLog) {
-        BLOG("ape rebuild: exit seq=%" PRIu64 " stage=%s ok=%d treePtr=%p %s",
+        BLOG("naming rebuild: exit seq=%" PRIu64 " stage=%s ok=%d treePtr=%p %s",
              seq, stageTag, ok ? 1 : 0, &tree, summarizeGUITreeForLog(treeAlias).c_str());
     }
     return ok;
@@ -839,7 +857,7 @@ bool safeRebuildTree(const fastbotx::naming::NamingPtr &nm, fastbotx::gui_tree::
 
 /**
  * Build GUITree from XML (or prefer a transition snapshot), then NamingFactory::rebuildTree for `naming`.
- * Shared by hash paths, isStateEquivalent / isTopNamingEquivalent (full StateKey equality, APE parity).
+ * Shared by hash paths, isStateEquivalent / isTopNamingEquivalent (full StateKey equality, reference parity).
  */
 bool apeGuitreeFromXmlWithNamingRebuilt(const std::string &activity, const std::string &xml,
                                         const fastbotx::naming::NamingPtr &naming,
@@ -867,8 +885,8 @@ bool apeGuitreeFromXmlWithNamingRebuilt(const std::string &activity, const std::
 }
 
 /**
- * When branch SourceTransition did not copy sourceGuiSnapshot, recover APE-style source GUITree from the
- * ring-buffer TreeTransitionEntry (same transitionSeq as Java GUITreeTransition identity).
+ * When branch SourceTransition did not copy sourceGuiSnapshot, recover the source GUITree from the
+ * ring-buffer `TreeTransitionEntry` for the same `transitionSeq`.
  */
 static fastbotx::gui_tree::GUITreePtr apeLookupApeSourceGuiTreeByTransitionSeq(
     uint64_t transitionSeq, const std::vector<fastbotx::TreeTransitionEntry> &treeLog) {
@@ -880,7 +898,7 @@ static fastbotx::gui_tree::GUITreePtr apeLookupApeSourceGuiTreeByTransitionSeq(
     return nullptr;
 }
 
-/** Prefer SourceTransition.sourceGuiSnapshot; else TreeTransitionEntry.apeSourceGuiTree (APE: tt.getSource()). */
+/** Prefer `SourceTransition.sourceGuiSnapshot`; else `TreeTransitionEntry.apeSourceGuiTree` from the tree log row. */
 static void apePreferSnapPtrFromSourceTransition(
     const fastbotx::NondetTreeTransitionBranchPair::SourceTransition &st,
     const std::vector<fastbotx::TreeTransitionEntry> &treeLog,
@@ -907,6 +925,7 @@ static void apePreferSnapPtrFromSourceTransition(
     }
 }
 
+/** @brief Computes abstract state-key hash from XML under `naming`, optionally reusing a GUI-tree snapshot and cache. */
 bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::string &xml,
                                     const fastbotx::naming::NamingPtr &naming,
                                     uintptr_t *outHash,
@@ -928,7 +947,7 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
     }
     const bool usePreferSnapshot = (preferGuiSnapshot && *preferGuiSnapshot);
     if (seq <= 40 || (seq % 400) == 0) {
-        BDLOG("ape xml hash: entry activity=%s seq=%" PRIu64
+        BDLOG("naming xml hash: entry activity=%s seq=%" PRIu64
               " xmlSig=%" PRIu64 " xmlLen=%zu namingFp=%s preferSnapshot=%d snapPtr=%p snapSummary=%s",
               activity.c_str(), seq, hashStringForLog(xml), xml.size(),
               naming->fingerprintString().c_str(), usePreferSnapshot ? 1 : 0,
@@ -940,7 +959,7 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
         return false;
     }
     if (seq <= 40 || (seq % 400) == 0) {
-        BLOG("ape xml hash: tree after build+rebuild (state_check) activity=%s seq=%" PRIu64
+        BLOG("naming xml hash: tree after build+rebuild (state_check) activity=%s seq=%" PRIu64
              " source=%s treePtr=%p dom=%d namingFp=%s %s",
              activity.c_str(), seq, usePreferSnapshot ? "prefer_snapshot" : "xml_only", built.tree.get(),
              built.dom ? 1 : 0, naming->fingerprintString().c_str(),
@@ -948,7 +967,7 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
     }
     *outHash = naming::StateKey::hashFromGUITree(*built.tree);
     if (seq <= 40 || (seq % 400) == 0) {
-        BLOG("ape xml hash: exit activity=%s seq=%" PRIu64 " outHash=%" PRIuPTR,
+        BLOG("naming xml hash: exit activity=%s seq=%" PRIu64 " outHash=%" PRIuPTR,
              activity.c_str(), seq, static_cast<uintptr_t>(*outHash));
     }
     if (cache && cacheKey != 0) {
@@ -957,6 +976,7 @@ bool apeStateHashFromXmlWithNaming(const std::string &activity, const std::strin
     return true;
 }
 
+/** @brief Computes state hashes for the same XML under two different naming roots (single parse path where possible). */
 bool apeStateHashFromXmlWithTwoNamings(const std::string &activity, const std::string &xml,
                                        const fastbotx::naming::NamingPtr &naming1, uintptr_t *outHash1,
                                        const fastbotx::naming::NamingPtr &naming2, uintptr_t *outHash2,
@@ -990,6 +1010,7 @@ void apeStateKeyPairFromXmlCoarsenPath(const std::string &activity, const std::s
     (void)apeStateHashFromXmlWithNaming(activity, xml, namingPrev, prevKeyHash);
 }
 
+/** @brief Upper bound on distinct state hashes allowed when evaluating a refinement candidate (depends on naming fineness). */
 int apeMaxStatesForRefinementThreshold(const fastbotx::naming::NamingPtr &targetNaming) {
     if (!targetNaming) {
         return 8;
@@ -1003,6 +1024,7 @@ int apeMaxStatesForRefinementThreshold(const fastbotx::naming::NamingPtr &target
     return std::min(8, std::max(1, 2 << shift));
 }
 
+/** @brief DFS helper: collects fingerprint strings for `root` and each refinement child naming (cycle-safe). */
 void collectNamingSubtreeFingerprintsImpl(
     const fastbotx::naming::NamingPtr &root, std::unordered_set<std::string> *out,
     std::unordered_set<const fastbotx::naming::Naming *> *visited) {
@@ -1024,7 +1046,7 @@ void collectNamingSubtreeFingerprintsImpl(
     }
 }
 
-/** Java Graph.getAllStates(Naming): states registered at 'root' or any descendant refinement Naming. */
+/** Collect naming fingerprints for `root` and every descendant refinement naming (compare to graph “all states”). */
 void collectNamingSubtreeFingerprints(const fastbotx::naming::NamingPtr &root,
                                       std::unordered_set<std::string> *out) {
     if (!root || !out) {
@@ -1035,6 +1057,7 @@ void collectNamingSubtreeFingerprints(const fastbotx::naming::NamingPtr &root,
     collectNamingSubtreeFingerprintsImpl(root, out, &visited);
 }
 
+/** @brief State-split refinement check: two XML pools must yield disjoint state hashes within the fineness budget. */
 bool apeCheckStateRefinementLikeJava(const std::string &activity, const fastbotx::naming::NamingPtr &newNaming,
                                      const fastbotx::naming::NamerPtr &newNamer,
                                      const std::vector<std::string> &tts1Sources,
@@ -1107,6 +1130,7 @@ bool apeCheckStateRefinementLikeJava(const std::string &activity, const fastbotx
     return true;
 }
 
+/** @brief Returns whether two namelets are equivalent (including both null). */
 bool apeNameletMatches(const naming::NameletPtr &a, const naming::NameletPtr &b) {
     if (!a || !b) {
         return a.get() == b.get();
@@ -1114,6 +1138,7 @@ bool apeNameletMatches(const naming::NameletPtr &a, const naming::NameletPtr &b)
     return *a == *b;
 }
 
+/** @brief Finds the index of `needle` in `naming`'s namelet list, or -1. */
 ssize_t apeFindNameletIndex(const naming::NamingPtr &naming, const naming::NameletPtr &needle) {
     if (!naming || !needle) {
         return -1;
@@ -1127,8 +1152,9 @@ ssize_t apeFindNameletIndex(const naming::NamingPtr &naming, const naming::Namel
     return -1;
 }
 
+/** @brief Builds the coarsest “top” naming: BASE namelet with the full namer lattice bitmask. */
 naming::NamingPtr createTopNaming() {
-    // Port of APE NamingFactory.createTopNaming: BASE namelet "//*" with lattice max namer
+    // Reference NamingFactory.createTopNaming: BASE namelet "//*" with lattice max namer
     // (NamerLattice typeToNamer.get(NamerType.allOf()) / bitmask with every namerTypesUsed bit).
     // Previously we used only the TYPE bit,
     // producing an almost-bottom naming: two XMLs with identical tree type-structure but
@@ -1150,7 +1176,7 @@ naming::NamingPtr createTopNaming() {
 }
 
 /**
- * XML-side port of APE NamingFactory.isStateEquivalent(Naming naming, GUITree t1, GUITree t2):
+ * XML-side port of NamingFactory.isStateEquivalent(Naming naming, GUITree t1, GUITree t2):
  * compare StateKey from two trees under the same `naming` via full StateKey::operator==
  * (activity + naming fingerprint + sorted widget xpaths), not hash-only equality.
  * Optional outputs: diagnostic StateKey::hash() per side; `outBothXmlPathsBuiltOk` iff both XML paths rebuilt.
@@ -1187,10 +1213,11 @@ bool isStateEquivalent(const std::string &activity, const std::string &xmlA, con
     return keyA == keyB;
 }
 
+/** @brief True iff two XML snapshots are equivalent under the coarse top naming (same as reference top-naming check). */
 bool isTopNamingEquivalent(const std::string &activity, const std::string &xmlA,
                            const std::string &xmlB, const gui_tree::GUITreePtr *preferSnapA = nullptr,
                            const gui_tree::GUITreePtr *preferSnapB = nullptr) {
-    // Port of APE NamingFactory.isTopNamingEquivalent -> isStateEquivalent(getTopNaming(), t1, t2).
+    // Reference isTopNamingEquivalent -> isStateEquivalent(getTopNaming(), t1, t2).
     naming::NamingPtr top = createTopNaming();
     if (!top || xmlA.empty() || xmlB.empty()) {
         return false;
@@ -1201,7 +1228,7 @@ bool isTopNamingEquivalent(const std::string &activity, const std::string &xmlA,
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 
 /**
- * Port of APE NamingFactory.isIsomorphic(GUITreeNode t1, GUITreeNode t2):
+ * Structural isomorphism on GUI tree nodes (NamingFactory.isIsomorphic node variant):
  * index, class, package, resourceId, enabled, text, contentDesc, clickable, checkable,
  * longClickable, scrollable; children same count and order, recursive.
  */
@@ -1255,7 +1282,7 @@ bool isIsomorphic(const gui_tree::GUITreeNode *t1, const gui_tree::GUITreeNode *
     return true;
 }
 
-/** Port of APE NamingFactory.isIsomorphic(GUITree t1, GUITree t2). */
+/** Pairwise isomorphism on full `GUITree` wrappers (delegates to root nodes). */
 bool isIsomorphic(const gui_tree::GUITree &t1, const gui_tree::GUITree &t2) {
     const gui_tree::GUITreeNode *r1 = t1.getRootNode();
     const gui_tree::GUITreeNode *r2 = t2.getRootNode();
@@ -1267,7 +1294,7 @@ bool isIsomorphic(const gui_tree::GUITree &t1, const gui_tree::GUITree &t2) {
 
 /**
  * Build two GUITrees from XML (optional transition snapshots), then isIsomorphic(tree, tree).
- * No Naming rebuild — same as Java comparing raw widget trees (stateRefinement uses this for logging only).
+ * No Naming rebuild — raw widget-tree comparison only (stateRefinement uses this for logging).
  */
 bool isIsomorphic(const std::string &activity, const std::string &xmlA, const std::string &xmlB,
                   const gui_tree::GUITreePtr *preferSnapA = nullptr,
@@ -1294,6 +1321,7 @@ bool isIsomorphic(const std::string &activity, const std::string &xmlA, const st
 
 #endif
 
+/** @brief Locates the GUITree node for `targetWidget` using bounds/class/resource-id match on `preorder`. */
 bool apeFindNodeForTargetWidget(const StatePtr &sourceState, const WidgetPtr &targetWidget,
                                 const std::vector<gui_tree::GUITreeNode *> &preorder,
                                 gui_tree::GUITreeNode **outNode,
@@ -1330,6 +1358,7 @@ bool apeFindNodeForTargetWidget(const StatePtr &sourceState, const WidgetPtr &ta
     return true;
 }
 
+/** @brief Legacy stable IDs from Element preorder for `targetWidget` (no live GUITree); prefer snapshot overload when available. */
 std::vector<int> apeResolveStableIdsForTargetWidgetLikeJava(const StatePtr &sourceState,
                                                              const WidgetPtr &targetWidget) {
     std::vector<int> resolvedNodeStableIds;
@@ -1350,6 +1379,7 @@ std::vector<int> apeResolveStableIdsForTargetWidgetLikeJava(const StatePtr &sour
     return resolvedNodeStableIds;
 }
 
+/** @brief Finds the shared parent namelet index and widget xpath for `targetXPathName` consistent across two XML trees. */
 bool apeResolveParentNameletAndWidgetXPath(const std::string &activity, const naming::NamingPtr &cur,
                                            const std::string &targetXPathName,
                                            const naming::NamerPtr &targetNameNamer,
@@ -1432,6 +1462,7 @@ bool apeResolveParentNameletAndWidgetXPath(const std::string &activity, const na
     return !outWidgetXPath->empty();
 }
 
+/** @brief Resolves the target widget xpath (and optional namer) from stable IDs after rebuilding trees under `cur`. */
 bool apeResolveTargetXPathNameLikeJava(const std::string &activity, const naming::NamingPtr &cur,
                                        const std::string &xml, const std::vector<int> &resolvedNodeStableIds,
                                        std::string *outTargetXPathName,
@@ -1448,17 +1479,17 @@ bool apeResolveTargetXPathNameLikeJava(const std::string &activity, const naming
             ? buildGuitreeFromTransitionSourcePreferSnapshot(xml, pkg, cls, *preferSourceGuiSnapshot)
             : buildGuitreeFromCachedXmlPreferElement(xml, pkg, cls);
     if (!built.tree || !built.dom) {
-        BDLOG("ape refine: target-name resolve build_failed activity=%s", activity.c_str());
+        BDLOG("naming refine: target-name resolve build_failed activity=%s", activity.c_str());
         return false;
     }
     if (!safeRebuildTree(cur, *built.tree, built.dom, "target_resolve")) {
-        BDLOG("ape refine: target-name resolve rebuild_failed activity=%s", activity.c_str());
+        BDLOG("naming refine: target-name resolve rebuild_failed activity=%s", activity.c_str());
         return false;
     }
     std::vector<gui_tree::GUITreeNode *> po;
     collectGUITreeNodesPreOrder(built.tree->getRootNode(), &po);
     if (resolvedNodeStableIds.empty()) {
-        BDLOG("ape refine: target-name resolve node_miss activity=%s reason=resolved_nodes_missing",
+        BDLOG("naming refine: target-name resolve node_miss activity=%s reason=resolved_nodes_missing",
               activity.c_str());
         return false;
     }
@@ -1470,7 +1501,7 @@ bool apeResolveTargetXPathNameLikeJava(const std::string &activity, const naming
         }
     }
     if (sidSet.empty()) {
-        BDLOG("ape refine: target-name resolve node_miss activity=%s reason=resolved_nodes_missing",
+        BDLOG("naming refine: target-name resolve node_miss activity=%s reason=resolved_nodes_missing",
               activity.c_str());
         return false;
     }
@@ -1480,20 +1511,20 @@ bool apeResolveTargetXPathNameLikeJava(const std::string &activity, const naming
     size_t validHits = 0;
     for (int stableId : sidSet) {
         if (stableId < 0 || static_cast<size_t>(stableId) >= po.size()) {
-            BDLOG("ape refine: target-name resolve skip_oob_stable_id activity=%s stableId=%d preorder=%zu",
+            BDLOG("naming refine: target-name resolve skip_oob_stable_id activity=%s stableId=%d preorder=%zu",
                   activity.c_str(), stableId, po.size());
             continue;
         }
         gui_tree::GUITreeNode *hit = po[static_cast<size_t>(stableId)];
         if (!hit) {
-            BDLOG("ape refine: target-name resolve skip_null_node_at_stable_id activity=%s stableId=%d",
+            BDLOG("naming refine: target-name resolve skip_null_node_at_stable_id activity=%s stableId=%d",
                   activity.c_str(), stableId);
             continue;
         }
         const naming::NamePtr nm = hit->getXPathName();
         const naming::NameletPtr nl = hit->getCurrentNamelet();
         if (!nm || !nm->getNamer() || !nl) {
-            BDLOG("ape refine: target-name resolve skip_name_missing activity=%s stableId=%d node={%s}",
+            BDLOG("naming refine: target-name resolve skip_name_missing activity=%s stableId=%d node={%s}",
                   activity.c_str(), stableId, apeNodeDebugSummary(hit).c_str());
             continue;
         }
@@ -1506,14 +1537,14 @@ bool apeResolveTargetXPathNameLikeJava(const std::string &activity, const naming
         }
         if (nameIdentityKey(resolvedName) != nameIdentityKey(nm) ||
             !apeNameletMatches(resolvedNamelet, nl)) {
-            BDLOG("ape refine: target-name resolve node_miss activity=%s reason=resolved_nodes_inconsistent_name stableIds=%s",
+            BDLOG("naming refine: target-name resolve node_miss activity=%s reason=resolved_nodes_inconsistent_name stableIds=%s",
                   activity.c_str(), apeJoinStableIds(resolvedNodeStableIds).c_str());
             return false;
         }
         ++validHits;
     }
     if (!resolvedName || validHits == 0) {
-        BDLOG("ape refine: target-name resolve node_miss activity=%s reason=stable_id_out_of_preorder_range stableIds=%s preorder=%zu",
+        BDLOG("naming refine: target-name resolve node_miss activity=%s reason=stable_id_out_of_preorder_range stableIds=%s preorder=%zu",
               activity.c_str(), apeJoinStableIds(resolvedNodeStableIds).c_str(), po.size());
         return false;
     }
@@ -1521,7 +1552,7 @@ bool apeResolveTargetXPathNameLikeJava(const std::string &activity, const naming
     if (outTargetNameNamer) {
         *outTargetNameNamer = resolvedName->getNamer();
     }
-    BDLOG("ape refine: target-name resolved activity=%s targetName=%s stableId=%d stableCount=%zu",
+    BDLOG("naming refine: target-name resolved activity=%s targetName=%s stableId=%d stableCount=%zu",
           activity.c_str(), outTargetXPathName->c_str(), firstHitStableId, validHits);
     return !outTargetXPathName->empty();
 }
@@ -1542,24 +1573,24 @@ bool isSharedAction(
     for (size_t i = 0; i < branchTransitions.size(); ++i) {
         const auto &tt = branchTransitions[i];
         if (!tt.sourceGuiSnapshot) {
-            BDLOG("ape refine: shared-check fail reason=cannot_ape_align_missing_snapshot activity=%s branchIdx=%zu seq=%llu",
+            BDLOG("naming refine: shared-check fail reason=cannot_align_missing_snapshot activity=%s branchIdx=%zu seq=%llu",
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq));
             continue;
         }
         if (tt.sourceXml.empty()) {
-            BDLOG("ape refine: shared-check fail reason=transition_source_xml_missing activity=%s branchIdx=%zu seq=%llu",
+            BDLOG("naming refine: shared-check fail reason=transition_source_xml_missing activity=%s branchIdx=%zu seq=%llu",
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq));
             continue;
         }
         gui_tree::GUITreeBuildResult built =
             buildGuitreeFromTransitionSourcePreferSnapshot(tt.sourceXml, pkg, cls, tt.sourceGuiSnapshot);
         if (!built.tree || !built.dom) {
-            BDLOG("ape refine: shared-check fail reason=build_failed activity=%s branchIdx=%zu seq=%llu",
+            BDLOG("naming refine: shared-check fail reason=build_failed activity=%s branchIdx=%zu seq=%llu",
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq));
             continue;
         }
         if (!safeRebuildTree(cur, *built.tree, built.dom, "shared_check")) {
-            BDLOG("ape refine: shared-check fail reason=rebuild_failed activity=%s branchIdx=%zu seq=%llu",
+            BDLOG("naming refine: shared-check fail reason=rebuild_failed activity=%s branchIdx=%zu seq=%llu",
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq));
             continue;
         }
@@ -1571,13 +1602,13 @@ bool isSharedAction(
             hit = po[static_cast<size_t>(hitIdx)];
         }
         if (!hit) {
-            BDLOG("ape refine: shared-check fail reason=target_node_unresolved activity=%s branchIdx=%zu seq=%llu",
+            BDLOG("naming refine: shared-check fail reason=target_node_unresolved activity=%s branchIdx=%zu seq=%llu",
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq));
             continue;
         }
         const naming::NamePtr targetName = hit->getXPathName();
         if (!targetName) {
-            BDLOG("ape refine: shared-check fail reason=target_xpath_name_null activity=%s branchIdx=%zu seq=%llu node={%s}",
+            BDLOG("naming refine: shared-check fail reason=target_xpath_name_null activity=%s branchIdx=%zu seq=%llu node={%s}",
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq),
                   apeNodeDebugSummary(hit).c_str());
             continue;
@@ -1595,20 +1626,21 @@ bool isSharedAction(
             if (nameIdentityKey(nm) == targetNameKey) {
                 ++sameNameCount;
                 if (sameNameCount > 1) {
-                    BDLOG("ape refine: shared-check hit activity=%s branchIdx=%zu seq=%llu name=%s sameNameCount=%zu",
+                    BDLOG("naming refine: shared-check hit activity=%s branchIdx=%zu seq=%llu name=%s sameNameCount=%zu",
                           activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq),
                           targetName->toXPath().c_str(), sameNameCount);
                     return true;
                 }
             }
         }
-        BDLOG("ape refine: shared-check miss activity=%s branchIdx=%zu seq=%llu name=%s sameNameCount=%zu",
+        BDLOG("naming refine: shared-check miss activity=%s branchIdx=%zu seq=%llu name=%s sameNameCount=%zu",
               activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq),
               targetName->toXPath().c_str(), sameNameCount);
     }
     return false;
 }
 
+/** @brief Validates action refinement: distinct resolved target names per branch and state-count budget under `newNaming`. */
 bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming::NamingPtr &newNaming,
                                       const naming::NamerPtr &newNamer,
                                       const std::vector<fastbotx::NondetTreeTransitionBranchPair::SourceTransition>
@@ -1632,18 +1664,18 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
             const fastbotx::NondetTreeTransitionBranchPair::SourceTransition &tt,
             naming::NamePtr *outName) -> bool {
             if (tt.sourceXml.empty()) {
-                BDLOG("ape refine: action-check fail reason=transition_source_xml_missing activity=%s seq=%llu",
+                BDLOG("naming refine: action-check fail reason=transition_source_xml_missing activity=%s seq=%llu",
                       activity.c_str(), static_cast<unsigned long long>(tt.transitionSeq));
                 return false;
             }
             if (tt.resolvedNodeStableIds.empty()) {
-                BDLOG("ape refine: action-check fail reason=resolved_nodes_missing activity=%s seq=%llu",
+                BDLOG("naming refine: action-check fail reason=resolved_nodes_missing activity=%s seq=%llu",
                       activity.c_str(), static_cast<unsigned long long>(tt.transitionSeq));
                 return false;
             }
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
             if (!tt.sourceGuiSnapshot) {
-                BDLOG("ape refine: action-check fail reason=cannot_ape_align_missing_snapshot activity=%s branch=%s idx=%zu seq=%llu",
+                BDLOG("naming refine: action-check fail reason=cannot_align_missing_snapshot activity=%s branch=%s idx=%zu seq=%llu",
                       activity.c_str(), branchTag, branchIndex,
                       static_cast<unsigned long long>(tt.transitionSeq));
                 return false;
@@ -1654,7 +1686,7 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
             gui_tree::GUITreeBuildResult built = buildGuitreeFromCachedXmlPreferElement(tt.sourceXml, pkg, cls);
 #endif
             if (!built.tree || !built.dom) {
-                BDLOG("ape refine: action-check fail reason=source_tree_build_failed activity=%s branch=%s idx=%zu seq=%llu "
+                BDLOG("naming refine: action-check fail reason=source_tree_build_failed activity=%s branch=%s idx=%zu seq=%llu "
                       "srcStateHash=%zu targetStateHash=%zu stableIds=%s",
                       activity.c_str(), branchTag, branchIndex,
                       static_cast<unsigned long long>(tt.transitionSeq),
@@ -1663,7 +1695,7 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
                 return false;
             }
             if (!safeRebuildTree(newNaming, *built.tree, built.dom, "action_check")) {
-                BDLOG("ape refine: action-check fail reason=source_tree_rebuild_failed activity=%s branch=%s idx=%zu seq=%llu "
+                BDLOG("naming refine: action-check fail reason=source_tree_rebuild_failed activity=%s branch=%s idx=%zu seq=%llu "
                       "srcStateHash=%zu targetStateHash=%zu stableIds=%s",
                       activity.c_str(), branchTag, branchIndex,
                       static_cast<unsigned long long>(tt.transitionSeq),
@@ -1700,7 +1732,7 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
                 }
                 if (nameIdentityKey(nm) != nameIdentityKey(curName) ||
                     !apeNameletMatches(nl, curNl)) {
-                    BDLOG("ape refine: action-check fail reason=resolved_nodes_inconsistent_name activity=%s branch=%s idx=%zu seq=%llu "
+                    BDLOG("naming refine: action-check fail reason=resolved_nodes_inconsistent_name activity=%s branch=%s idx=%zu seq=%llu "
                           "srcStateHash=%zu targetStateHash=%zu stableIds=%s",
                           activity.c_str(), branchTag, branchIndex,
                           static_cast<unsigned long long>(tt.transitionSeq),
@@ -1711,7 +1743,7 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
                 ++validHits;
             }
             if (!nm || validHits == 0) {
-                BDLOG("ape refine: action-check fail reason=target_node_unresolved activity=%s branch=%s idx=%zu seq=%llu "
+                BDLOG("naming refine: action-check fail reason=target_node_unresolved activity=%s branch=%s idx=%zu seq=%llu "
                       "srcStateHash=%zu targetStateHash=%zu stableIds=%s preorderSize=%zu",
                       activity.c_str(), branchTag, branchIndex,
                       static_cast<unsigned long long>(tt.transitionSeq),
@@ -1721,13 +1753,13 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
             }
             const std::string xp = nm->toXPath();
             if (xp.empty()) {
-                BDLOG("ape refine: action-check fail reason=target_xpath_name_empty activity=%s branch=%s idx=%zu seq=%llu "
+                BDLOG("naming refine: action-check fail reason=target_xpath_name_empty activity=%s branch=%s idx=%zu seq=%llu "
                       "stableId=%d node={%s}",
                       activity.c_str(), branchTag, branchIndex,
                       static_cast<unsigned long long>(tt.transitionSeq), firstHitStableId, "-");
                 return false;
             }
-            BDLOG("ape refine: action-check target_name_resolved activity=%s branch=%s idx=%zu seq=%llu "
+            BDLOG("naming refine: action-check target_name_resolved activity=%s branch=%s idx=%zu seq=%llu "
                   "stableId=%d stableCount=%zu sourceStateHash=%zu targetStateHash=%zu xpath=%s cacheKey=%s",
                   activity.c_str(), branchTag, branchIndex,
                   static_cast<unsigned long long>(tt.transitionSeq), firstHitStableId, validHits,
@@ -1768,14 +1800,14 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
             if (it != firstSeenByName.end()) {
                 firstSeen = it->second;
             }
-            BDLOG("ape refine: action-check fail reason=name_collision activity=%s "
+            BDLOG("naming refine: action-check fail reason=name_collision activity=%s "
                   "collided=branch=B idx=%zu seq=%llu srcStateHash=%zu targetStateHash=%zu stableIds=%s "
                   "firstSeen={%s} xpath=%s cacheKey=%s",
                   activity.c_str(), i, static_cast<unsigned long long>(tt.transitionSeq),
                   static_cast<size_t>(tt.sourceStateHash), static_cast<size_t>(tt.targetStateHash),
                   apeJoinStableIds(tt.resolvedNodeStableIds).c_str(), firstSeen.c_str(),
                   name2 ? name2->toXPath().c_str() : "", name2 ? name2->cacheKeyString().c_str() : "");
-            BDLOG("ape refine: action-check name_collision detail activity=%s newNamerMask=%u "
+            BDLOG("naming refine: action-check name_collision detail activity=%s newNamerMask=%u "
                   "newNamingFp=%s branchASize=%zu branchBSize=%zu uniqueNamesBeforeCollision=%zu",
                   activity.c_str(), newNamer ? newNamer->typeDimensionMask() : 0u,
                   newNaming ? newNaming->fingerprintString().c_str() : "-", tts1.size(), tts2.size(),
@@ -1839,6 +1871,7 @@ bool apeCheckActionRefinementLikeJava(const std::string &activity, const naming:
     return true;
 }
 
+/** @brief Element-preorder stable IDs for the action target (legacy); not GUITree-preorder indices. */
 std::vector<int> apeCollectResolvedNodeStableIds(const StatePtr &sourceState,
                                                  const ActivityStateActionPtr &action) {
     std::vector<int> ret;
@@ -1861,6 +1894,7 @@ std::vector<int> apeCollectResolvedNodeStableIds(const StatePtr &sourceState,
 }
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+/** @brief GUITree-preorder index for the action target using property match against `liveSrcGuiTree`. */
 std::vector<int> apeCollectResolvedNodeStableIds(const StatePtr &sourceState,
                                                  const ActivityStateActionPtr &action,
                                                  const gui_tree::GUITreePtr &liveSrcGuiTree) {
@@ -1920,7 +1954,7 @@ std::vector<int> apeCollectResolvedNodeStableIds(const StatePtr &sourceState,
         (miss.firstBoundsClassIdx >= 0 && miss.firstBoundsClassIdx < static_cast<int>(preorder.size()))
             ? preorder[miss.firstBoundsClassIdx]
             : nullptr;
-    BDLOG("ape resolved_nodes_miss preorderN=%zu bM=%d bcM=%d actionType=%d "
+    BDLOG("naming resolved_nodes_miss preorderN=%zu bM=%d bcM=%d actionType=%d "
          "wBounds=[%d,%d] [%d,%d] wClass=%s wRid=%s "
          "sampleBoundsClassRid=%s sampleBoundsOnlyClass=%s sampleBoundsOnlyRid=%s",
          miss.preorderN, miss.boundsMatchCount, miss.boundsClassMatchCount,
@@ -1936,7 +1970,7 @@ std::vector<int> apeCollectResolvedNodeStableIds(const StatePtr &sourceState,
 #endif
 
 /**
- * Java Model.actionRefinement over-abstracted actions: one screen, multiple concrete widgets under the same
+ * actionRefinement when actions are over-abstracted: one screen, multiple concrete widgets under the same
  * abstract target (native: _mergedWidgets). Requires distinct Name xpaths per concrete and bounds checks.
  */
 bool apeCheckOverAbstractedActionRefinementLikeJava(const std::string &activity,
@@ -2013,6 +2047,7 @@ bool apeCheckOverAbstractedActionRefinementLikeJava(const std::string &activity,
 namespace fastbotx {
 
 namespace {
+/** @brief Notifies the graph of a visit transition when the agent's current action is a model action with a target state. */
 void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                                                 const AbstractAgentPtr &agent,
                                                 const StatePtr &targetState) {
@@ -2028,6 +2063,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
 }
 } // namespace
 
+    /** @brief Returns the widget-key inclusion mask for this activity, or the default mask. */
     WidgetKeyMask Model::getActivityKeyMask(const std::string &activity) const {
         auto it = _activityKeyMask.find(activity);
         if (it != _activityKeyMask.end()) {
@@ -2036,10 +2072,12 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         return DefaultWidgetKeyMask;
     }
 
+    /** @brief Returns the LLM client held by the task agent, or nullptr if none. */
     std::shared_ptr<LlmClient> Model::getLlmClient() const {
         return _llmTaskAgent ? _llmTaskAgent->getLlmClient() : nullptr;
     }
 
+    /** @brief Stores a per-activity widget-key mask used when hashing widgets for state keys. */
     void Model::setActivityKeyMask(const std::string &activity, WidgetKeyMask mask) {
         _activityKeyMask[activity] = mask;
     }
@@ -2122,7 +2160,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 05021710, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 05092234, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -2155,7 +2193,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         this->_apeEvidencePoolClockEvictIndex = 0;
         this->_apeEvidenceEpoch = 0;
         this->_apeTransitionSeq = 0;
-        BLOG("state abstraction: enabled (APE-aligned event-driven refine/coarsen)");
+        BLOG("state abstraction: enabled (reference-aligned event-driven refine/coarsen)");
 #endif
     }
 
@@ -2213,6 +2251,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         return agent;
     }
 
+    /** @brief Overload that ignores the legacy code-coverage flag and delegates to the primary addAgent(). */
     AbstractAgentPtr Model::addAgent(const std::string &deviceIDString, AlgorithmType agentType,
                                      bool useCodeCoverage, DeviceType deviceType) {
         (void) useCodeCoverage;
@@ -2371,11 +2410,11 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         static std::atomic<uint64_t> g_build_state_only{0};
         const uint64_t n = ++g_build_state_only;
         if (state && (n <= 20 || (n % 400) == 0)) {
-            BLOG("ape state build: buildStateOnly source activity=%s seq=%" PRIu64
+            BLOG("naming state build: buildStateOnly source activity=%s seq=%" PRIu64
                  " elementPtr=%p xmlSig=%" PRIu64 " xmlLen=%zu %s",
                  activityStr.c_str(), n, element.get(), xmlSigForLog, xmlForLog.size(),
                  summarizeElementForLog(element).c_str());
-            BLOG("ape state build: buildStateOnly activity=%s stateHash=%" PRIuPTR
+            BLOG("naming state build: buildStateOnly activity=%s stateHash=%" PRIuPTR
                  " widgets=%zu actions=%zu widgetSummary=%s actionSummary=%s",
                  activityStr.c_str(), static_cast<uintptr_t>(state->hash()), state->getWidgetSize(),
                  state->getActions().size(), summarizeStateWidgetsForLog(state).c_str(),
@@ -2384,6 +2423,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         return state;
     }
 
+    /** @brief Builds a state from the UI element tree, inserts it into the graph, and returns it. */
     StatePtr Model::createAndAddState(const ElementPtr &element, const AbstractAgentPtr &agent,
                                       const stringPtr &activityPtr) {
         StatePtr state = buildStateOnly(element, agent, activityPtr);
@@ -2636,7 +2676,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 if (haveApeKey) {
                     built->applyDynamicAbstractionIdentityHash(apeKey.hash());
                 } else {
-                    BDLOG("ape statekey: skip identity update activity=%s reason=%d",
+                    BDLOG("naming statekey: skip identity update activity=%s reason=%d",
                           activity.c_str(), static_cast<int>(buildFailReason));
                 }
             }
@@ -2664,7 +2704,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         _ape_correctness_counters.graph_dedup_hash_collision++;
                         const uint64_t n = _ape_correctness_counters.graph_dedup_hash_collision;
                         if (n <= 3 || (n % 100) == 0) {
-                            BLOG("ape graph dedup: hash collision activity=%s keyHash=%zu bucket=%zu",
+                            BLOG("naming graph dedup: hash collision activity=%s keyHash=%zu bucket=%zu",
                                  activity.c_str(), static_cast<size_t>(kh), bucket.size());
                         }
                     }
@@ -2743,7 +2783,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             std::vector<gui_tree::GUITreeNode *> guiPreOrder;
             if (wantApeRlIdentity) {
                 (void)guiPreOrder;
-                BDLOG("ape statekey: skip identity update activity=%s reason=no_pugixml", activity.c_str());
+                BDLOG("naming statekey: skip identity update activity=%s reason=no_pugixml", activity.c_str());
             }
             if (haveApeKey && _preference && _preference->useApeGraphDedupByStateKey()) {
                 const uintptr_t kh = apeKey.hash();
@@ -2765,7 +2805,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         _ape_correctness_counters.graph_dedup_hash_collision++;
                         const uint64_t n = _ape_correctness_counters.graph_dedup_hash_collision;
                         if (n <= 3 || (n % 100) == 0) {
-                            BLOG("ape graph dedup: hash collision activity=%s keyHash=%zu bucket=%zu",
+                            BLOG("naming graph dedup: hash collision activity=%s keyHash=%zu bucket=%zu",
                                  activity.c_str(), static_cast<size_t>(kh), bucket.size());
                         }
                     }
@@ -2790,7 +2830,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             if (state) {
                 _apeLastScreenStateForValidate = state;
                 if (agent) {
-                    agent->validateAllNewActionsLikeApe(state);
+                    agent->validateAllNewActions(state);
                 }
             }
         }
@@ -2830,7 +2870,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 naming::ActivityNamingManager &mgrGate = _apeStateNamingManager->activityManager();
                 naming::NamingPtr curGate = mgrGate.getNaming(actKeyCollected);
                 if (!curGate || !curGate->getParent()) {
-                    BDLOG("ape naming: under-abstracted-check phase=%s activity=%s rollbacks=0 changed=0 "
+                    BDLOG("naming: under-abstracted-check phase=%s activity=%s rollbacks=0 changed=0 "
                           "collected=%zu collectedObs=%zu skipped=root_no_parent fineness=%d",
                           coarsenPhase ? coarsenPhase : "?", activity.c_str(), collectedKeys,
                           collectedObservations, curGate ? curGate->getFineness() : -1);
@@ -2848,7 +2888,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     if (cp <= 240 || (cp % 600) == 0) {
                         const uintptr_t triggerKeyHashFromStateKey =
                             ctxProbe.triggerSourceKeyExact ? ctxProbe.triggerSourceKey.hash() : 0;
-                        BDLOG("ape naming BUG_PROBE [coarsen_callsite_ctx] phase=%s seq=%llu activity=%s "
+                        BDLOG("naming BUG_PROBE [coarsen_callsite_ctx] phase=%s seq=%llu activity=%s "
                               "before_call=1 trigHashCtx=%lu trigExact=%d trigHashStateKey=%lu "
                               "equalCtxVsStateKey=%d old2newSize=%zu oldObsSize=%zu rollbackCount=%zu "
                               "lastRefineSeedSeq=%llu lastRefineSeedTrigHash=%lu",
@@ -2875,7 +2915,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                                 ? "both_seq_and_trigger_zero"
                                 : (seq0 ? "seq_zero_trigger_nonzero" : "trigger_zero_seq_nonzero");
                         if (su <= 200 || (su % 600) == 0) {
-                            BDLOG("ape naming: coarsen skip activity=%s phase=%s reason=unseeded_context "
+                            BDLOG("naming: coarsen skip activity=%s phase=%s reason=unseeded_context "
                                   "unseeded_detail=%s lastRefineSeedSeq=%llu trigHashCtx=%lu "
                                   "old2newSize=%zu oldObsSize=%zu note=ND_refine_seeds_ctx_after_recordTransition",
                                   actKeyCollected.c_str(), coarsenPhase ? coarsenPhase : "?",
@@ -2901,7 +2941,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 notifyAgentsOfApeNamingChange();
             }
 
-            BDLOG("ape naming: under-abstracted-check phase=%s activity=%s rollbacks=%zu changed=%d "
+            BDLOG("naming: under-abstracted-check phase=%s activity=%s rollbacks=%zu changed=%d "
                   "collected=%zu collectedObs=%zu",
                   coarsenPhase ? coarsenPhase : "?", activity.c_str(), rollbackCount, changed ? 1 : 0,
                   collectedKeys, collectedObservations);
@@ -2919,11 +2959,11 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             state->visit(this->_graph->getTimestamp());
         }
         recordTransition(agent, state);
-        BDLOG("ape naming: evolve-step activity=%s underRollbacks_pre=%zu overRefine=%zu underRollbacks_post=%zu",
+        BDLOG("naming: evolve-step activity=%s underRollbacks_pre=%zu overRefine=%zu underRollbacks_post=%zu",
               activity.c_str(), underRollbacksPre, overRefinements, underRollbacksPost);
         if (state && state->getVisitedCount() == 0) {
             state->visit(this->_graph->getTimestamp());
-            BDLOG("ape naming: state_visit_retry activity=%s hash=%zu",
+            BDLOG("naming: state_visit_retry activity=%s hash=%zu",
                   activity.c_str(), static_cast<size_t>(state->hash()));
         }
 #endif
@@ -2933,9 +2973,9 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
         fireGraphVisitStateTransitionIfModelAction(this->_graph, agent, state);
 #endif
-        // LLMDroid runs after addState + recordTransition. When DYNAMIC_STATE_ABSTRACTION_ENABLED, state
-        // visit runs after preEvolve and before recordTransition (Java order). processState must not mutate
-        // StateKey or Graph dedup keys. Gated by max.llm.llmdroid at Model layer.
+        // Planner pipeline hook runs after addState + recordTransition. When DYNAMIC_STATE_ABSTRACTION_ENABLED,
+        // state visit runs after preEvolve and before recordTransition (same ordering as reference tooling).
+        // processState must not mutate StateKey or Graph dedup keys. Gated by max.llm.llmdroid at Model layer.
         {
             const PreferencePtr pref = _preference ? _preference : Preference::inst();
             if (pref && pref->isLlmdroidEnabled() && state && agent) {
@@ -2944,8 +2984,8 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 }
             }
         }
-        // Step 5b: Removed — image now stays in Java (setLastScreenshotForLlm + doLlmHttpPostFromPrompt).
-        // Native no longer returns NOP when screenshotBytes is empty; Java always has the image when needed.
+        // Step 5b: Removed — screenshots are handled by the host/runtime pipeline when calling LLM helpers.
+        // Native no longer returns NOP solely because screenshot bytes are empty when the host supplies them.
         // Step 6: Optionally delegate to LLMTaskAgent before RL (pass pre-matched task from raw tree).
         ActionPtr llmAction = nullptr;
         if (this->_llmTaskAgent) {
@@ -3006,7 +3046,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         double totalCostMs = methodEndTimestamp - methodStartTimestamp;
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         if (state && state->usesDynamicAbstractionIdentityHash()) {
-            BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms dims=[APE]",
+            BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms dims=[Ape abstraction]",
                  buildStateCostMs,
                  actionCostMs,
                  totalCostMs);
@@ -3031,6 +3071,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
     }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** @brief Runs dynamic abstraction / naming refinement during the pre-evolve phase for one activity. */
     size_t Model::runApeOverAbstractedPreEvolvePhase(const std::string &activity, const StatePtr &state) {
         if (!_preference || !_preference->useApeEvolveModel()) {
             return 0;
@@ -3074,9 +3115,9 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         const naming::NamingPtr cur = mgr.getNaming(actKey);
                         const size_t activityStateCount = getApeStateCountByActivityAndNamingFingerprint(
                             actKey, cur ? cur->fingerprintString() : std::string());
-                        BDLOG("ape naming: skip pre-evolve refine activity=%s reason=maxStatesPerActivity graphStates=%zu max=%d",
+                        BDLOG("naming: skip pre-evolve refine activity=%s reason=maxStatesPerActivity graphStates=%zu max=%d",
                               activity.c_str(), g, apeMaxStatesPerActivity);
-                        BDLOG("ape naming: maxStatesPerActivity detail activity=%s namingFingerprint=%s namingScopedStates=%zu",
+                        BDLOG("naming: maxStatesPerActivity detail activity=%s namingFingerprint=%s namingScopedStates=%zu",
                               activity.c_str(), cur ? cur->fingerprintString().c_str() : "null",
                               activityStateCount);
                         activitySizeGateLogged = true;
@@ -3104,9 +3145,9 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         const naming::NamingPtr cur = mgr.getNaming(actKey);
                         const size_t activityStateCount = getApeStateCountByActivityAndNamingFingerprint(
                             actKey, cur ? cur->fingerprintString() : std::string());
-                        BDLOG("ape naming: skip pre-evolve refine activity=%s reason=maxGUITreesPerState guitreesInState=%zu max=%d",
+                        BDLOG("naming: skip pre-evolve refine activity=%s reason=maxGUITreesPerState guitreesInState=%zu max=%d",
                               activity.c_str(), guitreesForState, apeMaxGUITreesPerState);
-                        BDLOG("ape naming: maxGUITreesPerState detail activity=%s namingFingerprint=%s namingScopedStates=%zu",
+                        BDLOG("naming: maxGUITreesPerState detail activity=%s namingFingerprint=%s namingScopedStates=%zu",
                               activity.c_str(), cur ? cur->fingerprintString().c_str() : "null",
                               activityStateCount);
                         activitySizeGateLogged = true;
@@ -3163,7 +3204,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                             const std::string newFp =
                                 newN ? newN->fingerprintString() : std::string("-");
                             BDLOG(
-                                "ape naming diag [Model.updateNaming-enter Refine] seq=%llu act=%s "
+                                "naming diag [Model.updateNaming-enter Refine] seq=%llu act=%s "
                                 "old=%p new=%p oldPar=%p newPar=%p direct_child=%d sibling_share_parent=%d "
                                 "candidate_source=%s oldFin=%d newFin=%d old_fp=%s new_fp=%s",
                                 static_cast<unsigned long long>(ud), actKey.c_str(),
@@ -3305,7 +3346,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                             const std::string oldFp = oldN ? oldN->fingerprintString() : std::string();
                             const std::string newFp = newN ? newN->fingerprintString() : std::string();
                             BLOG(
-                                "ape naming diag [Model.updateNaming-enter Refine] seq=%llu act=%s "
+                                "naming diag [Model.updateNaming-enter Refine] seq=%llu act=%s "
                                 "old=%p new=%p oldPar=%p newPar=%p direct_child=%d sibling_share_parent=%d "
                                 "candidate_source=%s oldFin=%d newFin=%d old_fp=%s new_fp=%s",
                                 static_cast<unsigned long long>(ud), actKey.c_str(),
@@ -3318,7 +3359,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         if (direct_child == 0 && candidate_source == "extendUnderNamelet") {
                             static std::atomic<uint64_t> g_extend_parent_mismatch_diag{0};
                             const uint64_t md = ++g_extend_parent_mismatch_diag;
-                            BLOG("ape naming diag [Model.extendUnderNamelet-parentMismatch] seq=%llu act=%s "
+                            BLOG("naming diag [Model.extendUnderNamelet-parentMismatch] seq=%llu act=%s "
                                  "old=%p new=%p oldPar=%p newPar=%p sibling_share_parent=%d oldFin=%d newFin=%d",
                                  static_cast<unsigned long long>(md), actKey.c_str(),
                                  static_cast<const void *>(oldN.get()),
@@ -3329,7 +3370,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                                  newN ? newN->getFineness() : -1);
                             static std::atomic<uint64_t> g_extend_parent_mismatch_reject_diag{0};
                             const uint64_t rd = ++g_extend_parent_mismatch_reject_diag;
-                            BLOG("ape naming diag [Model.extendUnderNamelet-parentMismatch-reject] seq=%llu "
+                            BLOG("naming diag [Model.extendUnderNamelet-parentMismatch-reject] seq=%llu "
                                  "act=%s old=%p new=%p",
                                  static_cast<unsigned long long>(rd), actKey.c_str(),
                                  static_cast<const void *>(oldN.get()),
@@ -3452,7 +3493,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     break;
                 }
                 refinements++;
-                BDLOG("ape naming: over-abstracted per-action refinement ok activity=%s outer=%d",
+                BDLOG("naming: over-abstracted per-action refinement ok activity=%s outer=%d",
                       actKey.c_str(), outer);
             }
 
@@ -3493,7 +3534,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     const std::string newFp = newN ? newN->fingerprintString() : std::string();
                     const char *candidate_source = "actionRefinementBatch";
                     BLOG(
-                        "ape naming diag [Model.batchUpdateNaming-enter Refine] seq=%llu act=%s outer=%d hops=%d "
+                        "naming diag [Model.batchUpdateNaming-enter Refine] seq=%llu act=%s outer=%d hops=%d "
                         "old=%p new=%p oldPar=%p newPar=%p direct_child=%d sibling_share_parent=%d "
                         "candidate_source=%s oldFin=%d newFin=%d old_fp=%s new_fp=%s",
                         static_cast<unsigned long long>(ud), actKey.c_str(), outer, hopsClamped,
@@ -3509,13 +3550,14 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             pruneDivergentApeStatesForActivity(actKey);
             refinements++;
             notifyAgentsOfApeNamingChange();
-            BDLOG("ape naming: over-abstracted batch actionRefinement activity=%s outer=%d hops=%d",
+            BDLOG("naming: over-abstracted batch actionRefinement activity=%s outer=%d hops=%d",
                   actKey.c_str(), outer, hopsClamped);
         }
         return refinements;
     }
 
 #ifndef NDEBUG
+    /** @brief Debug check that abstraction updates are not invoked concurrently from multiple threads. */
     void Model::assertApeSingleThreaded() const {
         const std::thread::id cur = std::this_thread::get_id();
         if (!_apeOwnerThreadSet) {
@@ -3529,6 +3571,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
     }
 #endif
+    /** @brief Records a graph transition after an agent moves to the target state from the current action. */
     void Model::recordTransition(const AbstractAgentPtr &agent, const StatePtr &targetState) {
         if (!agent || !targetState) return;
         const bool skipNd = agent->isCurrentStateRecovered();
@@ -3545,7 +3588,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             const std::string tgtAct = (tgtAp && tgtAp.get())
                                         ? naming::StateKey::canonicalActivityString(*tgtAp)
                                         : std::string("<null>");
-            BDLOG("ape naming: transition record enter inLlm=%d skipNdResolve=%d srcAct=%s tgtAct=%s actHash=%lu actId=%lu",
+            BDLOG("naming: transition record enter inLlm=%d skipNdResolve=%d srcAct=%s tgtAct=%s actHash=%lu actId=%lu",
                 inLlm, skipNd ? 1 : 0, srcAct.c_str(), tgtAct.c_str(), (unsigned long)act->hash(),
                 (unsigned long)reinterpret_cast<uintptr_t>(act.get()));
         }
@@ -3553,6 +3596,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         recordApeTransitionForAbstraction(srcState, targetState, act, skipNd);
     }
 
+    /** @brief Records an abstraction-layer transition between two states for refinement bookkeeping. */
     void Model::recordApeTransitionForAbstraction(const StatePtr &src, const StatePtr &tgt,
                                                   const ActivityStateActionPtr &act,
                                                   bool skipNonDeterministicResolve) {
@@ -3577,7 +3621,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             return;
         }
         if (src->getWidgetSize() != tgt->getWidgetSize()) {
-            BDLOG("ape transition: state size delta srcHash=%" PRIuPTR " tgtHash=%" PRIuPTR
+            BDLOG("naming transition: state size delta srcHash=%" PRIuPTR " tgtHash=%" PRIuPTR
                   " srcWidgets=%zu tgtWidgets=%zu srcActions=%zu tgtActions=%zu "
                   "srcWidgetSummary=%s tgtWidgetSummary=%s srcActionSummary=%s tgtActionSummary=%s",
                   static_cast<uintptr_t>(src->hash()), static_cast<uintptr_t>(tgt->hash()),
@@ -3618,7 +3662,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             if (auto b = tw->getBounds()) {
                 e.hasTargetBounds = true;
                 e.targetBounds = *b;
-                BDLOG("ape transition: record_target_bounds activity=%s srcKey=%zu act=%zu seq=%llu "
+                BDLOG("naming transition: record_target_bounds activity=%s srcKey=%zu act=%zu seq=%llu "
                       "widgetHash=%zu actionType=%d targetBounds=%s",
                       e.sourceActivity.c_str(), e.sourceKeyHash, e.actionHash,
                       static_cast<unsigned long long>(e.transitionSeq),
@@ -3626,14 +3670,14 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                       b->toString().c_str());
                 if (e.targetBounds.left == 0 && e.targetBounds.top == 0 &&
                     e.targetBounds.right == 0 && e.targetBounds.bottom == 0) {
-                    BDLOG("ape transition: zero_target_bounds_on_record activity=%s srcKey=%zu act=%zu "
+                    BDLOG("naming transition: zero_target_bounds_on_record activity=%s srcKey=%zu act=%zu "
                           "seq=%llu srcState=%zu tgtState=%zu",
                           e.sourceActivity.c_str(), e.sourceKeyHash, e.actionHash,
                           static_cast<unsigned long long>(e.transitionSeq),
                           e.sourceStateHash, e.targetStateHash);
                 }
             } else {
-                BDLOG("ape transition: record_target_bounds_null activity=%s srcKey=%zu act=%zu seq=%llu "
+                BDLOG("naming transition: record_target_bounds_null activity=%s srcKey=%zu act=%zu seq=%llu "
                       "widgetHash=%zu actionType=%d",
                       e.sourceActivity.c_str(), e.sourceKeyHash, e.actionHash,
                       static_cast<unsigned long long>(e.transitionSeq),
@@ -3650,7 +3694,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             }
         }
         e.valid = true;
-        BDLOG("ape naming: transition srcKey=%lu act=%lu tgtKey=%lu activity=%s",
+        BDLOG("naming: transition srcKey=%lu act=%lu tgtKey=%lu activity=%s",
               (unsigned long)e.sourceKeyHash, (unsigned long)e.actionHash, (unsigned long)e.targetKeyHash,
               e.sourceActivity.c_str());
         const ApePairKey pairKey{e.sourceKeyHash, e.actionHash};
@@ -3696,7 +3740,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     apeRememberGuiTreeSnapshot(src->hash(), *builtFb.tree);
                     snapSrcLive = apeLatestGuiTreeSnapshot(src->hash());
                     snapFallbackRebuilt = (snapSrcLive != nullptr);
-                    BDLOG("ape naming: transition record snap_fallback_rebuilt seq=%llu activity=%s "
+                    BDLOG("naming: transition record snap_fallback_rebuilt seq=%llu activity=%s "
                           "srcState=%lu rebuilt=%d xmlLen=%zu",
                           (unsigned long long)aSlot.transitionSeq, aSlot.sourceActivity.c_str(),
                           (unsigned long)src->hash(), snapFallbackRebuilt ? 1 : 0,
@@ -3727,7 +3771,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
 #endif
         if (treeSlot.resolvedNodeStableIds.empty()) {
-            BDLOG("ape naming: transition record resolvedNodes_empty seq=%llu activity=%s "
+            BDLOG("naming: transition record resolvedNodes_empty seq=%llu activity=%s "
                   "hasLiveSnap=%d fallbackRebuilt=%d actionType=%d",
                   (unsigned long long)aSlot.transitionSeq, aSlot.sourceActivity.c_str(),
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
@@ -3762,7 +3806,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 // Rare when ring-buffer eviction and re-aggregation happened around first replay.
                 detail = "unexpected_multi_target_with_zero_prev";
             }
-            BDLOG("ape naming: skip event refine activity=%s reason=not_NEW_ACTION_TARGET "
+            BDLOG("naming: skip event refine activity=%s reason=not_NEW_ACTION_TARGET "
                   "reason_detail=%s srcKey=%lu act=%lu prevTargets=%zu nowTargets=%zu "
                   "targetKey=%lu seq=%llu",
                   aSlot.sourceActivity.c_str(), detail, (unsigned long)pairKey.sourceKeyHash,
@@ -3772,7 +3816,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             return;
         }
         if (skipNonDeterministicResolve) {
-            BDLOG("ape naming: skip ND pipeline activity=%s reason=current_state_recovered "
+            BDLOG("naming: skip ND pipeline activity=%s reason=current_state_recovered "
                   "srcKey=%lu act=%lu tgtKey=%lu seq=%llu distinctTargets=%zu",
                   aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
                   (unsigned long)pairKey.actionHash, (unsigned long)aSlot.targetKeyHash,
@@ -3780,20 +3824,20 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             return;
         }
         if (!_preference || !_preference->useApeEvolveModel()) {
-            BDLOG("ape naming: skip ND resolve activity=%s reason=evolveModel_off srcKey=%lu act=%lu",
+            BDLOG("naming: skip ND resolve activity=%s reason=evolveModel_off srcKey=%lu act=%lu",
                   aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
                   (unsigned long)pairKey.actionHash);
             return;
         }
         if (aSlot.actionType == ActionType::BACK) {
-            BDLOG("ape naming: skip ND resolve activity=%s reason=back_action srcKey=%lu act=%lu targets=%zu",
+            BDLOG("naming: skip ND resolve activity=%s reason=back_action srcKey=%lu act=%lu targets=%zu",
                   aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
                   (unsigned long)pairKey.actionHash, nowPairTargetCount);
             return;
         }
         if (aSlot.actionIdentity != 0 &&
             _apeRefineActionIdentityBlacklist.count(aSlot.actionIdentity) != 0) {
-            BDLOG("ape naming: skip ND resolve activity=%s reason=NDActionBlacklisted srcKey=%lu act=%lu actId=%lu",
+            BDLOG("naming: skip ND resolve activity=%s reason=NDActionBlacklisted srcKey=%lu act=%lu actId=%lu",
                   aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
                   (unsigned long)pairKey.actionHash, (unsigned long)aSlot.actionIdentity);
             return;
@@ -3820,7 +3864,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
         std::sort(partnerTargets.begin(), partnerTargets.end());
         if (partnerTargets.empty()) {
-            BDLOG("ape naming: skip ND partner loop activity=%s reason=no_peer_targets srcKey=%lu act=%lu "
+            BDLOG("naming: skip ND partner loop activity=%s reason=no_peer_targets srcKey=%lu act=%lu "
                   "nstTarget=%lu distinctTargets=%zu",
                   aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
                   (unsigned long)pairKey.actionHash, (unsigned long)aSlot.targetKeyHash,
@@ -3828,7 +3872,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             return;
         }
 
-        BDLOG("ape naming: event refine-attempt (APE resolveNonDeterminism partner loop) activity=%s "
+        BDLOG("naming: event refine-attempt (nondeterministic partner loop) activity=%s "
               "srcKey=%lu act=%lu nstTarget=%lu peerTargets=%zu nonDetPairs=%d",
               aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
               (unsigned long)pairKey.actionHash, (unsigned long)aSlot.targetKeyHash,
@@ -3874,13 +3918,13 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             rpPair.targetKeyHashes.insert(aSlot.targetKeyHash);
             rpPair.targetCount = 2;
             failReason = ApeRefineFailReason::Other;
-            BDLOG("ape naming: ND refine try partner activity=%s srcKey=%lu act=%lu peerTarget=%lu nstTarget=%lu",
+            BDLOG("naming: ND refine try partner activity=%s srcKey=%lu act=%lu peerTarget=%lu nstTarget=%lu",
                   aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
                   (unsigned long)pairKey.actionHash, (unsigned long)peerTarget,
                   (unsigned long)aSlot.targetKeyHash);
             if (refineActivityApeNaming(aSlot.sourceActivity, &rpPair, nonDetPairs, &failReason)) {
                 _apeEventRefineSuccessCount++;
-                BDLOG("ape naming: event refine ok activity=%s srcKey=%lu act=%lu peerTarget=%lu nstTarget=%lu",
+                BDLOG("naming: event refine ok activity=%s srcKey=%lu act=%lu peerTarget=%lu nstTarget=%lu",
                       aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
                       (unsigned long)pairKey.actionHash, (unsigned long)peerTarget,
                       (unsigned long)aSlot.targetKeyHash);
@@ -3898,19 +3942,19 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 (failReason == ApeRefineFailReason::BranchPairsUnavailable);
             const bool ndBlacklistEligible =
                 !branchDataMissing &&
-                outStateTransitionsForAction >= static_cast<size_t>(kApeNDActionBlacklistMinOutEdges);
+                outStateTransitionsForAction >= static_cast<size_t>(kNDActionBlacklistMinOutEdges);
             const bool inserted =
                 (ndBlacklistEligible && aSlot.actionIdentity != 0) &&
                 _apeRefineActionIdentityBlacklist.insert(aSlot.actionIdentity).second;
             apeCapApeNamingCoarsenAndRefineBlacklists();
             if (inserted) {
-                BLOG("ape naming: NDActionBlacklist add (APE: out>=%d after failed resolve) activity=%s src=%lu act=%lu actId=%lu outTransitions=%zu failReason=%s",
-                     kApeNDActionBlacklistMinOutEdges, aSlot.sourceActivity.c_str(),
+                BLOG("naming: NDActionBlacklist add (out edges >= %d after failed resolve) activity=%s src=%lu act=%lu actId=%lu outTransitions=%zu failReason=%s",
+                     kNDActionBlacklistMinOutEdges, aSlot.sourceActivity.c_str(),
                      (unsigned long)pairKey.sourceKeyHash, (unsigned long)pairKey.actionHash,
                      (unsigned long)aSlot.actionIdentity, outStateTransitionsForAction,
                      failReasonStr(failReason));
             }
-            BDLOG("ape naming: event refine failed activity=%s srcKey=%lu act=%lu targets=%zu reason=%s "
+            BDLOG("naming: event refine failed activity=%s srcKey=%lu act=%lu targets=%zu reason=%s "
                   "(ndBlacklistEligible=%d ndBlacklistInserted=%d actZero=%d outTransitions=%zu "
                   "outBelowNdBlacklistMin=%d branchDataMissing=%d)",
                   aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
@@ -3918,10 +3962,10 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                   failReasonStr(failReason), ndBlacklistEligible ? 1 : 0, inserted ? 1 : 0,
                   (pairKey.actionHash == 0) ? 1 : 0, outStateTransitionsForAction,
                   (outStateTransitionsForAction <
-                   static_cast<size_t>(kApeNDActionBlacklistMinOutEdges)) ? 1 : 0,
+                   static_cast<size_t>(kNDActionBlacklistMinOutEdges)) ? 1 : 0,
                   branchDataMissing ? 1 : 0);
         } else if (!namingChanged) {
-            BDLOG("ape naming: event refine failed activity=%s srcKey=%lu act=%lu targets=%zu reason=%s "
+            BDLOG("naming: event refine failed activity=%s srcKey=%lu act=%lu targets=%zu reason=%s "
                   "(ndBlacklistEligible=0 actZero=%d)",
                   aSlot.sourceActivity.c_str(), (unsigned long)pairKey.sourceKeyHash,
                   (unsigned long)pairKey.actionHash, nowPairTargetCount,
@@ -3933,6 +3977,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
     }
 
+    /** @brief Removes one aggregated transition sample for a (source,target) pair from internal counters. */
     void Model::apePairAggRemove(const ApeTransitionEntry &e) {
         if (!e.valid) {
             return;
@@ -3950,6 +3995,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
     }
 
+    /** @brief Adds one aggregated transition sample for a (source,target) pair. */
     void Model::apePairAggAdd(const ApeTransitionEntry &e) {
         if (!e.valid) {
             return;
@@ -3964,6 +4010,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
     }
 
+    /** @brief Appends transition evidence for a pair key into the bounded evidence pool. */
     void Model::apeEvidencePoolAdd(const ApePairKey &pairKey, const ApeTransitionEntry &e,
                                    const std::string *sourceXmlSnapshot) {
         if (!e.valid || pairKey.sourceKeyHash == 0 || pairKey.actionHash == 0) {
@@ -3979,7 +4026,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             auto itXml = _apeStateXmlByStateHash.find(e.sourceStateHash);
             if (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty()) {
                 s.sourceXml = itXml->second;
-                BDLOG("ape evidence: fallback_source_xml activity=%s srcState=%zu seq=%llu pair=(%zu,%zu)",
+                BDLOG("naming evidence: fallback_source_xml activity=%s srcState=%zu seq=%llu pair=(%zu,%zu)",
                       e.sourceActivity.c_str(), e.sourceStateHash,
                       static_cast<unsigned long long>(e.transitionSeq),
                       pairKey.sourceKeyHash, pairKey.actionHash);
@@ -4018,6 +4065,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         apeEvidencePoolClockEvict();
     }
 
+    /** @brief Evicts oldest evidence entries when the shared evidence pool exceeds its cap. */
     void Model::apeEvidencePoolClockEvict() {
         constexpr size_t kMaxPools = MaxTransitionLogSize;
         if (_apeEvidencePoolClock.empty()) {
@@ -4055,6 +4103,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
     }
 
+    /** @brief Clears transition aggregation structures for one canonical activity key. */
     void Model::apeClearTransitionAggregationForActivity(const std::string &actKeyCanonical) {
         for (auto &slot : _apeTransitionLog) {
             if (slot.valid && slot.sourceActivity == actKeyCanonical) {
@@ -4077,6 +4126,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
     }
 
+    /** @brief Marks a state hash as recently visited in the per-activity mini history ring buffer. */
     void Model::apeMiniHistoryTouchState(const std::string &activityKeyCanonical, uintptr_t stateHash) {
         if (activityKeyCanonical.empty() || stateHash == 0) {
             return;
@@ -4084,6 +4134,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         _apeMiniHistoryByActivity[activityKeyCanonical].touchState(stateHash);
     }
 
+    /** @brief Appends a transition edge to mini history for incremental local rebuilds. */
     void Model::apeMiniHistoryRecordTransition(const std::string &activityKeyCanonical,
                                                const ApeTransitionEntry &e) {
         if (activityKeyCanonical.empty() || !e.valid) {
@@ -4105,6 +4156,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         h.pushTransition(t);
     }
 
+    /** @brief Inserts a raw transition log entry without running refinement passes. */
     void Model::apeInsertTransitionEntryNoRefine(const ApeTransitionEntry &e,
                                                  const TreeTransitionEntry *treeMeta) {
         if (!e.valid || _apeTransitionLog.empty()) {
@@ -4140,6 +4192,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         _apeTransitionLogWriteIndex = (_apeTransitionLogWriteIndex + 1) % _apeTransitionLog.size();
     }
 
+    /** @brief Inserts a tree transition record without running refinement passes. */
     void Model::apeInsertTreeTransitionNoRefine(const TreeTransitionEntry &e) {
         if (!e.valid || _apeTreeTransitionLog.empty()) {
             return;
@@ -4149,6 +4202,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             (_apeTreeTransitionLogWriteIndex + 1) % _apeTreeTransitionLog.size();
     }
 
+    /** @brief Rebuilds local aggregation from mini history when drift thresholds require it. */
     bool Model::apeLocalRebuildFromHistoryIfNeeded(const std::string &activityKeyCanonical,
                                                    const char *reason) {
         if (!_graph || activityKeyCanonical.empty()) {
@@ -4182,11 +4236,12 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         st.consecutiveRollbacks = 0;
         st.actionBlacklistChecks = 0;
         st.actionBlacklistHits = 0;
-        BLOG("ape naming: local rebuild activity=%s reason=%s", activityKeyCanonical.c_str(),
+        BLOG("naming: local rebuild activity=%s reason=%s", activityKeyCanonical.c_str(),
              reason ? reason : "(unknown)");
         return true;
     }
 
+    /** @brief Rebuilds transition aggregation from stored history for one activity. */
     bool Model::apeLocalRebuildFromHistory(const std::string &activityKeyCanonical) {
 #if !defined(FASTBOT_HAS_PUGIXML) || !FASTBOT_HAS_PUGIXML
         (void)activityKeyCanonical;
@@ -4484,7 +4539,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             replayInserted++;
         }
 
-        BLOG("ape naming: local rebuild done activity=%s xmlSnapshots=%zu preparedStates=%zu "
+        BLOG("naming: local rebuild done activity=%s xmlSnapshots=%zu preparedStates=%zu "
              "removedStates=%zu replay(total=%zu inserted=%zu missingXml=%zu missingState=%zu "
              "actionNoMatch=%zu actionHashExact=%zu)",
              activityKeyCanonical.c_str(), xmlByOldStateHash.size(), preparedStates.size(),
@@ -4495,12 +4550,13 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
 #endif
     }
 
+    /** @brief Notifies agents that naming or abstraction mappings changed so they can refresh. */
     void Model::notifyAgentsOfApeNamingChange() {
         ++_apeStructuralVersion;
         if (_graph) {
             _graph->syncApeStructuralEpoch(_apeStructuralVersion);
         }
-        BDLOG("ape naming: structural_version=%llu graphId=%s (APE Model.version / Graph.setVersion)",
+        BDLOG("naming: structural_version=%llu graphId=%s (model version / graph structural id)",
               (unsigned long long)_apeStructuralVersion,
               _graph ? _graph->getStructureId().c_str() : "-");
         for (const auto &kv : _deviceIDAgentMap) {
@@ -4514,12 +4570,13 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             const StatePtr s = _apeLastScreenStateForValidate;
             for (const auto &kv : _deviceIDAgentMap) {
                 if (kv.second) {
-                    kv.second->validateAllNewActionsLikeApe(s);
+                    kv.second->validateAllNewActions(s);
                 }
             }
         }
     }
 
+    /** @brief Counts abstract states for an activity and naming fingerprint. */
     size_t Model::getApeStateCountByActivityAndNamingFingerprint(
         const std::string &activityKeyCanonical, const std::string &namingFingerprint) const {
         if (activityKeyCanonical.empty() || namingFingerprint.empty()) {
@@ -4543,6 +4600,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
     }
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** @brief Caches the latest GUI tree snapshot for a state hash (debugging / refinement). */
     void Model::apeRememberGuiTreeSnapshot(uintptr_t stateHash, const gui_tree::GUITree &tree) {
         gui_tree::GUITreePtr copy = gui_tree::GUITree::cloneDeep(tree);
         if (!copy || stateHash == 0) {
@@ -4559,6 +4617,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
     }
 
+    /** @brief Returns the most recently cached GUI tree for a state hash, if any. */
     gui_tree::GUITreePtr Model::apeLatestGuiTreeSnapshot(uintptr_t stateHash) const {
         auto it = _apeGuiTreeSnapshotsByStateHash.find(stateHash);
         if (it == _apeGuiTreeSnapshotsByStateHash.end() || it->second.empty()) {
@@ -4567,6 +4626,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         return it->second.back();
     }
 
+    /** @brief Looks up a cached GUI tree whose serialized XML equals the given string. */
     gui_tree::GUITreePtr Model::apeGuiTreeSnapshotForExactCachedXml(const std::string &xml) const {
         if (xml.empty()) {
             return nullptr;
@@ -4586,6 +4646,7 @@ namespace {
     // a member-style helper via explicit parameters so it can be called from both the fingerprint-
 }
 
+    /** @brief Prunes abstract states in a set of hashes using the shared pruning policy. */
     void Model::pruneApeStatesByStateHashesCommon(const std::string &activityKeyCanonical,
                                                   std::unordered_set<uintptr_t> &staleStateHashes,
                                                   const char *reasonTag) {
@@ -4659,10 +4720,11 @@ namespace {
 #endif
             _apeGuiTreeNamingBlacklist.erase(sh);
         }
-        BLOG("ape naming: %s pruned=%zu activity=%s",
+        BLOG("naming: %s pruned=%zu activity=%s",
              reasonTag ? reasonTag : "prune", staleStateHashes.size(), activityKeyCanonical.c_str());
     }
 
+    /** @brief Removes stale abstract states for one activity to bound memory use. */
     void Model::pruneStaleApeStatesForActivity(const std::string &activityKeyCanonical,
                                                const std::string &staleNamingFingerprint,
                                                const std::unordered_set<uintptr_t> *affectedStateHashes) {
@@ -4692,6 +4754,7 @@ namespace {
         pruneApeStatesByStateHashesCommon(activityKeyCanonical, staleStateHashes, "stale-fp-prune");
     }
 
+    /** @brief Removes divergent abstract states for one activity. */
     void Model::pruneDivergentApeStatesForActivity(const std::string &activityKeyCanonical) {
         if (!_graph || activityKeyCanonical.empty() || !_apeStateNamingManager) {
             return;
@@ -4729,6 +4792,7 @@ namespace {
         pruneApeStatesByStateHashesCommon(activityKeyCanonical, staleStateHashes, "divergent-fp-prune");
     }
 
+    /** @brief Evaluates whether GUI-tree naming should be blacklisted for the given state hashes. */
     bool Model::evalApeGuiTreeNamingBlacklist(const std::vector<uintptr_t> &stateHashes,
                                                const naming::NamingPtr &naming) const {
         if (!naming || stateHashes.empty()) {
@@ -4747,6 +4811,7 @@ namespace {
     #if DYNAMIC_STATE_ABSTRACTION_ENABLED
 
     #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
+        /** @brief Resolves naming by rebuilding from cached XML / snapshots and walking the GUI tree when possible. */
         naming::NamingPtr Model::apeNamingResolvedViaTreeWalk(const std::string &activity, uintptr_t stateHash) {
             const std::string actKey = naming::StateKey::canonicalActivityString(activity);
             if (!_apeStateNamingManager) {
@@ -4785,6 +4850,7 @@ namespace {
             return cur ? cur : naming::NamingFactory::defaultRootNaming();
         }
     #else
+        /** @brief Returns current activity-level naming only (no GUI-tree rebuild without pugixml). */
         naming::NamingPtr Model::apeNamingResolvedViaTreeWalk(const std::string &activity, uintptr_t /*stateHash*/) {
             const std::string actKey = naming::StateKey::canonicalActivityString(activity);
             if (!_apeStateNamingManager) {
@@ -4798,6 +4864,7 @@ namespace {
     #endif
 
 
+    /** @brief Evaluates action-side refinement predicates against the current naming and optional trees. */
     bool Model::evalApeActionRefinementPredicates(const std::string &activity, const naming::NamingPtr &naming,
                                                   const std::vector<gui_tree::GUITreePtr> *affectedSourceTrees) {
         if (!naming) {
@@ -5004,6 +5071,7 @@ namespace {
         return true;
     }
 
+    /** @brief Adds a predicate that triggers when an activity has fewer than N abstract states. */
     void Model::addApeStatesFewerThanPredicate(const std::string &activity,
                                                const std::unordered_set<uintptr_t> &affectedStateHashes,
                                                int threshold) {
@@ -5029,6 +5097,7 @@ namespace {
         _apeStatesFewerThanPredicates[actKey].push_back(std::move(pred));
     }
 
+    /** @brief Registers an action refinement predicate for one activity. */
     void Model::addApeActionRefinementPredicate(const std::string &activity,
                                                 uintptr_t sourceStateHash,
                                                 const std::string &sourceXml,
@@ -5108,6 +5177,7 @@ namespace {
 #endif
     }
 
+    /** @brief Removes refinement predicates that conflict with a newly added constraint. */
     void Model::removeConflictingApeActionRefinementPredicates(
         const std::string &activity, const naming::NamingPtr &naming,
         const std::unordered_set<uintptr_t> &affectedStateHashes) {
@@ -5215,6 +5285,7 @@ namespace {
         it->second.swap(kept);
     }
 
+    /** @brief Removes conflicting "fewer than N states" predicates. */
     void Model::removeConflictingApeStatesFewerThanPredicates(
         const std::string &activity, const naming::NamingPtr &naming,
         const std::unordered_set<uintptr_t> &affectedStateHashes) {
@@ -5267,6 +5338,7 @@ namespace {
         it->second.swap(kept);
     }
 
+    /** @brief Registers a predicate for divergent source XML pairs within an activity. */
     void Model::addApeSourceDivergentPredicate(const std::string &activity, const std::string &xmlA,
                                                const std::string &xmlB, uintptr_t sharedSourceStateHash) {
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
@@ -5297,6 +5369,7 @@ namespace {
 #endif
     }
 
+    /** @brief Removes conflicting source-divergence predicates. */
     void Model::removeConflictingApeSourceDivergentPredicates(
         const std::string &activity, const naming::NamingPtr &naming,
         const std::unordered_set<uintptr_t> &affectedStateHashes) {
@@ -5347,6 +5420,7 @@ namespace {
 #endif
     }
 
+    /** @brief Blacklists finer naming choices when rolling back an unstable refinement step. */
     void Model::apeBlacklistFinerNamingOnRollback(
         const std::string &activity, const naming::NamingPtr &finerNaming,
         const ApeNamingAbstractionContext &ctx, const std::unordered_set<uintptr_t> &affectedStateHashesForBlacklist) {
@@ -5355,7 +5429,7 @@ namespace {
             return;
         }
         const std::string fp = finerNaming->fingerprintString();
-        // Java blacklistRefinement blacklists exactly the affected GUI trees.
+        // blacklistRefinement blacklists exactly the affected GUI trees.
         // Native uses state-hash keyed cache for GUI-tree naming blacklists, so we blacklist
         // by those affected state hashes directly.
         for (uintptr_t sh : affectedStateHashesForBlacklist) {
@@ -5365,10 +5439,12 @@ namespace {
         apeCapApeNamingCoarsenAndRefineBlacklists();
     }
 
+    /** @brief Enforces maximum sizes on coarsen/refine blacklist tables. */
     void Model::apeCapApeNamingCoarsenAndRefineBlacklists() {
-        // no-op: match Java unbounded blacklists (NDActionBlacklist/guiTreeNamingBlaclist).
+        // no-op: match unbounded blacklists (NDActionBlacklist/guiTreeNamingBlaclist).
     }
 
+    /** @brief Returns human-readable hints where naming or transitions look non-deterministic. */
     std::vector<std::string> Model::detectNonDeterminismApe() const {
         const int minTargets = (_preference ? _preference->getApeNamingMinNonDetTargets()
                                             : MinNonDeterminismCount);
@@ -5382,6 +5458,7 @@ namespace {
     }
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** @brief Resolves widget XPath-side expressions and parent namelets for split/refinement. */
     bool Model::resolveApeWidgetExprAndParentNamelet(uintptr_t stateHash, const std::string &activityForSplit,
                                                      const naming::NamingPtr &cur, const WidgetPtr &targetWidget,
                                                      std::string *outExpr, naming::NameletPtr *outParent) const {
@@ -5463,11 +5540,13 @@ namespace {
     }
 #endif
 
+    /** @brief Overload that forwards to the full refine implementation (no failure-reason output). */
     bool Model::refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
                                         int precomputedActivityNonDetPairCount) {
         return refineActivityApeNaming(activity, pair, precomputedActivityNonDetPairCount, nullptr);
     }
 
+    /** @brief Attempts naming refinement for one activity using logged transition evidence (full implementation). */
     bool Model::refineActivityApeNaming(const std::string &activity, const ApeRefinePair *pair,
                                         int precomputedActivityNonDetPairCount,
                                         ApeRefineFailReason *outFailReason) {
@@ -5526,7 +5605,7 @@ namespace {
                 return false;
             }
             if (isBackActionHashForActivity(pair->actionHash)) {
-                BDLOG("ape naming: skip refine activity=%s reason=back_action srcKey=%lu act=%lu",
+                BDLOG("naming: skip refine activity=%s reason=back_action srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)pair->sourceKeyHash,
                       (unsigned long)pair->actionHash);
                 if (outFailReason) {
@@ -5581,9 +5660,9 @@ namespace {
                 if (dominantActionIdentity != 0) {
                     ++st.actionBlacklistHits;
                 }
-                BDLOG("ape naming: skip refine activity=%s reason=trigger action blacklisted srcKey=%lu act=%lu",
+                BDLOG("naming: skip refine activity=%s reason=trigger action blacklisted srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
-                BDLOG("ape naming: action_blacklisted detail activity=%s srcKey=%lu act=%lu "
+                BDLOG("naming: action_blacklisted detail activity=%s srcKey=%lu act=%lu "
                       "actId=%lu blacklistSize=%zu checks=%d hits=%d nonDetPairs=%d dominantTargets=%zu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
                       (unsigned long)dominantActionHash, (unsigned long)dominantActionIdentity,
@@ -5600,7 +5679,7 @@ namespace {
         if (!cur) {
             cur = naming::NamingFactory::defaultRootNaming();
             if (!cur) {
-                BDLOG("ape naming: skip refine activity=%s reason=no default root naming", activity.c_str());
+                BDLOG("naming: skip refine activity=%s reason=no default root naming", activity.c_str());
                 if (outFailReason) {
                     *outFailReason = ApeRefineFailReason::NoDefaultRootNaming;
                 }
@@ -5616,20 +5695,20 @@ namespace {
         const int apeMaxStatesPerActivity =
             _preference ? _preference->getApeMaxStatesPerActivity() : 10;
         const int apeMaxGuitreesPerState = _preference ? _preference->getApeMaxGuitreesPerState() : 20;
-        // APE *intent* (cf. paper / state chart): cap distinct states per activity, and GUITrees per
-        // logical state. Java NamingFactory.refine line 280 wrongly uses an.getStates().size() for the
+        // Design intent: cap distinct states per activity and GUI trees per logical state.
+        // Reference NamingFactory.refine historically used an.getStates().size() for the
         // second check; Fastbot uses rep-state guitrees (see log: maxGuitreesPerState).
         if (static_cast<int>(graphStatesInActivity) > apeMaxStatesPerActivity) {
-            BDLOG("ape naming: skip refine activity=%s reason=maxStatesPerActivity graphStates=%zu max=%d",
+            BDLOG("naming: skip refine activity=%s reason=maxStatesPerActivity graphStates=%zu max=%d",
                   activity.c_str(), graphStatesInActivity, apeMaxStatesPerActivity);
-            BDLOG("ape naming: maxStatesPerActivity detail activity=%s namingFingerprint=%s namingScopedStates=%zu",
+            BDLOG("naming: maxStatesPerActivity detail activity=%s namingFingerprint=%s namingScopedStates=%zu",
                   activity.c_str(), cur ? cur->fingerprintString().c_str() : "null", activityStateCount);
             if (outFailReason) {
                 *outFailReason = ApeRefineFailReason::MaxStatesPerActivity;
             }
             return false;
         }
-        // Second gate: GUI trees on the representative ND source state (Java NamingFactory.refine:
+        // Second gate: GUI trees on the representative ND source state (NamingFactory.refine:
         // state.getGUITrees().size() > maxGUITreesPerState), not activity-wide graph state count.
         uintptr_t repStateHash = 0;
         if (dominantSourceKeyHash != 0 && _graph) {
@@ -5673,8 +5752,8 @@ namespace {
             }
         }
         if (static_cast<int>(guitreesInRepState) > apeMaxGuitreesPerState) {
-            BDLOG("ape naming: skip refine activity=%s reason=maxGuitreesPerState guitreesInRepState=%zu max=%d "
-                  "(Java state.getGUITrees().size(); NamingFactory.refine)",
+            BDLOG("naming: skip refine activity=%s reason=maxGuitreesPerState guitreesInRepState=%zu max=%d "
+                  "(state.getGUITrees().size(); NamingFactory.refine)",
                   activity.c_str(), guitreesInRepState, apeMaxGuitreesPerState);
             if (outFailReason) {
                 *outFailReason = ApeRefineFailReason::MaxGuitreesPerState;
@@ -5701,10 +5780,10 @@ namespace {
             size_t partitionTotal{0};
             size_t anchorIdx{0};
             naming::NamerPtr refinedNamer{nullptr};
-            /// Java RefinementResult.originalNamelet.getNamer() (comparator pass 2).
+            /// RefinementResult.originalNamelet.getNamer() (comparator pass 2).
             naming::NamerPtr originalNameletNamer{nullptr};
             bool useApeJavaStyleComparator{false};
-            /** Last appended namelet expr (Java RefinementResult.updatedNamelet.getExprString() tie-break). */
+            /** Last appended namelet expr (RefinementResult.updatedNamelet.getExprString() tie-break). */
             std::string updatedNameletExpr;
             uintptr_t actionRefineSourceStateHash{0};
             std::string actionRefineSourceXml;
@@ -5785,7 +5864,7 @@ namespace {
                 !replaySrcXml.empty() &&
                 replayTgtStateHashes.size() >= static_cast<size_t>(minTargets);
             if (!replayActive && dominantPairTargets >= static_cast<size_t>(minTargets)) {
-                BDLOG("ape naming: replay skipped activity=%s haveSrcXml=%d tgtXml=%zu needTgt=%zu",
+                BDLOG("naming: replay skipped activity=%s haveSrcXml=%d tgtXml=%zu needTgt=%zu",
                       activity.c_str(), replaySrcStateHash != 0 ? 1 : 0, replayTgtStateHashes.size(),
                       dominantTargetKeyHashes.size());
             }
@@ -5821,7 +5900,7 @@ namespace {
             };
             xmlSpaceTriggerSourceKeyHash = remapKeyHashToXmlSpace(dominantSourceKeyHash);
             if (xmlSpaceTriggerSourceKeyHash != dominantSourceKeyHash) {
-                BDLOG("ape naming: remap triggerSource %lu -> %lu (xml-space)",
+                BDLOG("naming: remap triggerSource %lu -> %lu (xml-space)",
                       (unsigned long)dominantSourceKeyHash, (unsigned long)xmlSpaceTriggerSourceKeyHash);
             }
             xmlSpaceTriggerTargetKeyHashes.clear();
@@ -5856,7 +5935,7 @@ namespace {
             }
         }
 #endif
-        auto apeCheckPredicateLikeJava = [&](const naming::NamingPtr &cand) -> bool {
+        auto checkRefinementPredicate = [&](const naming::NamingPtr &cand) -> bool {
             if (!cand) {
                 return false;
             }
@@ -5867,7 +5946,7 @@ namespace {
         };
         std::vector<CandidateEval> accepted;
         accepted.reserve(32);
-        bool filledViaApeJava = false;
+        bool filledViaAcceptedCandidates = false;
         std::string apeRefineNdBranchAXml;
         std::string apeRefineNdBranchBXml;
         uintptr_t apeRefineNdSharedSrcStateHash = 0;
@@ -5901,7 +5980,7 @@ namespace {
                     return false;
                 },
                 nstSeq);
-            BDLOG("ape refine: branch_input_stats activity=%s srcKey=%zu act=%zu logN=%zu ordered=%zu "
+            BDLOG("naming refine: branch_input_stats activity=%s srcKey=%zu act=%zu logN=%zu ordered=%zu "
                   "dropPair=%zu dropTarget=%zu dropSnapshot=%zu dropSrcStateKey=%zu",
                   actKey.c_str(), dominantSourceKeyHash, dominantActionHash, branchCollect.inputStats.logN,
                   branchCollect.inputStats.orderedCount, branchCollect.inputStats.filteredByActivityOrPair,
@@ -5909,21 +5988,21 @@ namespace {
                   branchCollect.inputStats.filteredBySourceStateKey);
             branchPairs = std::move(branchCollect.branchPairs);
             if (nstSeq == 0) {
-                BDLOG("ape refine: skip pair reason=nst_transition_seq_not_found activity=%s "
+                BDLOG("naming refine: skip pair reason=nst_transition_seq_not_found activity=%s "
                       "srcKeyHash=%zu actionHash=%zu nstSeq=%llu observed=%zu",
                       actKey.c_str(), dominantSourceKeyHash, dominantActionHash,
                       static_cast<unsigned long long>(nstSeq), branchCollect.orderedCount);
             } else if (!branchCollect.nstSeqFound) {
-                BDLOG("ape refine: skip pair reason=nst_transition_seq_not_found activity=%s "
+                BDLOG("naming refine: skip pair reason=nst_transition_seq_not_found activity=%s "
                       "srcKeyHash=%zu actionHash=%zu nstSeq=%llu observed=%zu",
                       actKey.c_str(), dominantSourceKeyHash, dominantActionHash,
                       static_cast<unsigned long long>(nstSeq), branchCollect.orderedCount);
             }
-            BDLOG("ape refine: branch_pairs_stats activity=%s srcKey=%zu act=%zu pairs=%zu",
+            BDLOG("naming refine: branch_pairs_stats activity=%s srcKey=%zu act=%zu pairs=%zu",
                   actKey.c_str(), dominantSourceKeyHash, dominantActionHash, branchPairs.size());
             for (size_t i = 0; i < branchPairs.size(); ++i) {
                 const auto &bp = branchPairs[i];
-                BDLOG("ape refine: branch_pair_detail activity=%s pairIdx=%zu srcStateHash=%zu "
+                BDLOG("naming refine: branch_pair_detail activity=%s pairIdx=%zu srcStateHash=%zu "
                       "targetKeyA=%zu targetKeyB=%zu nstTargetStateHash=%zu firstSeenSeq=%llu "
                       "A.count=%zu B.count=%zu A.transitions=%s B.transitions=%s",
                       actKey.c_str(), i, static_cast<size_t>(bp.sourceStateHash),
@@ -5950,11 +6029,11 @@ namespace {
         const bool arFirst = _preference && _preference->useApeNamingActionRefinementFirst();
         const bool enableReplacingNamelet =
             _preference && _preference->useApeNamingEnableReplacingNamelet();
-        // Java refine() uses a single source State (st1.getSource() == st2.getSource()).
+        // refine() uses a single source State (st1.getSource() == st2.getSource()).
         StatePtr nondetSrcState;
         auto tryApeActionRefinement = [&]() {
             if (!haveXmlBranches || branchAXml.empty() || branchBXml.empty() || !nondetSrcState) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=missing_branches_or_source "
+                BDLOG("naming: skip action refinement activity=%s reason=missing_branches_or_source "
                       "haveBranches=%d aEmpty=%d bEmpty=%d hasSrc=%d srcKey=%lu act=%lu",
                       activity.c_str(), haveXmlBranches ? 1 : 0, branchAXml.empty() ? 1 : 0,
                       branchBXml.empty() ? 1 : 0, nondetSrcState ? 1 : 0,
@@ -5985,7 +6064,7 @@ namespace {
                 break;
             }
             if (!edgeAct || !edgeAct->requireTarget() || !edgeAct->getTarget()) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=missing_edge_action_or_target "
+                BDLOG("naming: skip action refinement activity=%s reason=missing_edge_action_or_target "
                       "hasEdge=%d requireTarget=%d hasTarget=%d srcKey=%lu act=%lu",
                       activity.c_str(), edgeAct ? 1 : 0, (edgeAct && edgeAct->requireTarget()) ? 1 : 0,
                       (edgeAct && edgeAct->getTarget()) ? 1 : 0, (unsigned long)dominantSourceKeyHash,
@@ -5995,13 +6074,13 @@ namespace {
             const WidgetPtr tw = edgeAct->getTarget();
             const std::shared_ptr<Rect> bnds = tw->getBounds();
             if (!bnds) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=target_bounds_missing srcKey=%lu act=%lu",
+                BDLOG("naming: skip action refinement activity=%s reason=target_bounds_missing srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
             const Rect tr = *bnds;
             if (tr.isEmpty()) {
-                BDLOG("ape refine: zero_target_bounds_on_edge activity=%s srcKey=%lu act=%lu srcState=%zu",
+                BDLOG("naming refine: zero_target_bounds_on_edge activity=%s srcKey=%lu act=%lu srcState=%zu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash,
                       nondetSrcState ? nondetSrcState->hash() : 0);
             }
@@ -6028,7 +6107,7 @@ namespace {
                                                                                  _apeTreeTransitionLog);
                             });
             if (missingSnapshotA || missingSnapshotB) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=cannot_ape_align_missing_snapshot "
+                BDLOG("naming: skip action refinement activity=%s reason=cannot_align_missing_snapshot "
                       "srcKey=%lu act=%lu missingA=%d missingB=%d",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
                       (unsigned long)dominantActionHash, missingSnapshotA ? 1 : 0,
@@ -6044,21 +6123,21 @@ namespace {
                                                    &targetNameNamer, snapXmlA) &&
                 !apeResolveTargetXPathNameLikeJava(activity, cur, xmlB, resolvedIdsB, &targetXPathName,
                                                    &targetNameNamer, snapXmlB)) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=target_name_unresolved "
+                BDLOG("naming: skip action refinement activity=%s reason=target_name_unresolved "
                       "srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
             const bool sharedA = isSharedAction(activity, cur, tw, branchATransitions);
             const bool sharedB = isSharedAction(activity, cur, tw, branchBTransitions);
-            BDLOG("ape naming: shared_check_exact activity=%s srcKey=%lu act=%lu sharedA=%d sharedB=%d targetName=%s",
+            BDLOG("naming: shared_check_exact activity=%s srcKey=%lu act=%lu sharedA=%d sharedB=%d targetName=%s",
                   activity.c_str(), (unsigned long)dominantSourceKeyHash,
                   (unsigned long)dominantActionHash, sharedA ? 1 : 0, sharedB ? 1 : 0,
                   targetXPathName.c_str());
             if (!sharedA && !sharedB) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=target_not_shared srcKey=%lu act=%lu",
+                BDLOG("naming: skip action refinement activity=%s reason=target_not_shared srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
-                BDLOG("ape naming: target_not_shared details activity=%s srcKey=%lu act=%lu "
+                BDLOG("naming: target_not_shared details activity=%s srcKey=%lu act=%lu "
                       "targetBounds=%s teHasBounds=%d teBounds=%s teBoundsEqEdge=%d "
                       "branchA.n=%zu branchB.n=%zu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash,
@@ -6072,13 +6151,13 @@ namespace {
             std::string wxp;
             if (!apeResolveParentNameletAndWidgetXPath(activity, cur, targetXPathName, targetNameNamer,
                                                        xmlA, xmlB, &pIdx, &wxp, snapXmlA, snapXmlB)) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=resolve_parent_namelet_failed "
+                BDLOG("naming: skip action refinement activity=%s reason=resolve_parent_namelet_failed "
                       "srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
                 return;
             }
             if (pIdx >= cur->getNamelets().size()) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=parent_index_out_of_range "
+                BDLOG("naming: skip action refinement activity=%s reason=parent_index_out_of_range "
                       "pIdx=%zu namelets=%zu srcKey=%lu act=%lu",
                       activity.c_str(), pIdx, cur ? cur->getNamelets().size() : 0,
                       (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash);
@@ -6103,20 +6182,20 @@ namespace {
             naming::NameletPtr anchorNl = cur->getNamelets()[pIdx];
             naming::NamerPtr curNam = anchorNl ? anchorNl->getNamerPtr() : nullptr;
             if (!curNam) {
-                BDLOG("ape naming: skip action refinement activity=%s reason=anchor_namer_missing "
+                BDLOG("naming: skip action refinement activity=%s reason=anchor_namer_missing "
                       "srcKey=%lu act=%lu pIdx=%zu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
                       (unsigned long)dominantActionHash, pIdx);
                 return;
             }
-            BDLOG("ape naming: action_refinement_context activity=%s srcKey=%lu act=%lu "
+            BDLOG("naming: action_refinement_context activity=%s srcKey=%lu act=%lu "
                   "targetXPath=%s parentIdx=%zu anchorExpr=%s anchorMask=%u branchA.transitions=%s branchB.transitions=%s",
                   activity.c_str(), (unsigned long)dominantSourceKeyHash, (unsigned long)dominantActionHash,
                   targetXPathName.c_str(), pIdx, anchorNl ? anchorNl->getExprString().c_str() : "null",
                   (anchorNl && anchorNl->getNamerPtr()) ? anchorNl->getNamerPtr()->typeDimensionMask() : 0u,
                   apeTransitionListDebugSummary(branchATransitions).c_str(),
                   apeTransitionListDebugSummary(branchBTransitions).c_str());
-            // Java actionRefinement: optional replaceLast(currentNamelet, …) using sortedAbove(parentNamer).
+            // actionRefinement: optional replaceLast(currentNamelet, …) using sortedAbove(parentNamer).
             if (enableReplacingNamelet && cur->hasChild()) {
                 const auto &cn = cur->getNamelets();
                 if (!cn.empty() && pIdx + 1 == cn.size() && anchorNl && cur->isReplaceable(anchorNl)) {
@@ -6158,7 +6237,7 @@ namespace {
                                 ++dropReplaceByActionCheck;
                                 continue;
                             }
-                            if (!apeCheckPredicateLikeJava(child)) {
+                            if (!checkRefinementPredicate(child)) {
                                 ++dropReplaceByActionCheck;
                                 continue;
                             }
@@ -6232,7 +6311,7 @@ namespace {
                     extendDimDroppedMask |= curRefinedDimMask;
                     continue;
                 }
-                if (!apeCheckPredicateLikeJava(child)) {
+                if (!checkRefinementPredicate(child)) {
                     ++dropExtendByActionCheck;
                     extendDimDroppedMask |= curRefinedDimMask;
                     continue;
@@ -6267,7 +6346,7 @@ namespace {
                 accepted.push_back(std::move(ev));
                 break;
             }
-            BDLOG("ape naming: action_refinement_gate_stats activity=%s srcKey=%lu act=%lu acceptedNow=%zu "
+            BDLOG("naming: action_refinement_gate_stats activity=%s srcKey=%lu act=%lu acceptedNow=%zu "
                   "replace(null=%zu blk=%zu check=%zu dup=%zu) "
                   "extend(null=%zu blk=%zu check=%zu dup=%zu) "
                   "extend(tried=%zu triedDimMask=0x%x droppedDimMask=0x%x)",
@@ -6276,7 +6355,7 @@ namespace {
                   dropReplaceByBlacklist, dropReplaceByActionCheck, dropReplaceByDupFp, dropExtendByNull,
                   dropExtendByBlacklist, dropExtendByActionCheck, dropExtendByDupFp, extendTried,
                   extendDimTriedMask, extendDimDroppedMask);
-            BDLOG("ape naming: action_refinement_gate_detail activity=%s srcKey=%lu act=%lu "
+            BDLOG("naming: action_refinement_gate_detail activity=%s srcKey=%lu act=%lu "
                   "upperBounds.extend=%zu acceptedFp.size=%zu branchA.transitions=%zu branchB.transitions=%zu",
                   activity.c_str(), (unsigned long)dominantSourceKeyHash,
                   (unsigned long)dominantActionHash, upperBounds.size(), acceptedFp.size(),
@@ -6285,7 +6364,7 @@ namespace {
 
         auto tryApeStateRefinement = [&]() {
             if (!haveXmlBranches || branchAXml.empty() || branchBXml.empty() || !nondetSrcState) {
-                BDLOG("ape naming: skip state refinement activity=%s reason=missing_branches_or_source "
+                BDLOG("naming: skip state refinement activity=%s reason=missing_branches_or_source "
                       "haveBranches=%d aEmpty=%d bEmpty=%d hasSrc=%d srcKey=%lu act=%lu",
                       activity.c_str(), haveXmlBranches ? 1 : 0, branchAXml.empty() ? 1 : 0,
                       branchBXml.empty() ? 1 : 0, nondetSrcState ? 1 : 0,
@@ -6317,17 +6396,17 @@ namespace {
             }
             if (topEquiv) {
                 // NamingFactory.stateRefinement: log top equivalence, then optional isomorphic (same early return).
-                BDLOG("ape naming: two GUI trees are top naming equivalent (NamingFactory.stateRefinement) "
+                BDLOG("naming: two GUI trees are top naming equivalent (NamingFactory.stateRefinement) "
                       "activity=%s srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
                       (unsigned long)dominantActionHash);
                 if (isIsomorphic(activity, branchAXml.back(), branchBXml.back(), snapBackA, snapBackB)) {
-                    BDLOG("ape naming: two GUI trees are top naming equivalent and isomorphic "
+                    BDLOG("naming: two GUI trees are top naming equivalent and isomorphic "
                           "(NamingFactory.stateRefinement) activity=%s srcKey=%lu act=%lu",
                           activity.c_str(), (unsigned long)dominantSourceKeyHash,
                           (unsigned long)dominantActionHash);
                 }
-                BDLOG("ape naming: skip state refinement activity=%s reason=top_naming_equivalent "
+                BDLOG("naming: skip state refinement activity=%s reason=top_naming_equivalent "
                       "srcKey=%lu act=%lu",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
                       (unsigned long)dominantActionHash);
@@ -6336,7 +6415,7 @@ namespace {
                 const bool xmlsIdentical = branchAXml.back() == branchBXml.back();
                 const void *snapAPtr = snapBackA ? static_cast<const void *>(snapBackA->get()) : nullptr;
                 const void *snapBPtr = snapBackB ? static_cast<const void *>(snapBackB->get()) : nullptr;
-                BDLOG("ape naming: top_naming_equivalent details activity=%s srcKey=%lu act=%lu "
+                BDLOG("naming: top_naming_equivalent details activity=%s srcKey=%lu act=%lu "
                       "topHashReady=%d topH1=%zu topH2=%zu xmlALen=%zu xmlBLen=%zu "
                       "xmlsIdentical=%d snapSameObj=%d snapA=%p snapB=%p",
                       activity.c_str(), (unsigned long)dominantSourceKeyHash,
@@ -6384,7 +6463,7 @@ namespace {
             uint32_t extendDimTriedMask = 0;
             uint32_t extendDimDroppedMask = 0;
             size_t extendTried = 0;
-            // Java stateRefinement: optional replaceLast(last, …) with sortedAbove(parent of last).
+            // stateRefinement: optional replaceLast(last, …) with sortedAbove(parent of last).
             if (enableReplacingNamelet && cur->hasChild()) {
                 naming::NameletPtr lastNl = cur->getLastNamelet();
                 if (lastNl && cur->isReplaceable(lastNl)) {
@@ -6425,7 +6504,7 @@ namespace {
                                 ++dropReplaceByStateCheck;
                                 continue;
                             }
-                            if (!apeCheckPredicateLikeJava(child)) {
+                            if (!checkRefinementPredicate(child)) {
                                 ++dropReplaceByStateCheck;
                                 continue;
                             }
@@ -6477,8 +6556,8 @@ namespace {
                 if (!seenW.insert(w.get()).second) {
                     continue;
                 }
-                // APE stateRefinement: HashSet<Name> iteration order; preserve getActions() insertion order +
-                // first-seen dedup (LinkedHashSet analogue). Do not sort by widget hash — that diverged from Java.
+                // stateRefinement: HashSet<Name> iteration order; preserve getActions() insertion order +
+                // first-seen dedup (LinkedHashSet analogue). Do not sort by widget hash — breaks parity with reference.
                 nameCandidates.push_back(w);
             }
             for (const WidgetPtr &tw : nameCandidates) {
@@ -6552,7 +6631,7 @@ namespace {
                         extendDimDroppedMask |= curRefinedDimMask;
                         continue;
                     }
-                    if (!apeCheckPredicateLikeJava(child)) {
+                    if (!checkRefinementPredicate(child)) {
                         ++dropExtendByStateCheck;
                         extendDimDroppedMask |= curRefinedDimMask;
                         continue;
@@ -6589,7 +6668,7 @@ namespace {
                     break;
                 }
             }
-            BDLOG("ape naming: state_refinement_gate_stats activity=%s srcKey=%lu act=%lu "
+            BDLOG("naming: state_refinement_gate_stats activity=%s srcKey=%lu act=%lu "
                 "nameCandidates=%zu acceptedNow=%zu "
                 "replace(null=%zu blk=%zu check=%zu dup=%zu) "
                 "pre(resolveParent=%zu pIdx=%zu curNamer=%zu) "
@@ -6633,7 +6712,7 @@ namespace {
                 }
             }
             if (!nondetSrcState) {
-                BDLOG("ape naming: skip refine pair activity=%s reason=pair_source_state_unavailable "
+                BDLOG("naming: skip refine pair activity=%s reason=pair_source_state_unavailable "
                       "srcState=%lu srcKey=%lu kA=%lu kB=%lu",
                       activity.c_str(), (unsigned long)bp.sourceStateHash,
                       (unsigned long)bp.sourceTransitionSeq, (unsigned long)bp.targetKeyA,
@@ -6662,7 +6741,7 @@ namespace {
                 break;
             }
         }
-        filledViaApeJava = !accepted.empty();
+        filledViaAcceptedCandidates = !accepted.empty();
 #endif
         candidates.clear();
         candidates.reserve(accepted.size());
@@ -6673,14 +6752,14 @@ namespace {
         {
             const std::string curFpGather = cur ? cur->fingerprintString() : std::string("-");
             BDLOG(
-                "ape naming: refine gather-cands activity=%s pair=%p useBatchNonDet=%d nonDetPairs=%d "
+                "naming: refine gather-cands activity=%s pair=%p useBatchNonDet=%d nonDetPairs=%d "
                 "states=%zu srcKey=%lu act=%lu domTargets=%zu curFin=%d maxSteps=%d candCount=%zu cur_fp=%s "
-                "apeJavaRefine=%d",
+                "compatRefine=%d",
                 activity.c_str(), static_cast<const void *>(pair), pairScopedCall ? 1 : 0, nonDetPairs,
                 activityStateCount, (unsigned long)dominantSourceKeyHash,
                 (unsigned long)dominantActionHash, dominantPairTargets, cur ? cur->getFineness() : -1,
                 maxSteps, candidates.size(), curFpGather.c_str(),
-                filledViaApeJava ? 1 : 0);
+                filledViaAcceptedCandidates ? 1 : 0);
         }
         if (accepted.empty()) {
             // Distinguish "candidates enumerated but none accepted" from "branch data was never
@@ -6695,14 +6774,14 @@ namespace {
                 (reasonEmpty == ApeRefineFailReason::BranchPairsUnavailable)
                     ? "branch_pairs_unavailable"
                     : "no_accepted_candidates";
-            BDLOG("ape naming: skip refine activity=%s reason=%s "
+            BDLOG("naming: skip refine activity=%s reason=%s "
                   "rawCandCount=%zu dominantPairTargets=%zu nonDetPairs=%d branchPairs=%zu "
                   "haveXmlBranches=%d replayActive=%d arFirst=%d branchDataUsable=%d",
                   activity.c_str(), reasonOnEmptyStr,
                   candidates.size(), dominantPairTargets, nonDetPairs,
                   branchPairs.size(), haveXmlBranches ? 1 : 0, replayActive ? 1 : 0, arFirst ? 1 : 0,
                   branchDataUsable ? 1 : 0);
-            BDLOG("ape naming: no_accepted_candidates detail activity=%s srcKey=%lu act=%lu "
+            BDLOG("naming: no_accepted_candidates detail activity=%s srcKey=%lu act=%lu "
                   "activityStates=%zu graphStatesInActivity=%zu blkSize=%zu "
                   "branchATransitions=%zu branchBTransitions=%zu cur_fp=%s",
                   activity.c_str(), (unsigned long)dominantSourceKeyHash,
@@ -6717,7 +6796,7 @@ namespace {
         if (naming::NamingPtr mgrCurPreSort = _apeStateNamingManager->getNamingForActivity(actKey)) {
             cur = mgrCurPreSort;
         }
-        // APE RefinementResult comparator: RefinementResult.states1/states2 are never populated in Java,
+        // RefinementResult comparator: RefinementResult.states1/states2 are often unused in the reference impl;
         // so the size branch is a no-op at runtime; primary order matches NamerComparator + expr.
         std::stable_sort(accepted.begin(), accepted.end(), [&](const CandidateEval &a, const CandidateEval &b) {
             if (a.useApeJavaStyleComparator && b.useApeJavaStyleComparator) {
@@ -6778,7 +6857,7 @@ namespace {
             }
             return direct || sibling;
         };
-        // APE filterRefinementResult: sort then candidates.get(0) — always take sorted first (no skip scan).
+        // filterRefinementResult: sort then candidates.get(0) — always take sorted first (no skip scan).
         naming::NamingPtr next = accepted.front().naming;
         bool refineSiblingReplace = false;
         const size_t pickedEvalIndex = 0;
@@ -6789,7 +6868,7 @@ namespace {
             refineSiblingReplace = isSibling;
         }
         if (!next) {
-            BDLOG("ape naming: skip refine activity=%s reason=no_next_naming srcKey=%lu act=%lu accepted=%zu",
+            BDLOG("naming: skip refine activity=%s reason=no_next_naming srcKey=%lu act=%lu accepted=%zu",
                   activity.c_str(), (unsigned long)dominantSourceKeyHash,
                   (unsigned long)dominantActionHash, accepted.size());
             if (outFailReason) {
@@ -6798,7 +6877,7 @@ namespace {
             return false;
         }
         const naming::NamingPtr nextPar = next ? next->getParent() : nullptr;
-        BLOG("ape naming: refine-candidates activity=%s total=%zu accepted=%zu pickedFineGain=%d",
+        BLOG("naming: refine-candidates activity=%s total=%zu accepted=%zu pickedFineGain=%d",
              activity.c_str(), candidates.size(), accepted.size(),
              accepted[pickedEvalIndex].finenessGain);
         {
@@ -6816,7 +6895,7 @@ namespace {
                     }
                 }
                 BDLOG(
-                    "ape naming: chain picked Refine act=%s cur=%p next=%p next_par=%p par_eq_cur=%d "
+                    "naming: chain picked Refine act=%s cur=%p next=%p next_par=%p par_eq_cur=%d "
                     "raw_cands=%zu accepted=%zu top3_direct_child_of_cur=%d curFin=%d nextFin=%d",
                     actKey.c_str(), static_cast<const void *>(cur.get()),
                     static_cast<const void *>(next.get()), static_cast<const void *>(nextPar.get()),
@@ -6838,7 +6917,7 @@ namespace {
             static std::atomic<uint64_t> g_refine_trigger_source_init_probe{0};
             const uint64_t rp = ++g_refine_trigger_source_init_probe;
             if (rp <= 160 || (rp % 500) == 0) {
-                BDLOG("ape naming BUG_PROBE [refine_trigger_source_init] seq=%llu activity=%s "
+                BDLOG("naming BUG_PROBE [refine_trigger_source_init] seq=%llu activity=%s "
                       "dominantSourceHash=%lu xmlSpaceSourceHash=%lu pair=%p pairHasSourceKey=%d "
                       "nondetSrcState=%p",
                       static_cast<unsigned long long>(rp), actKey.c_str(),
@@ -6881,7 +6960,7 @@ namespace {
             if (rp <= 200 || (rp % 500) == 0) {
                 const uintptr_t resolvedStateKeyHash =
                     ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
-                BDLOG("ape naming BUG_PROBE [refine_trigger_source_resolve] seq=%llu activity=%s "
+                BDLOG("naming BUG_PROBE [refine_trigger_source_resolve] seq=%llu activity=%s "
                       "trigHashCtx=%lu trigExact=%d trigHashStateKey=%lu "
                       "equalCtxVsStateKey=%d old2newSize=%zu oldObsSize=%zu",
                       static_cast<unsigned long long>(rp), actKey.c_str(),
@@ -6895,7 +6974,7 @@ namespace {
             }
         }
         if (!ctx.triggerSourceKeyExact) {
-            BDLOG("ape naming: skip refine activity=%s reason=trigger source statekey unrecoverable srcKey=%lu act=%lu",
+            BDLOG("naming: skip refine activity=%s reason=trigger source statekey unrecoverable srcKey=%lu act=%lu",
                   activity.c_str(), (unsigned long)dominantSourceKeyHash,
                   (unsigned long)dominantActionHash);
             if (outFailReason) {
@@ -6918,7 +6997,7 @@ namespace {
             if (n <= 120 || (n % 400) == 0) {
                 const uintptr_t triggerKeyHashFromStateKey =
                     ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
-                BDLOG("ape naming: refine trigger keyspace seq=%" PRIu64
+                BDLOG("naming: refine trigger keyspace seq=%" PRIu64
                       " activity=%s trigHash(xmlSpace)=%lu trigHash(stateKey)=%lu equal=%d "
                       "trigExact=%d srcHash(raw)=%lu srcHash(xmlspace)=%lu actHash=%lu",
                       n, actKey.c_str(),
@@ -6971,7 +7050,7 @@ namespace {
                     }
                 }
                 BDLOG(
-                    "ape naming: refine pre_update NOT direct child: act=%s cur=%p next=%p next_parent=%p "
+                    "naming: refine pre_update NOT direct child: act=%s cur=%p next=%p next_parent=%p "
                     "srcKeyH=%lu actH=%lu trigExact=%d curFin=%d nextFin=%d cur_strict_anc_next=%d "
                     "cur_fp=%s next_fp=%s par_fp=%s",
                     actKey.c_str(), static_cast<const void *>(cur.get()),
@@ -6984,7 +7063,7 @@ namespace {
         }
         bool skipNamingEdgeUpdate = false;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
-        // APE StateNamingManager.updateNaming: when getNaming(tree,dom) already equals newOne, skip edge write.
+        // StateNamingManager.updateNaming: when getNaming(tree,dom) already equals newOne, skip edge write.
         if (nondetSrcState && next && !branchAXml.empty()) {
             std::string pkgDom;
             std::string clsDom;
@@ -6998,7 +7077,7 @@ namespace {
                     _apeStateNamingManager->treeToNaming(*noopBuilt.tree, noopBuilt.dom);
                 if (noopResolved && next &&
                     noopResolved->fingerprintString() == next->fingerprintString()) {
-                    BDLOG("ape naming: refine noop gate (treeToNaming already target); skip "
+                    BDLOG("naming: refine noop gate (treeToNaming already target); skip "
                           "updateNamingWithStateKey only");
                     skipNamingEdgeUpdate = true;
                 }
@@ -7018,7 +7097,7 @@ namespace {
                 (refineUpdateKind == naming::NamingUpdateKind::Refine && !candDirect) ||
                 (refineUpdateKind == naming::NamingUpdateKind::Refine && candSibling)) {
                 BLOG(
-                    "ape naming diag [refineUpdateKind=%s] seq=%llu act=%s "
+                    "naming diag [refineUpdateKind=%s] seq=%llu act=%s "
                     "cur=%p next=%p nextPar=%p refineSiblingReplace=%d "
                     "candDirect=%d candSibling=%d",
                     refineUpdateKind == naming::NamingUpdateKind::Refine ? "Refine" : "Abstract",
@@ -7043,7 +7122,7 @@ namespace {
             naming::NamingPtr postApply = _apeStateNamingManager->getNamingForActivity(actKey);
             if (!postApply || !next ||
                 postApply->fingerprintString() != next->fingerprintString()) {
-                BDLOG("ape naming: refine failed activity naming did not reach picked target "
+                BDLOG("naming: refine failed activity naming did not reach picked target "
                       "(StateNamingManager rejected update or noop mismatch)");
                 if (outFailReason) {
                     *outFailReason = ApeRefineFailReason::UnsupportedRefineRelation;
@@ -7137,10 +7216,10 @@ namespace {
             }
             pruneStaleApeStatesForActivity(actKey, ctx.previousNamingFingerprintBeforeRefine, nullptr);
         }
-        BLOG("ape naming: refine activity=%s", activity.c_str());
+        BLOG("naming: refine activity=%s", activity.c_str());
         {
             const std::string nextFpOk = next ? next->fingerprintString() : std::string("-");
-            BDLOG("ape naming: refine success activity=%s nextFin=%d rebuilt=%d focusOldKeys=%zu "
+            BDLOG("naming: refine success activity=%s nextFin=%d rebuilt=%d focusOldKeys=%zu "
                   "affectedTrees=%zu repKeys=%zu next_fp=%s",
                   activity.c_str(), next ? next->getFineness() : -1, rebuiltViaHistory ? 1 : 0,
                   focusOldKeyHashes.size(), affectedTrees.size(), repKeyHashes.size(), nextFpOk.c_str());
@@ -7149,7 +7228,7 @@ namespace {
             const uintptr_t trigSk =
                 ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : static_cast<uintptr_t>(0);
             BDLOG(
-                "ape naming: refineActivityApeNaming success_return activity=%s pairScoped=%d "
+                "naming: refineActivityApeNaming success_return activity=%s pairScoped=%d "
                 "xmlSpaceTriggerSourceKeyHash=%lu ctx_triggerSourceKeyHash=%lu trigger_stateKeyHash=%lu "
                 "lastRefineSeedSeq=%llu trigExact=%d dominantSrcKey=%lu dominantAct=%lu "
                 "xmlSpaceTrigger_zero=%d ctxTrig_vs_sk_equal=%d",
@@ -7169,11 +7248,13 @@ namespace {
         return true;
     }
 
+    /** @brief Clears cached state-key deduplication maps after abstraction changes. */
     void Model::invalidateApeGraphStateKeyDedupMap() {
         _ape_graph_state_by_key.clear();
     }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** @brief Rebuilds canonical state representatives for each abstract key hash. */
     void Model::rebuildApeStateRepresentativesForKeyHashes(
         const std::string &rawActivity,
         const naming::NamingPtr &oldNaming,
@@ -7310,6 +7391,7 @@ namespace {
 #endif
     }
 
+    /** @brief Remaps transition aggregation keys after pruning or renaming. */
     void Model::remapApeTransitionAggregationForActivity(
         const std::string &rawActivity,
         const naming::NamingPtr &fromNaming,
@@ -7566,7 +7648,7 @@ namespace {
                 }
             }
             // Remove old-space aggregation first so that any remap failure won't leave stale counts.
-            // Also avoid clearing pairAgg for other activities (APE Model.rebuild keeps unaffected evidence).
+            // Also avoid clearing pairAgg for other activities (Model.rebuild keeps unaffected evidence).
             apePairAggRemove(slot);
             const uintptr_t oldSrcStateHash = slot.sourceStateHash;
             const uintptr_t oldTgtStateHash = slot.targetStateHash;
@@ -7641,11 +7723,13 @@ namespace {
 #endif
     }
 
+    /** @brief Enforces a cap on the GUI-tree naming blacklist size. */
     void Model::apeCapGuiTreeNamingBlacklist() {
-        // no-op: match Java unbounded guiTreeNamingBlaclist.
+        // no-op: match unbounded guiTreeNamingBlaclist.
     }
 #endif
 
+    /** @brief Coarsens naming for an activity when stability rules require it. */
     bool Model::coarsenActivityApeNamingIfNeeded(const std::string &activity) {
         const std::string actKey = naming::StateKey::canonicalActivityString(activity);
         ApeNamingAbstractionContext &ctx = _apeNamingContext[actKey];
@@ -7657,7 +7741,7 @@ namespace {
             if (ep <= 220 || (ep % 600) == 0) {
                 const uintptr_t triggerKeyHashFromStateKey =
                     ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
-                BDLOG("ape naming BUG_PROBE [coarsen_entry_trigger_ctx] seq=%llu activity=%s mgrCur=%p "
+                BDLOG("naming BUG_PROBE [coarsen_entry_trigger_ctx] seq=%llu activity=%s mgrCur=%p "
                       "hasParent=%d trigHashCtx=%lu trigExact=%d trigHashStateKey=%lu "
                       "equalCtxVsStateKey=%d old2newSize=%zu oldObsSize=%zu",
                       static_cast<unsigned long long>(ep), actKey.c_str(),
@@ -7681,7 +7765,7 @@ namespace {
                 fineness = mgrCur->getFineness();
                 hasParent = mgrCur->getParent() ? "1" : "0";
             }
-            BDLOG("ape naming: coarsen skip activity=%s reason=missing_naming reason_detail=%s "
+            BDLOG("naming: coarsen skip activity=%s reason=missing_naming reason_detail=%s "
                   "mgrCur=%p hasParent=%s fineness=%d",
                   activity.c_str(), detail, static_cast<const void *>(mgrCur.get()), hasParent,
                   fineness);
@@ -7718,7 +7802,7 @@ namespace {
                 static std::atomic<uint64_t> g_coarsen_loop_probe{0};
                 const uint64_t lp = ++g_coarsen_loop_probe;
                 if (lp <= 200 || (lp % 600) == 0) {
-                    BDLOG("ape naming BUG_PROBE [coarsen_loop_probe] seq=%llu activity=%s depth=%d "
+                    BDLOG("naming BUG_PROBE [coarsen_loop_probe] seq=%llu activity=%s depth=%d "
                           "tn=%p mgrCur=%p tnPar=%p trigHash=%lu triggerSource=%lu sameFpAsMgrCur=%d",
                           static_cast<unsigned long long>(lp), activity.c_str(), tnDepth,
                           static_cast<const void *>(tn.get()), static_cast<const void *>(mgrCur.get()),
@@ -7730,7 +7814,7 @@ namespace {
             size_t filteredAffected = 0;
             size_t filteredTargets = 0;
             std::unordered_set<uintptr_t> filteredAffectedStateHashes;
-            // optimization 4 (align Java): recompute affectedStates/targets.size with the same
+            // optimization 4 (reference parity): recompute affectedStates/targets.size with the same
             // originState.equals(oldState) filtering semantics used by optimization 3.
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
             if (triggerSource == 0) {
@@ -7738,7 +7822,7 @@ namespace {
                 static std::atomic<uint64_t> g_coarsen_continue_trigger_zero{0};
                 const uint64_t cz = ++g_coarsen_continue_trigger_zero;
                 if (cz <= 160 || (cz % 500) == 0) {
-                    BDLOG("ape naming BUG_PROBE [coarsen_continue_trigger_zero] seq=%llu activity=%s "
+                    BDLOG("naming BUG_PROBE [coarsen_continue_trigger_zero] seq=%llu activity=%s "
                           "depth=%d tn=%p mgrCur=%p trigHash=%lu sameFpAsMgrCur=%d",
                           static_cast<unsigned long long>(cz), activity.c_str(), tnDepth,
                           static_cast<const void *>(tn.get()), static_cast<const void *>(mgrCur.get()),
@@ -7829,7 +7913,7 @@ namespace {
                 static std::atomic<uint64_t> g_coarsen_continue_trigger_zero{0};
                 const uint64_t cz = ++g_coarsen_continue_trigger_zero;
                 if (cz <= 160 || (cz % 500) == 0) {
-                    BDLOG("ape naming BUG_PROBE [coarsen_continue_trigger_zero] seq=%llu activity=%s "
+                    BDLOG("naming BUG_PROBE [coarsen_continue_trigger_zero] seq=%llu activity=%s "
                           "depth=%d tn=%p mgrCur=%p trigHash=%lu sameFpAsMgrCur=%d",
                           static_cast<unsigned long long>(cz), activity.c_str(), tnDepth,
                           static_cast<const void *>(tn.get()), static_cast<const void *>(mgrCur.get()),
@@ -7876,7 +7960,7 @@ namespace {
                     const uintptr_t triggerKeyHashFromStateKey =
                         ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
                     BDLOG(
-                        "ape naming: chain coarsen rollback Abstract update act=%s rollbackFrom=%p rollbackTo=%p "
+                        "naming: chain coarsen rollback Abstract update act=%s rollbackFrom=%p rollbackTo=%p "
                         "trigExact=%d trigSrcH=%lu trigSrcH(stateKey)=%lu equal=%d",
                         actKey.c_str(), static_cast<const void *>(rollbackFrom.get()),
                         static_cast<const void *>(rollbackTo.get()),
@@ -7893,7 +7977,7 @@ namespace {
                 if (n <= 120 || (n % 400) == 0) {
                     const uintptr_t triggerKeyHashFromStateKey =
                         ctx.triggerSourceKeyExact ? ctx.triggerSourceKey.hash() : 0;
-                    BLOG("ape naming: coarsen trigger keyspace seq=%" PRIu64
+                    BLOG("naming: coarsen trigger keyspace seq=%" PRIu64
                          " activity=%s triggerSource=%lu trigHash(ctx)=%lu trigHash(stateKey)=%lu equal=%d "
                          "trigExact=%d filteredAffected=%zu filteredTargets=%zu thresholdA=%d thresholdT=%d",
                          n, actKey.c_str(), static_cast<unsigned long>(triggerSource),
@@ -7967,7 +8051,7 @@ namespace {
             }
             _apeNamingCoarseningBlacklist.insert(std::make_pair(actKey, fpFiner));
             apeCapApeNamingCoarsenAndRefineBlacklists();
-            BDLOG("ape naming: coarsen activity=%s rollback overFilteredAffected=%d overFilteredTargets=%d "
+            BDLOG("naming: coarsen activity=%s rollback overFilteredAffected=%d overFilteredTargets=%d "
                   "affectedStates=%zu totalNew=%zu filteredAffected=%zu filteredTargets=%zu rebuilt=%d "
                   "targetThreshold=%d triggerSource=%lu fp=%s",
                   activity.c_str(), overFilteredAffected ? 1 : 0, overFilteredTargets ? 1 : 0,
@@ -8001,7 +8085,7 @@ namespace {
             coarsen_diag_verbose_activity || keepSeq <= 120 || (keepSeq % 400) == 0;
         if (emit_full_keep_diag) {
             BDLOG(
-                "ape naming: coarsen_decision outcome=keep reason=no_layer_hit_thresholds activity=%s "
+                "naming: coarsen_decision outcome=keep reason=no_layer_hit_thresholds activity=%s "
                 "actKey=%s layersWalked=%u layersSkipTrig0=%u maxFilteredAffected=%zu maxFilteredTargets=%zu "
                 "maxFaDepth=%d maxFtDepth=%d thrAffected=%d targetThrAtMaxFt=%d "
                 "lastRefineSeedSeq=%llu trigHashCtx=%lu old2newBuckets=%zu oldObsBuckets=%zu "
@@ -8015,12 +8099,13 @@ namespace {
                 affectedStateObservations, totalNewKeys.size(),
                 mgrCur ? mgrCur->getFineness() : -1);
         } else {
-            BDLOG("ape naming: coarsen keep refinement activity=%s rollback=0", activity.c_str());
+            BDLOG("naming: coarsen keep refinement activity=%s rollback=0", activity.c_str());
         }
         return false;
     }
 #endif
 
+    /** @brief Records that an activity string was seen (coverage / bookkeeping). */
     void Model::reportActivity(const std::string &activity) {
         if (activity.empty()) return;
         std::lock_guard<std::mutex> lock(_coverageMutex);
@@ -8028,6 +8113,7 @@ namespace {
         _coverageStepCount++;
     }
 
+    /** @brief Returns exploration coverage metrics as a JSON string. */
     std::string Model::getCoverageJson() const {
         std::lock_guard<std::mutex> lock(_coverageMutex);
         nlohmann::json j;
@@ -8040,6 +8126,7 @@ namespace {
         return j.dump();
     }
 
+    /** @brief Returns the stagnation metric used by the exploration scheduler. */
     double Model::getLlmdroidStagnationMetric() const {
         std::lock_guard<std::mutex> lock(_coverageMutex);
         const size_t states = _graph ? _graph->stateSize() : 0;
@@ -8049,6 +8136,7 @@ namespace {
                1e-9 * static_cast<double>(steps);
     }
 
+    /** @brief Loads persisted dynamic state-abstraction policy from storage. */
     void Model::loadStateAbstractionPolicy() {
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         auto pref = Preference::inst();
@@ -8089,7 +8177,7 @@ namespace {
             }
 
             // v1 files may contain widget-key masks and coarseningBlacklist (legacy); do not apply — dynamic
-            // identity is APE StateKey-only; keeping old entries would confuse debugging.
+            // identity is StateKey-only; keeping old entries would confuse debugging.
             auto itActs = j.find("activities");
             if (itActs != j.end() && itActs->is_array() && !itActs->empty()) {
                 BLOG("state abstraction: %s contains legacy activities[]; ignored", path.c_str());
@@ -8108,6 +8196,7 @@ namespace {
 #endif
     }
 
+    /** @brief Persists dynamic state-abstraction policy to storage. */
     void Model::saveStateAbstractionPolicy() const {
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         auto pref = Preference::inst();
@@ -8150,6 +8239,7 @@ namespace {
     }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** @brief Logs abstract state key fields for one state (debug). */
     void Model::logApeStateKeySnapshot(const std::string &rawActivity, const StatePtr &state,
                                        const naming::StateKey &key, const GraphPtr &graph) {
         const auto &xs = key.sortedXPaths();
@@ -8171,6 +8261,7 @@ namespace {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 
+    /** @brief Builds the abstract state key from an element tree and activity context. */
     bool Model::buildApeStateKeyFromElementTree(const ElementPtr &element, const std::string &activity,
                                                naming::StateKey *outKey,
                                                ApeStateKeyBuildFailReason *outFailReason,
@@ -8235,7 +8326,7 @@ namespace {
         const std::string &xmlForEntryLog = xmlSnapshotRef();
         const uint64_t xmlSigForEntryLog = hashStringForLog(xmlForEntryLog);
         if (seq <= 20 || (seq % 400) == 0) {
-            BDLOG("ape statekey: build source activity=%s seq=%" PRIu64
+            BDLOG("naming statekey: build source activity=%s seq=%" PRIu64
                   " elementPtr=%p statePtr=%p stateHash=%" PRIuPTR
                   " xmlSig=%" PRIu64 " xmlLen=%zu %s",
                   activity.c_str(), seq, element.get(), stateForDynamicApply.get(),
@@ -8244,7 +8335,7 @@ namespace {
         }
         gui_tree::GUITreeBuildResult built = gui_tree::GUITreeFactory::buildFromElement(element, pkg, cls);
         if (seq <= 20 || (seq % 400) == 0) {
-            BDLOG("ape statekey: tree stage=after_buildFromElement activity=%s seq=%" PRIu64
+            BDLOG("naming statekey: tree stage=after_buildFromElement activity=%s seq=%" PRIu64
                   " treePtr=%p dom=%d %s",
                   activity.c_str(), seq, built.tree.get(), built.dom ? 1 : 0,
                   summarizeGUITreeForLog(built.tree).c_str());
@@ -8263,7 +8354,7 @@ namespace {
             built = buildGuitreeFromCachedXmlPreferElement(xmlSnapshotRef(), pkg, cls);
 #endif
             if (seq <= 20 || (seq % 400) == 0) {
-                BDLOG("ape statekey: tree stage=after_fallback_build activity=%s seq=%" PRIu64
+                BDLOG("naming statekey: tree stage=after_fallback_build activity=%s seq=%" PRIu64
                       " treePtr=%p dom=%d %s",
                       activity.c_str(), seq, built.tree.get(), built.dom ? 1 : 0,
                       summarizeGUITreeForLog(built.tree).c_str());
@@ -8288,7 +8379,7 @@ namespace {
                 return fail(ApeStateKeyBuildFailReason::NoNaming);
             }
             if (seq <= 20 || (seq % 400) == 0) {
-                BDLOG("ape statekey: tree stage=after_getNamingFixedPoint activity=%s seq=%" PRIu64
+                BDLOG("naming statekey: tree stage=after_getNamingFixedPoint activity=%s seq=%" PRIu64
                       " treePtr=%p namingFp=%s %s",
                       activity.c_str(), seq, built.tree.get(), naming->fingerprintString().c_str(),
                       summarizeGUITreeForLog(built.tree).c_str());
@@ -8316,7 +8407,7 @@ namespace {
                     }
                 }
                 if (seq <= 20 || (seq % 400) == 0) {
-                    BDLOG("ape statekey: tree stage=after_refine_rebuild activity=%s seq=%" PRIu64
+                    BDLOG("naming statekey: tree stage=after_refine_rebuild activity=%s seq=%" PRIu64
                           " treePtr=%p namingFp=%s beforeFp=%s %s",
                           activity.c_str(), seq, built.tree.get(), naming->fingerprintString().c_str(),
                           fpBefore.c_str(), summarizeGUITreeForLog(built.tree).c_str());
@@ -8407,7 +8498,7 @@ namespace {
                 return fail(ApeStateKeyBuildFailReason::RebuildTreeFailed);
             }
             if (seq <= 20 || (seq % 400) == 0) {
-                BDLOG("ape statekey: tree stage=after_safeRebuildTree activity=%s seq=%" PRIu64
+                BDLOG("naming statekey: tree stage=after_safeRebuildTree activity=%s seq=%" PRIu64
                       " treePtr=%p namingFp=%s %s",
                       activity.c_str(), seq, built.tree.get(), naming->fingerprintString().c_str(),
                       summarizeGUITreeForLog(built.tree).c_str());
@@ -8493,7 +8584,7 @@ namespace {
                         (stateForDynamicApply && stateForDynamicApply->hash() != 0)
                             ? stateForDynamicApply->hash()
                             : 0;
-                    BDLOG("ape statekey: element/xml hash align seq=%" PRIu64
+                    BDLOG("naming statekey: element/xml hash align seq=%" PRIu64
                           " activity=%s stateHash=%lu elementH=%lu xmlH=%lu equal=%d hasSnap=%d xmlLen=%zu",
                           alignSeq, activity.c_str(), static_cast<unsigned long>(stateHashForAlign),
                           static_cast<unsigned long>(elementPathHash),
@@ -8556,7 +8647,7 @@ namespace {
                             ? stateForDynamicApply->hash()
                             : 0;
                     const std::string &fp = naming->fingerprintString();
-                    BDLOG("ape statekey: element/xml hash mismatch activity=%s stateHash=%lu "
+                    BDLOG("naming statekey: element/xml hash mismatch activity=%s stateHash=%lu "
                           "elementH=%lu xmlH=%lu hasSnap=%d xmlLen=%zu elementPtr=%p "
                           "statePtr=%p xmlSig=%" PRIu64 " %s namingFp=%s",
                           activity.c_str(), static_cast<unsigned long>(stateHashForLog),
@@ -8565,7 +8656,7 @@ namespace {
                           xmlForCompare.size(), element.get(), stateForDynamicApply.get(),
                           hashStringForLog(xmlForCompare), summarizeElementForLog(element).c_str(),
                           fp.c_str());
-                    BDLOG("ape statekey: tree stage=mismatch_element_tree activity=%s stateHash=%lu "
+                    BDLOG("naming statekey: tree stage=mismatch_element_tree activity=%s stateHash=%lu "
                           "treePtr=%p %s",
                           activity.c_str(), static_cast<unsigned long>(stateHashForLog), built.tree.get(),
                           summarizeGUITreeForLog(built.tree).c_str());
@@ -8576,18 +8667,18 @@ namespace {
                         const std::string firstXmlDiff =
                             (foundDiff && diffIndex < xmlXPathCount) ? (*xmlXPaths)[diffIndex]
                                                                      : std::string("(none)");
-                        BDLOG("ape statekey: element/xml xpath diff activity=%s stateHash=%lu "
+                        BDLOG("naming statekey: element/xml xpath diff activity=%s stateHash=%lu "
                               "elementCount=%zu xmlCount=%zu diffIndex=%zu elementXPath=%s xmlXPath=%s",
                               activity.c_str(), static_cast<unsigned long>(stateHashForLog),
                               elementXPathCount, xmlXPathCount, diffIndex,
                               firstElementDiff.c_str(), firstXmlDiff.c_str());
-                        BDLOG("ape statekey: element/xml xpath summary activity=%s stateHash=%lu "
+                        BDLOG("naming statekey: element/xml xpath summary activity=%s stateHash=%lu "
                               "element=%s xml=%s",
                               activity.c_str(), static_cast<unsigned long>(stateHashForLog),
                               summarizeXPaths(elementXPaths).c_str(),
                               summarizeXPaths(*xmlXPaths).c_str());
                     } else {
-                        BDLOG("ape statekey: element/xml xpath diff unavailable activity=%s stateHash=%lu "
+                        BDLOG("naming statekey: element/xml xpath diff unavailable activity=%s stateHash=%lu "
                               "xmlTreeReady=0",
                               activity.c_str(), static_cast<unsigned long>(stateHashForLog));
                     }
@@ -8628,6 +8719,7 @@ namespace {
     }
 #endif
 
+    /** @brief Stores the mapping from a runtime state to its abstract key. */
     void Model::recordApeStateKey(const StatePtr &state, const naming::StateKey &key) {
         if (!state) {
             return;
@@ -8635,7 +8727,7 @@ namespace {
         const uintptr_t stateHash = state->hash();
         auto &bucket = _ape_state_keys_by_hash[stateHash];
 
-        // In dynamic APE identity mode, State::hash() is overridden to StateKey::hash().
+        // In dynamic identity mode, State::hash() is overridden to StateKey::hash().
         // Only in this mode does it make sense to treat multiple different keys under the
         // same hash as a potential hash collision.
         const bool inApeHashSpace = (stateHash == key.hash());
@@ -8663,6 +8755,7 @@ namespace {
     }
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
+    /** @brief Updates graph-side naming index entries when a state's abstraction changes. */
     void Model::syncApeNamingGraphIndex(const StatePtr &state) {
         if (!_graph || !state) {
             return;
@@ -8678,6 +8771,7 @@ namespace {
         }
     }
 
+    /** @brief Preloads naming-related graph indices to reduce lookup latency. */
     void Model::warmApeNamingGraphIndex() {
         if (!_graph) {
             return;
@@ -8697,6 +8791,7 @@ namespace {
     }
 #endif
 
+    /** @brief Looks up the abstract state key for a state hash, optionally scoped by activity hint. */
     bool Model::tryGetApeStateKey(uintptr_t stateHash, naming::StateKey *out, const std::string &hintActivity,
                                   uintptr_t hintKeyHash) const {
         auto it = _ape_state_keys_by_hash.find(stateHash);
@@ -8735,6 +8830,7 @@ namespace {
         return true;
     }
 
+    /** @brief Looks up the abstract state key hash for a state hash. */
     bool Model::tryGetApeStateKeyHash(uintptr_t stateHash, uintptr_t *outKeyHash, const std::string &hintActivity,
                                       uintptr_t hintKeyHash) const {
         naming::StateKey k = naming::StateKey::fromParts("", nullptr, {});

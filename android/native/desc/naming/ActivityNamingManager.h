@@ -29,21 +29,32 @@
 namespace fastbotx {
 namespace naming {
 
+    /**
+     * Holds one `Naming` root per screen / activity key so XPath naming policy can differ by context.
+     * Keys should match the canonical activity string used elsewhere in state (e.g. `StateKey::canonicalActivityString`).
+     */
     class ActivityNamingManager {
     public:
-        /** @param activity_key Canonical activity (see StateKey::canonicalActivityString). */
+        /**
+         * Returns the `Naming` for `activity_key`. On first access for that key, inserts the global base naming
+         * from `NamingFactory::getBaseNaming()` and returns it.
+         */
         NamingPtr getNaming(const std::string &activity_key) const;
 
+        /** Stores `n` under `activity_key`, replacing any existing pointer (may be null). */
         void setNaming(const std::string &activity_key, NamingPtr n);
 
+        /** True if `activity_key` has an entry in the map (including lazy inserts from `getNaming`). */
         bool hasNaming(const std::string &activity_key) const;
 
+        /** Drops every cached per-activity naming root. */
         void clear();
 
-        /** Snapshot current per-activity naming roots (for cache-release traversal). */
+        /** Non-owning snapshot of all stored non-null naming roots (e.g. for releasing caches or visiting graphs). */
         std::vector<NamingPtr> getAllNamings() const;
 
     private:
+        /** Mutable because `getNaming` lazily populates the map under `const` receivers. */
         mutable std::unordered_map<std::string, NamingPtr> current_{};
     };
 

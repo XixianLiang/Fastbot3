@@ -9,8 +9,8 @@
  */
 
 /*
- * Pre-registered namers for every subset of namerTypesUsed().
- * When usePatchNamer() is true, each namer is ActionPatchNamer(BitmaskNamer(mask)).
+ * Pre-built `BitmaskNamer` instances for every subset of dimensions listed by `namerTypesUsed()`.
+ * When `usePatchNamer()` is true, each entry wraps `ActionPatchNamer` around that bitmask namer.
  */
 #ifndef FASTBOTX_DESC_NAMING_NAMERFACTORY_H_
 #define FASTBOTX_DESC_NAMING_NAMERFACTORY_H_
@@ -28,22 +28,24 @@ namespace naming {
     class NamerFactory {
     public:
         /**
-         * Live factory: rebuilt when {@link useAncestorNamer()} or {@link usePatchNamer()} changes
-         * (e.g. after max.config sets max.useAncestorNamer / max.usePatchNamer).
+         * Singleton-like accessor: the cached factory is rebuilt when `useAncestorNamer()` or `usePatchNamer()`
+         * toggles so stacking matches current preferences.
          */
         static const NamerFactory &current();
 
-        /** Builds the full bitmask cube for {@link namerTypesUsed()} at construction time. */
+        /** Materializes all bitmask combinations over `namerTypesUsed()` at startup (see `.cpp`). */
         NamerFactory();
 
         NamerFactory(const NamerFactory &) = delete;
         NamerFactory &operator=(const NamerFactory &) = delete;
 
-        /** Bitmask uses {@code 1u << static_cast<unsigned>(NamerType)}. */
+        /** Returns the namer whose `typeDimensionMask()` equals `mask` (bits `1u << NamerType`). */
         NamerPtr getByMask(uint32_t mask) const;
 
+        /** Namers sorted by increasing population count of `mask`, then by numeric mask. */
         const std::vector<NamerPtr> &all() const { return ordered_; }
 
+        /** The namer for bitmask zero when generated (typically minimal/local naming only). */
         NamerPtr empty() const { return empty_; }
 
     private:

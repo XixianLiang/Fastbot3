@@ -1,12 +1,12 @@
 /**
- * Pluggable content-aware input provider for editable widgets.
- *
- * Extracts the "content_aware_input" LLM logic from LLMExplorerAgent into a
- * separate, replaceable component (similar to IStateEncoder for CuriosityAgent),
- * with an LLM-based default implementation and internal caching.
- */
-/**
  * @authors Zhao Zhang
+ */
+
+/**
+ * @file ContentAwareInputProvider.h
+ *
+ * Abstraction for generating short text to type into editable widgets (content-aware input).
+ * The default implementation asks the configured `LlmClient` with prompt type `content_aware_input`.
  */
 
 #ifndef FASTBOTX_CONTENT_AWARE_INPUT_PROVIDER_H
@@ -23,46 +23,56 @@
 
 namespace fastbotx {
 
-    class IContentAwareInputProvider {
-    public:
-        virtual ~IContentAwareInputProvider() = default;
-
-        /**
-         * Return content-aware input text for a given (state, action, model).
-         * Implementations may use LLMs or heuristic rules, and may maintain
-         * their own internal caches.
-         */
-        virtual std::string getInputTextForAction(const StatePtr &state,
-                                                  const ActionPtr &action,
-                                                  const ModelPtr &model) const = 0;
-
-        /// Optional hook for clearing caches when state abstraction changes.
-        virtual void onStateAbstractionChanged() {}
-    };
-
-    using IContentAwareInputProviderPtr = std::shared_ptr<IContentAwareInputProvider>;
+/**
+ * Strategy interface for resolving fill text before an edit action runs.
+ *
+ * Callers supply the current abstract `State`, the chosen `Action`, and the live `Model` (for package name
+ * and `LlmClient`). Implementations may call remote models, local rules, or caches; results should be
+ * short human-like strings suitable for `EditText`-style widgets.
+ */
+class IContentAwareInputProvider {
+public:
+    virtual ~IContentAwareInputProvider() = default;
 
     /**
-     * Default LLM-based implementation that calls "content_aware_input"
-     * via Model::getLlmClient(), with a small FIFO cache keyed by
-     * (activity, resource_id, text, content_desc).
+     * Produces input text for `action` when it targets an editable widget.
+     *
+     * @param state Current UI state (activity string used for context).
+     * @param action Typically an `ActivityStateAction` with a concrete widget target.
+     * @param model Provides `getPackageName()` and `getLlmClient()` when LLM-backed.
+     * @return Text to apply, or empty string to skip / use defaults.
      */
-    class LlmContentAwareInputProvider : public IContentAwareInputProvider {
-    public:
-        std::string getInputTextForAction(const StatePtr &state,
-                                          const ActionPtr &action,
-                                          const ModelPtr &model) const override;
+    virtual std::string getInputTextForAction(const StatePtr &state,
+                                              const ActionPtr &action,
+                                              const ModelPtr &model) const = 0;
 
-        void onStateAbstractionChanged() override;
+    /** Invalidate any fingerprint-keyed caches after naming or abstraction changes. */
+    virtual void onStateAbstractionChanged() {}
+};
 
-    private:
-        static constexpr size_t kMaxContentAwareInputCacheSize = 64;
+using IContentAwareInputProviderPtr = std::shared_ptr<IContentAwareInputProvider>;
 
-        mutable std::unordered_map<std::string, std::string> _cache;
-        mutable std::list<std::string> _cacheOrder;
-    };
+/**
+ * LLM-backed provider: builds a JSON payload (package, activity, widget class, resource id, text, description),
+ * calls `LlmClient::predictWithPayload("content_aware_input", ...)`, normalizes the returned string,
+ * and caches results in a bounded FIFO map keyed by activity + widget identity fields.
+ */
+class LlmContentAwareInputProvider : public IContentAwareInputProvider {
+public:
+    std::string getInputTextForAction(const StatePtr &state,
+                                      const ActionPtr &action,
+                                      const ModelPtr &model) const override;
+
+    void onStateAbstractionChanged() override;
+
+private:
+    static constexpr size_t kMaxContentAwareInputCacheSize = 64;
+
+    mutable std::unordered_map<std::string, std::string> _cache;
+    /** Eviction order for `_cache` when size exceeds `kMaxContentAwareInputCacheSize`. */
+    mutable std::list<std::string> _cacheOrder;
+};
 
 }  // namespace fastbotx
 
 #endif  // FASTBOTX_CONTENT_AWARE_INPUT_PROVIDER_H
-

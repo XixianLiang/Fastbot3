@@ -16,6 +16,10 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
+/**
+ * Implements activity-keyed naming updates, state-keyed refinement edges, `treeToNaming` graph walks,
+ * and diagnostic counters. Core lattice operations delegate to `NamingFactory` / `NamerLattice`.
+ */
 
 #include "StateNamingManager.h"
 #include "NamingFactory.h"
@@ -37,7 +41,8 @@
 namespace fastbotx {
 namespace naming {
 namespace {
-    constexpr bool kEnableApeNamingManagerDebugAssert = false;
+    /** When true, assert lookup invariants after edge registration (debug builds only). */
+    constexpr bool kEnableStateNamingManagerDebugAssert = false;
 
     std::atomic<uint64_t> g_u_reject_null_new{0};
     std::atomic<uint64_t> g_u_refine_not_direct_child{0};
@@ -179,10 +184,12 @@ namespace {
             namingFpSnippet(nnpar).c_str(), sk_nf.c_str());
     }
 
+    /** Canonical activity string derived from the tree’s package/class fields. */
     std::string activityKeyFromTree(const gui_tree::GUITree &tree) {
         return StateKey::activityFromPackageAndClass(tree.getActivityPackageName(), tree.getActivityClassName());
     }
 
+    /** Infers the refinement `(fromNamelet,toNamelet)` edge by first differing namelet or appended tail. */
     NamingEdge inferRefineEdge(const NamingPtr &from, const NamingPtr &to) {
         NamingEdge edge{};
         if (!from || !to) {
@@ -211,6 +218,7 @@ namespace {
         return edge;
     }
 
+    /** True if `ancestor` appears on the parent chain above `node`. */
     bool isAncestorNaming(const NamingPtr &ancestor, const NamingPtr &node) {
         if (!ancestor || !node) {
             return false;
@@ -225,6 +233,7 @@ namespace {
         return false;
     }
 
+    /** True when `child->getParent()` equals `parent`. */
     bool isDirectChildOf(const NamingPtr &parent, const NamingPtr &child) {
         return parent && child && child->getParent() == parent;
     }
@@ -311,6 +320,7 @@ namespace {
 
 } // namespace
 
+    /** Ensures a non-null `ActivityNamingManager`, default-constructing one if missing. */
     StateNamingManager::StateNamingManager(std::shared_ptr<ActivityNamingManager> activity_mgr)
         : activity_mgr_(std::move(activity_mgr)) {
         if (!activity_mgr_) {
@@ -322,6 +332,7 @@ namespace {
 
     const ActivityNamingManager &StateNamingManager::activityManager() const { return *activity_mgr_; }
 
+    /** No outgoing state-key edges from `n` in either exact or hash-only maps. */
     bool StateNamingManager::isStateGraphLeaf(const NamingPtr &n) const {
         if (!n) {
             return true;
@@ -345,11 +356,16 @@ namespace {
         return activity_mgr_->getNaming(activity_key);
     }
 
+    /** Delegates to the `(old, new)` overload using the current activity naming as `old_n`. */
     void StateNamingManager::updateNaming(const std::string &activity_key, NamingUpdateKind kind, NamingPtr n) {
         NamingPtr current = activity_mgr_->getNaming(activity_key);
         updateNaming(activity_key, kind, current, std::move(n));
     }
 
+    /**
+     * Refine: require direct child, infer edge, register `addRefinementChild`. Abstract: ancestor shortcut,
+     * sibling replacement with leaf checks, or reject.
+     */
     void StateNamingManager::updateNaming(const std::string &activity_key, NamingUpdateKind kind,
                                           const NamingPtr &old_n, NamingPtr new_n) {
         if (!new_n) {
@@ -383,7 +399,7 @@ namespace {
                         new_n->getFineness(), namingFpHash(old_n), namingFpHash(new_n));
                 }
             }
-            // APE: only if oldOne == newOne.getParent()  =>  new.getParent() == old
+            // Refine updates require a direct lattice parent link: `new_n`’s parent must be `old_n`.
             if (!isDirectChildOf(old_n, new_n)) {
                 const uint64_t c = ++g_u_refine_not_direct_child;
                 logStateNamingSample("update_refine_not_direct_child", c);
@@ -414,7 +430,7 @@ namespace {
             return;
         }
 
-        // NamingUpdateKind::Abstract — same branch order as APE StateNamingManager.updateNaming
+        // Abstract branch order: strict ancestor shortcut, then sibling abstract with leaf checks.
         if (isAncestorNaming(new_n, old_n)) {
             activity_mgr_->setNaming(activity_key, std::move(new_n));
             return;
@@ -451,6 +467,7 @@ namespace {
         logStateNamingSample("update_abstract_relation_rejected", c);
     }
 
+    /** Runs `updateNaming` then, if applied, upserts or erases exact `StateKey` edges on the refinement graph. */
     void StateNamingManager::updateNamingWithStateKey(const std::string &activity_key, NamingUpdateKind kind,
                                                       const NamingPtr &old_n, NamingPtr new_n,
                                                       const StateKey &state_key) {
@@ -551,7 +568,7 @@ namespace {
                         static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()));
                 }
             }
-            if (kEnableApeNamingManagerDebugAssert) {
+            if (kEnableStateNamingManagerDebugAssert) {
                 assert(getNamingByStateKey(old_n, state_key) == new_n);
             }
             return;
@@ -588,6 +605,7 @@ namespace {
         }
     }
 
+    /** Same structural rules as `updateNamingWithStateKey` but stores hash-only buckets when full keys are absent. */
     void StateNamingManager::updateNamingWithStateHash(const std::string &activity_key, NamingUpdateKind kind,
                                                        const NamingPtr &old_n, NamingPtr new_n,
                                                        uintptr_t state_key_hash) {
@@ -636,7 +654,7 @@ namespace {
                         static_cast<const void *>(old_n.get()), static_cast<const void *>(new_n.get()));
                 }
             }
-            if (kEnableApeNamingManagerDebugAssert) {
+            if (kEnableStateNamingManagerDebugAssert) {
                 assert(getNamingByStateHash(old_n, state_key_hash) == new_n);
             }
             return;
@@ -646,7 +664,7 @@ namespace {
                 NamingPtr parent = new_n->getParent();
                 if (parent) {
                     naming_to_edge_hash_only_[parent][state_key_hash] = new_n;
-                    if (kEnableApeNamingManagerDebugAssert) {
+                    if (kEnableStateNamingManagerDebugAssert) {
                         assert(getNamingByStateHash(parent, state_key_hash) == new_n);
                     }
                 }
@@ -676,6 +694,7 @@ namespace {
         }
     }
 
+    /** Resolves the `NamingEdge` connecting `from` to `to` via stored state maps or direct refinement children. */
     bool StateNamingManager::namingToEdge(const NamingPtr &from, const NamingPtr &to, NamingEdge *out_edge) const {
         if (!from || !to || !out_edge) {
             return false;
@@ -700,6 +719,7 @@ namespace {
         return false;
     }
 
+    /** Hash-bucket lookup: prefers a unique exact entry, else the hash-only map (updates `lookup_stats_`). */
     NamingPtr StateNamingManager::getNamingByStateHash(const NamingPtr &source, uintptr_t state_key_hash) const {
         if (!source || state_key_hash == 0) {
             return nullptr;
@@ -726,6 +746,7 @@ namespace {
         return jtFallback->second;
     }
 
+    /** Exact `StateKey` match inside the hash bucket; does not fall back to hash-only edges. */
     NamingPtr StateNamingManager::getNamingByStateKey(const NamingPtr &source, const StateKey &state_key) const {
         if (!source) {
             return nullptr;
@@ -748,6 +769,7 @@ namespace {
         return nullptr;
     }
 
+    /** Const overload: single hop along exact state key (diagnostic shadow compares multi-hop reachability). */
     NamingPtr StateNamingManager::treeToNaming(const gui_tree::GUITree &tree) {
         const uint64_t entrySeq = ++g_tt_const_entries;
         NamingPtr source = activity_mgr_->getNaming(activityKeyFromTree(tree));
@@ -815,6 +837,7 @@ namespace {
         return oneHop;
     }
 
+    /** DOM overload: rebuild each hop, follow state edges until stop condition; returns final naming. */
     NamingPtr StateNamingManager::treeToNaming(gui_tree::GUITree &tree,
                                                const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) {
         if (!dom) {
@@ -863,6 +886,7 @@ namespace {
         return source;
     }
 
+    /** Without DOM: returns stored naming or default root when `max_iter > 0` and nothing cached. */
     NamingPtr StateNamingManager::getNamingFixedPoint(const std::string &activity_key,
                                                       const gui_tree::GUITree & /*tree*/, int max_iter) {
         NamingPtr n = activity_mgr_->getNaming(activity_key);
@@ -872,6 +896,7 @@ namespace {
         return n;
     }
 
+    /** `treeToNaming` then `batchRefineWithRebuildFixedPoint`; persists the result under `activity_key`. */
     NamingPtr StateNamingManager::getNamingFixedPoint(const std::string &activity_key, gui_tree::GUITree &tree,
                                                       const std::shared_ptr<gui_tree::XPathNodeMapper> &dom,
                                                       int max_iter) {
@@ -896,12 +921,14 @@ namespace {
         return n;
     }
 
+    /** Clears and returns edge lookup hit/miss counters for this manager instance. */
     StateNamingManager::EdgeLookupStats StateNamingManager::consumeEdgeLookupStats() {
         EdgeLookupStats out = lookup_stats_;
         lookup_stats_ = EdgeLookupStats{};
         return out;
     }
 
+    /** Walks every reachable `Naming` graph under all activity roots and clears per-tree caches. */
     void StateNamingManager::releaseTreeCache(const gui_tree::GUITree &tree) {
         std::vector<NamingPtr> roots = activity_mgr_->getAllNamings();
         std::set<const Naming *> visited;
@@ -933,6 +960,7 @@ namespace {
         }
     }
 
+    /** Atomically reads and clears global update-reject diagnostics. */
     StateNamingUpdateRejectDiagStats StateNamingManager::consumeUpdateRejectDiagStats() {
         StateNamingUpdateRejectDiagStats s;
         s.update_reject_null_new = g_u_reject_null_new.exchange(0);
@@ -974,6 +1002,7 @@ namespace {
         return s;
     }
 
+    /** Atomically reads and clears global tree-walk / fixed-point diagnostics. */
     StateNamingTreeWalkDiagStats StateNamingManager::consumeTreeWalkDiagStats() {
         StateNamingTreeWalkDiagStats s;
         s.tree_to_naming_dom_entries = g_tt_dom_entries.exchange(0);

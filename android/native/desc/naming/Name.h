@@ -45,7 +45,7 @@ namespace naming {
         /** Local predicate fragment after `// *` (any node) for AbstractLocalName-style names. */
         virtual void appendXPathLocalProperties(std::string &sb) const { (void)sb; }
 
-        /** Lexicographic order on XPath string (APE: Comparable<Name>). */
+        /** Total order for container placement; based on `order_` (see `Name.cpp`). */
         bool operator<(const Name &other) const;
         bool operator==(const Name &other) const;
 

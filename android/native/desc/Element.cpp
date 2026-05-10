@@ -2,6 +2,11 @@
  * This code is licensed under the Fastbot license. You may obtain a copy of this license in the LICENSE.txt file in the root directory of this source tree.
  */
 /**
+ * @file Element.cpp
+ *
+ * UI accessibility tree: XML and compact binary parsing, uiautomator-style attribute aliases, XPath-style
+ * selector matching, JSON/XML serialization, subtree hashing, and scroll-type heuristics.
+ *
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
  */
 #ifndef Element_CPP_
@@ -20,8 +25,10 @@
 
 
 namespace fastbotx {
+
 namespace {
 
+    /** Heuristic: treat these class names as text fields (drives editability and gesture overrides). */
     bool isEditTextClassName(const std::string &cls) {
         const char *p = cls.c_str();
         const size_t len = cls.size();
@@ -33,7 +40,7 @@ namespace {
 
 } // namespace
 
-    /// Parse one integer (optional '-', then digits) and advance p past it. Used for bounds "[xl,yl][xr,yr]".
+    /** Parses a decimal literal (optional leading '-') and advances `p` past it; used for `bounds="[x,y][x,y]"`. */
     static int parseIntAndAdvance(const char *&p) {
         bool neg = (*p == '-');
         if (neg) ++p;
@@ -43,8 +50,8 @@ namespace {
         return neg ? -v : v;
     }
 
-    /// Log parsed DOM tree with node hierarchy (indent by depth). Stops when *lineCount <= 0 or depth > maxDepth.
 #if FASTBOT_LOG_PARSED_GUITREE
+    /** Debug-only DFS printer; caps lines and depth to keep logs bounded. */
     static void logDomTreeRecursive(const ElementPtr &e, int depth, int *lineCount, const int maxDepth = 40) {
         if (!e || depth > maxDepth) return;
         const int maxLines = 600;
@@ -71,23 +78,29 @@ namespace {
     }
 #endif
 
-    /// Try short then long attribute name (SECURITY_AND_OPTIMIZATION §7 - Java outputs rid/cd/bnd etc.)
+    /**
+     * Prefer abbreviated attributes (`rid`, `bnd`, …) then fall back to full uiautomator-style names.
+     * Matches the dual-encoding scheme described in SECURITY_AND_OPTIMIZATION (section 7).
+     */
     static bool queryStringAttr(const tinyxml2::XMLElement *node, const char *shortName, const char *longName, const char *&out) {
         if (node->QueryStringAttribute(shortName, &out) == tinyxml2::XML_SUCCESS && out && *out != '\0') return true;
         if (node->QueryStringAttribute(longName, &out) == tinyxml2::XML_SUCCESS && out && *out != '\0') return true;
         return false;
     }
+    /** Same alias resolution as `queryStringAttr`, for numeric attributes (`idx` vs `index`). */
     static bool queryIntAttr(const tinyxml2::XMLElement *node, const char *shortName, const char *longName, int &out) {
         if (node->QueryIntAttribute(shortName, &out) == tinyxml2::XML_SUCCESS) return true;
         if (node->QueryIntAttribute(longName, &out) == tinyxml2::XML_SUCCESS) return true;
         return false;
     }
+    /** Same alias resolution for boolean gesture/state flags (`clk` vs `clickable`, etc.). */
     static bool queryBoolAttr(const tinyxml2::XMLElement *node, const char *shortName, const char *longName, bool &out) {
         if (node->QueryBoolAttribute(shortName, &out) == tinyxml2::XML_SUCCESS) return true;
         if (node->QueryBoolAttribute(longName, &out) == tinyxml2::XML_SUCCESS) return true;
         return false;
     }
 
+    /** Logs when bounds parsed to an empty `Rect` (often bad `[0,0][0,0]` or malformed string). */
     void logInvalidBounds(const char *source,
                           int index,
                           const std::string &clazz,
@@ -106,6 +119,7 @@ namespace {
               bounds->toString().c_str());
     }
 
+    /** Zero-initialized flags; `RectZero` bounds until XML/binary populate real geometry. */
     Element::Element()
             : _enabled(false), _checked(false), _checkable(false), _clickable(false),
               _focusable(false), _scrollable(false), _longClickable(false), _childCount(0),
@@ -157,6 +171,7 @@ namespace {
         this->_parent.reset();
     }
 
+    /** Drops subtree links and invalidates cached hash/XML (`Element` nodes themselves may stay alive elsewhere). */
     void Element::clearChildren() {
         for (auto &child : this->_children) {
             if (child) {
@@ -169,18 +184,18 @@ namespace {
         this->_xmlCached = false;
     }
 
-/// According to given xpath selector, containing text, content, classname, resource id, test if
-/// this current element has the same property value as the given xpath selector.
-/// Text and content-desc use fuzzy (contains) match: element text/desc containing selector value matches.
-/// \param xpathSelector Describe property values of a xml element should have.
-/// \return If this element could be matched to the given xpath selector, return true.
+    /**
+     * Matches a coarse XPath-like selector against this node.
+     * Resource id and class use equality; text and content-description use substring ("contains") semantics.
+     * Combines fields with AND or OR depending on `xpathSelector->operationAND`.
+     */
     bool Element::matchXpathSelector(const XpathPtr &xpathSelector) const {
         if (!xpathSelector)
             return false;
         bool match;
         bool isResourceIDEqual = (!xpathSelector->resourceID.empty() &&
                                   this->getResourceID() == xpathSelector->resourceID);
-        // Fuzzy match: element text contains selector text (e.g. selector "登录" matches "新用户登录送会员")
+        // Fuzzy match: element text contains selector substring (e.g. selector "OK" matches "Tap OK to continue")
         const std::string &elText = this->getText();
         bool isTextEqual = (!xpathSelector->text.empty() &&
                             elText.size() >= xpathSelector->text.size() &&
@@ -303,18 +318,11 @@ namespace {
     }
 
     /**
-     * @brief Create an Element tree from XML string content
-     * 
-     * Parses XML string content and creates a hierarchical Element tree structure.
-     * If no elements are clickable, all elements are made clickable as a fallback.
-     * The root element is always set to scrollable.
-     * 
-     * Performance optimization:
-     * - Pre-allocates string vector with estimated capacity
-     * - Uses efficient string operations
-     * 
-     * @param xmlContent The XML content as a string
-     * @return Shared pointer to root Element, or nullptr if parsing fails
+     * Parses a hierarchical UI dump (tinyxml2). Root scrollability and clickability follow parsed attributes;
+     * optional `FASTBOT_LOG_*` blocks dump structure for debugging.
+     *
+     * @param xmlContent Serialized hierarchy (`<node>` elements with attributes).
+     * @return Root element, or nullptr when XML parse fails.
      */
     ElementPtr Element::createFromXml(const std::string &xmlContent) {
         tinyxml2::XMLDocument doc;
@@ -324,7 +332,8 @@ namespace {
         if (xmlLen > 120) {
             suffix = xmlContent.substr(xmlLen - 120);
         }
-        // Debug-only bounds scan logs disabled to reduce noise.
+        (void)prefix;
+        (void)suffix;
         
         // Raw domtree XML log: line by line so node hierarchy is visible (from XML indentation)
 #if FASTBOT_LOG_RAW_GUITREE
@@ -379,6 +388,7 @@ namespace {
         return elementPtr;
     }
 
+    /** Variant when the caller already holds a parsed `XMLDocument` (avoids re-parse). */
     ElementPtr Element::createFromXml(const tinyxml2::XMLDocument &doc) {
         ElementPtr elementPtr = std::make_shared<Element>(); // Root element has no parent
         elementPtr->fromXml(doc, nullptr);
@@ -388,6 +398,7 @@ namespace {
     // Binary format (little-endian): magic "FB\0\1" (4), then node: bounds(16), index(2), flags(2), num_strings(1), [tag(1) len(2) data(len)]*, num_children(2), children*
     static const char BINARY_MAGIC[] = {'F', 'B', 0, 1};
     enum { TAG_TEXT = 0, TAG_RID = 1, TAG_CLASS = 2, TAG_PKG = 3, TAG_CD = 4 };
+    /** Reads `n` bytes at `*offset` into `out`; leaves `offset` unchanged on failure. */
     static bool readBytes(const char *buf, size_t len, size_t *offset, void *out, size_t n) {
         if (*offset + n > len) return false;
         memcpy(out, buf + *offset, n);
@@ -395,6 +406,7 @@ namespace {
         return true;
     }
 
+    /** Depth-first builder: one shared `Element` per binary node record. */
     ElementPtr Element::parseBinaryNode(const char *buf, size_t len, size_t *offset, const ElementPtr &parent) {
         if (*offset + 21 > len) return nullptr;  // min header
         ElementPtr elm = std::make_shared<Element>();
@@ -402,6 +414,10 @@ namespace {
         return elm;
     }
 
+    /**
+     * Layout: packed booleans in `flags` (checkable…selected), optional tagged UTF-8 blobs, then child count.
+     * Edit-text rows force clickable/long-click/enabled on to match touch injection expectations.
+     */
     bool Element::parseBinaryNodeSelf(const char *buf, size_t len, size_t *offset, const ElementPtr &parent) {
         int32_t left, top, right, bottom;
         int16_t idx;
@@ -453,6 +469,7 @@ namespace {
         return true;
     }
 
+    /** Validates magic header then parses the root node (same tree shape as XML, cheaper on the wire). */
     ElementPtr Element::createFromBinary(const char *buf, size_t len) {
         if (len < 4 || memcmp(buf, BINARY_MAGIC, 4) != 0) return nullptr;
         size_t offset = 4;
@@ -468,14 +485,14 @@ namespace {
     }
 
     void Element::fromJson(const std::string &/*jsonData*/) {
-        //nlohmann::json
+        /* Reserved: deserialize from JSON mirroring `toJson()` when needed. */
     }
 
     std::string Element::toString() const {
         return this->toJson();
     }
 
-
+    /** Compact JSON snapshot (string boolean fields mirror legacy uiautomator dumps). */
     std::string Element::toJson() const {
         nlohmann::json j;
         RectPtr bounds = this->getBounds();
@@ -497,6 +514,7 @@ namespace {
         return j.dump();
     }
 
+    /** Writes one `<node>` element and recurses for children (uiautomator-compatible attribute names). */
     void Element::recursiveToXML(tinyxml2::XMLElement *xml, const Element *elm) const {
         RectPtr bounds = elm->getBounds();
         if (bounds) {
@@ -512,6 +530,7 @@ namespace {
         xml->SetAttribute("resource-id", elm->getResourceID().c_str());
         xml->SetAttribute("package", elm->getPackageName().c_str());
         xml->SetAttribute("content-desc", elm->getContentDesc().c_str());
+        // Omit typing contents for EditText to reduce leakage in exported dumps (bounds still locate the field).
         xml->SetAttribute("text", elm->isEditText() ? "" : elm->getText().c_str());
         xml->SetAttribute("checkable", elm->getCheckable() ? "true" : "false");
         xml->SetAttribute("checked", elm->_checked ? "true" : "false");
@@ -544,6 +563,7 @@ namespace {
         }
     }
 
+    /** Pretty-printed `<node>` tree with XML declaration (not the compact wire format). */
     std::string Element::toXML() const {
         tinyxml2::XMLDocument doc;
         tinyxml2::XMLDeclaration *xmlDeclarationNode = doc.NewDeclaration();
@@ -559,6 +579,7 @@ namespace {
         return xmlStr;
     }
 
+    /** Lazily builds XML once; invalidated whenever `fromXMLNode` / `clearChildren` clears `_xmlCached`. */
     const std::string &Element::toXMLCached() const {
         if (!_xmlCached) {
             _cachedXml = toXML();
@@ -567,6 +588,7 @@ namespace {
         return _cachedXml;
     }
 
+    /** Entry point for tinyxml2: walks `RootElement()` into `fromXMLNode`. */
     void Element::fromXml(const tinyxml2::XMLDocument &nodeOfDoc, const ElementPtr &parentOfNode) {
         const ::tinyxml2::XMLElement *node = nodeOfDoc.RootElement();
         this->fromXMLNode(node, parentOfNode);
@@ -576,6 +598,10 @@ namespace {
 
     }
 
+    /**
+     * Loads fields from a `<node>` element: abbreviated or long attribute keys, bounds `[x,y][x,y]`,
+     * visibility hints, then attaches child nodes in document order.
+     */
     void Element::fromXMLNode(const tinyxml2::XMLElement *xmlNode, const ElementPtr &parentOfNode) {
         if (nullptr == xmlNode)
             return;
@@ -590,6 +616,7 @@ namespace {
         {
             const char *boundsProbe = xmlNode->Attribute("bnd");
             if (!boundsProbe) boundsProbe = xmlNode->Attribute("bounds");
+            // Explicit empty bounds attribute distinguishes "present but empty" from missing bounds.
             if (boundsProbe && boundsProbe[0] == '\0') {
                 _apeEmptyBoundsAttr = true;
             }
@@ -672,6 +699,7 @@ namespace {
             }
         }
 
+        // Optional policy: propagate interactive flags down the subtree when dump omits children flags.
         if (PARENT_CLICK_CHANGE_CHILDREN && parentOfNode && parentOfNode->_longClickable) {
             this->_longClickable = parentOfNode->_longClickable;
         }
@@ -725,8 +753,7 @@ namespace {
             return ScrollType::ALL;
         }
 
-        // for ios
-//    return ScrollType::NONE;
+        // Unknown scrollable container: treat as omni-directional until layout-specific rules exist.
         return ScrollType::ALL;
     }
 
@@ -741,6 +768,7 @@ namespace {
         return this->_cachedScrollType;
     }
 
+    /** Detaches children and parent weak link; does not recursively delete shared child nodes. */
     Element::~Element() {
         this->_children.clear();
         this->_parent.reset();

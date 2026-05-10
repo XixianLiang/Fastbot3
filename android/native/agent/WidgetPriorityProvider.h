@@ -2,6 +2,13 @@
  * @authors Zhao Zhang
  */
 
+/**
+ * @file WidgetPriorityProvider.h
+ *
+ * Optional LLM pass that assigns numeric weights to actionable widgets on one abstract state so SARSA-style
+ * agents can bias roulette selection (`selectActionNotInModel`) toward semantically important controls.
+ */
+
 #ifndef FASTBOTX_WIDGET_PRIORITY_PROVIDER_H
 #define FASTBOTX_WIDGET_PRIORITY_PROVIDER_H
 
@@ -15,49 +22,47 @@
 
 namespace fastbotx {
 
+/**
+ * Strategy for ranking widgets within a single state's valid action list.
+ *
+ * Implementations typically call `Model::getLlmClient()` with a structured payload and parse priority scores
+ * or a recommended ordering back into one weight per `validActions[i]`.
+ */
+class IWidgetPriorityProvider {
+public:
+    struct Result {
+        /// Per-action multiplicative weights (same length as `validActions` on success). Higher → stronger bias.
+        std::vector<double> widgetPriorities;
+        bool success = false;
+    };
+
+    virtual ~IWidgetPriorityProvider() = default;
+
     /**
-     * Interface for LLM-based widget priority on one abstract state.
+     * Computes weights for `validActions` (caller guarantees each entry is non-null and `isValid()`).
      *
-     * Given an abstract state id, its valid concrete actions, and the model (for LLM),
-     * returns per-action widget priorities (user operation popularity) for selection bias.
+     * @param absStateId Opaque id for logging/correlation (often unused by backends).
+     * @param validActions Ordered list matching executor INDEX semantics used elsewhere in the agent.
+     * @param model Provides `getLlmClient()` and package context for HTTP.
+     * @return Populated `widgetPriorities` when parsing succeeds; `success` false on skip/failure.
      */
-    class IWidgetPriorityProvider {
-    public:
-        struct Result {
-            /// LLM-inferred user operation popularity per widget (same index as validActions).
-            /// Higher value = more likely to be clicked; used for widget selection priority. Empty if not provided.
-            std::vector<double> widgetPriorities;
-            bool success = false;
-        };
+    virtual Result organize(uintptr_t absStateId,
+                            const std::vector<ActivityStateActionPtr> &validActions,
+                            const ModelPtr &model) = 0;
+};
 
-        virtual ~IWidgetPriorityProvider() = default;
+using IWidgetPriorityProviderPtr = std::shared_ptr<IWidgetPriorityProvider>;
 
-        /**
-         * Get widget selection priorities for this abstract state (LLM infers from widget semantics).
-         *
-         * @param absStateId abstract state id.
-         * @param validActions actions available in this abstract state (ActivityStateActionPtr, all valid()).
-         * @param model underlying model (may provide LlmClient).
-         *
-         * @return Result with widgetPriorities when success; empty when failed or disabled.
-         */
-        virtual Result organize(uintptr_t absStateId,
-                                const std::vector<ActivityStateActionPtr> &validActions,
-                                const ModelPtr &model) = 0;
-    };
-
-    using IWidgetPriorityProviderPtr = std::shared_ptr<IWidgetPriorityProvider>;
-
-    /**
-     * LLM-based implementation: calls "knowledge_org" (or widget_priority) endpoint
-     * via Model::getLlmClient() and parses priorities / recommend_order from JSON.
-     */
-    class LlmWidgetPriorityProvider : public IWidgetPriorityProvider {
-    public:
-        Result organize(uintptr_t absStateId,
-                        const std::vector<ActivityStateActionPtr> &validActions,
-                        const ModelPtr &model) override;
-    };
+/**
+ * Default provider: `predictWithPayload("knowledge_org", ...)` with a JSON list of widget features.
+ * The model is expected to return `priorities` and/or `recommend_order` (see implementation for schema).
+ */
+class LlmWidgetPriorityProvider : public IWidgetPriorityProvider {
+public:
+    Result organize(uintptr_t absStateId,
+                    const std::vector<ActivityStateActionPtr> &validActions,
+                    const ModelPtr &model) override;
+};
 
 }  // namespace fastbotx
 

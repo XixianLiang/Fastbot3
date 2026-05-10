@@ -16,6 +16,10 @@
 /**
  * @authors Tianxiao Gu, Zhao Zhang
  */
+/**
+ * Builds and navigates `Naming` refinement graphs: lattice edges from `NamerLattice`, default root policies,
+ * evaluation/rebuild on `GUITree`, and optional action/widget XPath search helpers.
+ */
 
 #include "NamingFactory.h"
 #include "Namelet.h"
@@ -39,15 +43,17 @@ namespace fastbotx {
 namespace naming {
 namespace {
     thread_local std::string g_rebuild_log_stage;
+    /** Selected variant for `defaultRootNaming()` (interactive vs resource-id splits, etc.). */
     ApeBaseNamingMode g_default_root_naming_mode = ApeBaseNamingMode::ActionType;
-    /** CreateActionTypeBaseNaming interactive partition (explicit true flags). */
+    /** XPath partition for action-type default root: widgets with any interactive flag true. */
     static const char kActionTypeInteractiveExpr[] =
         "//*[@clickable='true' or @long-clickable='true' or @checkable='true' or @scrollable='true']";
-    /** ActionType non-interactive partition (strict false flags). */
+    /** Complementary partition: all four interaction flags false. */
     static const char kActionTypeNonInteractiveExpr[] =
         "//*[@clickable='false' and @long-clickable='false' and @checkable='false' and "
         "@scrollable='false']";
 
+    /** Incremented on evaluate/rebuild anomalies; reset via `consumeNamingEvaluateDiagStats`. */
     std::atomic<uint64_t> g_eval_fail_node_without_namelet{0};
     std::atomic<uint64_t> g_eval_fail_actiontype_orphan{0};
     std::atomic<uint64_t> g_eval_fail_select_namelet_output{0};
@@ -56,6 +62,7 @@ namespace {
     std::atomic<uint64_t> g_rebuild_resolve_nondet{0};
     std::atomic<uint64_t> g_rebuild_evaluate_sentinel_null{0};
 
+    /** Short debug summary of root and first `limit` BFS nodes (class, xpath name, namelet). */
     std::string summarizeTreeNodesForRebuildLog(const gui_tree::GUITree &tree, size_t limit = 4) {
         const auto &root = tree.getRootNodePtr();
         if (!root) {
@@ -93,6 +100,7 @@ namespace {
         return oss.str();
     }
 
+    /** Fills `out` with all nodes in preorder BFS order; returns count. */
     size_t collectAllNodes(const gui_tree::GUITree &tree, std::vector<gui_tree::GUITreeNodePtr> *out) {
         if (!out) {
             return 0;
@@ -120,6 +128,7 @@ namespace {
         return out->size();
     }
 
+    /** True when `naming` is the two-base-partition ActionType root (interactive vs non-interactive XPaths). */
     bool isActionTypeDefaultRootShaped(const NamingPtr &naming) {
         if (!naming) {
             return false;
@@ -132,12 +141,14 @@ namespace {
                v[1]->getExprString() == kActionTypeNonInteractiveExpr;
     }
 
+    /** Rate-limited BLOG for evaluate/rebuild diagnostics. */
     void logEvalDiagSample(const char *tag, uint64_t count) {
         if (count == 1 || count <= 3 || (count % 128) == 0) {
             BLOG("naming eval diag [%s] count=%llu", tag, static_cast<unsigned long long>(count));
         }
     }
 
+    /** After `tree` parallel arrays are updated, refreshes xpath names and namelets from `node_to_namelet`. */
     void syncNodesAfterRebuild(const gui_tree::GUITree &tree,
                                const std::unordered_map<gui_tree::GUITreeNode *, NameletPtr> &node_to_namelet) {
         const auto &names = tree.getCurrentNames();
@@ -156,9 +167,8 @@ namespace {
     }
 
     /**
-     * Mirrors Java Naming.extend(parent, namelet).ensureRefine contract: finer must strictly refine
-     * the parent namer. Under normal callers (lattice.immediateRefinements / sortedAbove) the
-     * invariant holds by construction; this log gives us a breadcrumb if a future caller violates it.
+     * Debug-only check: `finer` must satisfy `refinesTo` vs the parent namelet’s namer when extending the lattice.
+     * Satisfied when callers only use lattice-produced finer namers; logs a breadcrumb on violation.
      */
     void debugAssertRefinesTo(const NameletPtr &parentNamelet, const NamerPtr &finer) {
 #ifndef NDEBUG
@@ -195,7 +205,7 @@ namespace {
         debugAssertRefinesTo(parentNamelet, finer);
         const std::string &expr = parentNamelet->getExprString();
         NameletPtr probe = std::make_shared<Namelet>(expr, finer);
-        // APE Naming.extend: children live on Naming (Edge -> child), not Namelet.child map.
+        // Refinement children are indexed on `Naming` via `(from,to)` edges; reuse cached lattice nodes.
         if (NamingPtr cached = base->getRefinementChild(parentNamelet, probe)) {
             return cached;
         }
@@ -207,6 +217,7 @@ namespace {
         return childNaming;
     }
 
+    /** Same as `makeLatticeRefinementChild` but uses `widgetExpr` as the new namelet’s XPath text. */
     NamingPtr makeWidgetLatticeRefinementChild(const NamingPtr &base, size_t parentIndex,
                                                const std::vector<NameletPtr> &namelets,
                                                const NamerPtr &finer, const std::string &widgetExpr) {
@@ -230,6 +241,7 @@ namespace {
         return childNaming;
     }
 
+    /** Thin wrapper: refinement at `nameletIndex` keeping the same XPath string as that namelet. */
     NamingPtr latticeRefinementChildAtNamelet_impl(const NamingPtr &base, size_t nameletIndex,
                                                     const NamerPtr &finer) {
         if (!base || !finer || nameletIndex >= base->getNamelets().size()) {
@@ -238,6 +250,7 @@ namespace {
         return makeLatticeRefinementChild(base, nameletIndex, base->getNamelets(), finer);
     }
 
+    /** Appends a REFINE namelet with `widgetXPathExpr` and `finer` under `parentNameletIndex`. */
     NamingPtr extendUnderNamelet_impl(const NamingPtr &base, size_t parentNameletIndex,
                                       const std::string &widgetXPathExpr, const NamerPtr &finer) {
         if (!base || !finer || widgetXPathExpr.empty() || parentNameletIndex >= base->getNamelets().size()) {
@@ -247,6 +260,10 @@ namespace {
                                                 widgetXPathExpr);
     }
 
+    /**
+     * Greedy search along refinement steps: expands immediate lattice children per step, filtered by `accept`,
+     * optionally preferring deepest acceptable naming or enumerating all immediate refinements per step.
+     */
     NamingPtr actionRefinementSearch(const NamingPtr &naming, const NamerLattice &lattice,
                                      int max_steps,
                                      const std::function<bool(const NamingPtr &)> &accept,
@@ -318,6 +335,7 @@ namespace {
 
 } // namespace
 
+/** Tags subsequent rebuild logs with `stage` for correlating multi-phase diagnostics. */
 void setRebuildLogStage(const char *stage) {
     g_rebuild_log_stage = stage ? stage : "";
 }
@@ -326,16 +344,19 @@ void clearRebuildLogStage() {
     g_rebuild_log_stage.clear();
 }
 
+    /** Public API: lattice refinement at `nameletIndex` with finer namer `finer`. */
     NamingPtr NamingFactory::latticeRefinementChildAtNamelet(const NamingPtr &base, size_t nameletIndex,
                                                              const NamerPtr &finer) {
         return latticeRefinementChildAtNamelet_impl(base, nameletIndex, finer);
     }
 
+    /** Extends under `parentNameletIndex` with an explicit widget XPath (REFINE namelet). */
     NamingPtr NamingFactory::extendUnderNamelet(const NamingPtr &base, size_t parentNameletIndex,
                                                 const std::string &widgetXPathExpr, const NamerPtr &finer) {
         return extendUnderNamelet_impl(base, parentNameletIndex, widgetXPathExpr, finer);
     }
 
+    /** Replaces the tail REFINE namelet by extending from its grandparent with the same XPath but `finer`. */
     NamingPtr NamingFactory::replaceLast(const NamingPtr &naming, const NameletPtr &replaced, const NamerPtr &finer) {
         if (!naming || !replaced || !finer) {
             return nullptr;
@@ -378,18 +399,22 @@ void clearRebuildLogStage() {
         return extendUnderNamelet(parentNaming, idx, replaced->getExprString(), finer);
     }
 
+    /** Switches which `defaultRootNaming()` template is used for newly requested base namings. */
     void NamingFactory::setDefaultRootNamingMode(ApeBaseNamingMode mode) {
         g_default_root_naming_mode = mode;
     }
 
+    /** Alias for `defaultRootNaming()`—global entry naming graph root. */
     NamingPtr NamingFactory::getBaseNaming() {
         return defaultRootNaming();
     }
 
+    /** Current default-root template selector (see `setDefaultRootNamingMode`). */
     ApeBaseNamingMode NamingFactory::getDefaultRootNamingMode() {
         return g_default_root_naming_mode;
     }
 
+    /** Delegates to `Naming::namingInternal` and bumps diagnostic counters on sentinel failures. */
     Naming::NamingResult NamingFactory::evaluateNaming(const NamingPtr &naming, gui_tree::GUITree &tree,
                                                        const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) {
         Naming::NamingResult out;
@@ -408,6 +433,10 @@ void clearRebuildLogStage() {
         return out;
     }
 
+    /**
+     * Evaluates naming, rejects ambiguous results, writes parallel names/groups into `tree`, and syncs nodes.
+     * Optional verbose logging compares grouped vs stale xpath/namelet fields.
+     */
     bool NamingFactory::rebuildTree(const NamingPtr &naming, gui_tree::GUITree &tree,
                                     const std::shared_ptr<gui_tree::XPathNodeMapper> &dom) {
         if (!naming || !dom) {
@@ -553,6 +582,7 @@ void clearRebuildLogStage() {
         return true;
     }
 
+    /** Builds one of several baked-in root `Naming` graphs (ActionType split, resource-id, parent/index, …). */
     NamingPtr NamingFactory::defaultRootNaming() {
         const NamerFactory &factory = NamerFactory::current();
         auto getNamer = [&](uint32_t mask) -> NamerPtr { return factory.getByMask(mask); };
@@ -670,13 +700,13 @@ void clearRebuildLogStage() {
         }
     }
 
+    /** First successful lattice child when walking namelets in order and trying `sortedAbove` refinements. */
     NamingPtr NamingFactory::refineNaming(const NamingPtr &naming, const NamerLattice &lattice) {
         if (!naming || naming->getNamelets().empty()) {
             return nullptr;
         }
-        // Align with Java NamerFactory.getSortedAbove order per namelet (APE NamingFactory
-        // state/action refinement tries finer namers in that order). Do not use immediateRefinements[0]
-        // only — that diverged from sortedAbove tie-breaking.
+        // Iterate finer namers in `sortedAbove` order for each namelet (matches lattice tie-breaking);
+        // taking only `immediateRefinements()[0]` does not match this ordering.
         const auto &namelets = naming->getNamelets();
         for (size_t i = 0; i < namelets.size(); ++i) {
             const auto &nl = namelets[i];
@@ -708,6 +738,7 @@ void clearRebuildLogStage() {
         return nullptr;
     }
 
+    /** Replaces one namelet’s namer with a single-step coarser `immediateAbstractions()[0]`, copying others. */
     NamingPtr NamingFactory::abstractNaming(const NamingPtr &naming, const NamerLattice &lattice) {
         if (!naming || naming->getNamelets().empty()) {
             return nullptr;
@@ -742,6 +773,7 @@ void clearRebuildLogStage() {
         return nullptr;
     }
 
+    /** Returns true if the evaluation result is unusable (parallel arrays inconsistent or duplicate nodes). */
     bool NamingFactory::resolveNonDeterminism(Naming::NamingResult &result) {
         const size_t n = result.names.size();
         if (n != result.node_groups.size() || n != result.namelet_groups.size()) {
@@ -766,6 +798,7 @@ void clearRebuildLogStage() {
         return false;
     }
 
+    /** Applies `refineNaming` up to `max_steps` times until no further refinement exists. */
     NamingPtr NamingFactory::batchRefine(const NamingPtr &naming, const NamerLattice &lattice, int max_steps) {
         if (!naming || max_steps <= 0) {
             return naming;
@@ -781,6 +814,9 @@ void clearRebuildLogStage() {
         return cur;
     }
 
+    /**
+     * Refines with `rebuildTree` after each step; stops when `StateKey::hashFromGUITree` stabilizes or steps exhausted.
+     */
     NamingPtr NamingFactory::batchRefineWithRebuildFixedPoint(const NamingPtr &naming, const NamerLattice &lattice,
                                                               gui_tree::GUITree &tree,
                                                               const std::shared_ptr<gui_tree::XPathNodeMapper> &dom,
@@ -817,6 +853,7 @@ void clearRebuildLogStage() {
         return cur;
     }
 
+    /** Repeated `abstractNaming` up to `max_steps`. */
     NamingPtr NamingFactory::batchAbstract(const NamingPtr &naming, const NamerLattice &lattice, int max_steps) {
         if (!naming || max_steps <= 0) {
             return naming;
@@ -832,6 +869,7 @@ void clearRebuildLogStage() {
         return cur;
     }
 
+    /** Single-step action refinement per iteration, chained up to `max_steps`. */
     NamingPtr NamingFactory::actionRefinement(const NamingPtr &naming, const NamerLattice &lattice, int max_steps) {
         if (!naming || max_steps <= 0) {
             return naming;
@@ -849,6 +887,7 @@ void clearRebuildLogStage() {
         return cur;
     }
 
+    /** `actionRefinementWithOptions` with fingerprint blacklist filtering. */
     NamingPtr NamingFactory::actionRefinementWithBlacklist(const NamingPtr &naming, const NamerLattice &lattice,
                                                            int max_steps, const std::set<std::string> &blacklist) {
         ActionRefinementOptions options;
@@ -857,6 +896,7 @@ void clearRebuildLogStage() {
         return actionRefinementWithOptions(naming, lattice, options);
     }
 
+    /** Parameterized refinement search (`actionRefinementSearch`) with blacklist and acceptance predicate. */
     NamingPtr NamingFactory::actionRefinementWithOptions(const NamingPtr &naming, const NamerLattice &lattice,
                                                          const ActionRefinementOptions &options) {
         auto accept = [&](const NamingPtr &candidate) -> bool {
@@ -877,6 +917,7 @@ void clearRebuildLogStage() {
                                       options.evaluate_all_immediate_candidates);
     }
 
+    /** Collects distinct accepted refinement fingerprints along a bounded walk (optional enumerate-immediate mode). */
     std::vector<NamingPtr> NamingFactory::actionRefinementCandidatesWithOptions(
         const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options) {
         std::vector<NamingPtr> out;
@@ -979,6 +1020,7 @@ void clearRebuildLogStage() {
         return out;
     }
 
+    /** Like `actionRefinementCandidatesWithOptions` but anchors refinements on `widget_parent` and `widget_xpath_expr`. */
     std::vector<NamingPtr> NamingFactory::widgetXPathRefinementCandidatesWithOptions(
         const NamingPtr &naming, const NamerLattice &lattice, const ActionRefinementOptions &options,
         const NameletPtr &widget_parent, const std::string &widget_xpath_expr) {
@@ -1104,6 +1146,7 @@ void clearRebuildLogStage() {
         return out;
     }
 
+    /** Atomically reads and clears global evaluate/rebuild diagnostic counters since last call. */
     NamingEvaluateDiagStats NamingFactory::consumeNamingEvaluateDiagStats() {
         NamingEvaluateDiagStats s;
         s.fail_node_without_namelet = g_eval_fail_node_without_namelet.exchange(0);

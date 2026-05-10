@@ -3,6 +3,10 @@
  */
 /**
  * @authors Jianqiang Guo, Yuhui Su, Zhao Zhang
+ *
+ * @file Preference.cpp
+ * @brief Loads `max.config` and related files, resolves UI trees (avoid/modify rules, WebView handling,
+ *        naming-related normalization), and exposes runtime toggles for exploration and LLM features.
  */
 #include <fstream>
 #include <sstream>
@@ -26,6 +30,7 @@
 
 namespace fastbotx {
 
+    /** Helpers for `resolvePage`: WebView detection, subtree pruning, clickable propagation, pseudo-text hashing. */
     namespace {
         int countDescendantsUpTo(const ElementPtr &node, int limit) {
             if (!node || limit <= 0) {
@@ -60,7 +65,7 @@ namespace fastbotx {
             return count;
         }
 
-        bool apeIsWebViewClassName(const std::string &cls,
+        bool isWebViewClassName(const std::string &cls,
                                    const std::vector<std::string> &extraPatterns) {
             if (cls.empty()) {
                 return false;
@@ -87,22 +92,22 @@ namespace fastbotx {
             return false;
         }
 
-        bool apeIsWebViewNode(const ElementPtr &node,
+        bool isWebViewNode(const ElementPtr &node,
                               const std::vector<std::string> &extraPatterns) {
             if (!node) {
                 return false;
             }
-            return apeIsWebViewClassName(node->getClassname(), extraPatterns);
+            return isWebViewClassName(node->getClassname(), extraPatterns);
         }
 
-        void applyApeWebViewPrunePolicy(const ElementPtr &node,
+        void applyWebViewPrunePolicy(const ElementPtr &node,
                                         const std::vector<std::string> &webViewClassPatterns,
                                         bool alwaysIgnoreWebView, int ignoreWebViewThreshold) {
             if (!node) {
                 return;
             }
-            // APE-aligned: optionally drop WebView nodes entirely (skip root).
-            if (alwaysIgnoreWebView && apeIsWebViewNode(node, webViewClassPatterns)) {
+            // Optionally drop WebView nodes entirely (skip root).
+            if (alwaysIgnoreWebView && isWebViewNode(node, webViewClassPatterns)) {
                 auto parent = node->getParent();
                 if (!parent.expired()) {
                     node->deleteElement();
@@ -116,28 +121,28 @@ namespace fastbotx {
                 if (!child) {
                     continue;
                 }
-                if (alwaysIgnoreWebView && apeIsWebViewNode(child, webViewClassPatterns)) {
+                if (alwaysIgnoreWebView && isWebViewNode(child, webViewClassPatterns)) {
                     child->deleteElement();
                     continue;
                 }
-                if (apeIsWebViewNode(child, webViewClassPatterns)) {
+                if (isWebViewNode(child, webViewClassPatterns)) {
                     if (ignoreWebViewThreshold > 0 &&
                         countDescendantsUpTo(child, ignoreWebViewThreshold) > ignoreWebViewThreshold) {
                         child->clearChildren();
                         continue;
                     }
                 }
-                applyApeWebViewPrunePolicy(child, webViewClassPatterns, alwaysIgnoreWebView, ignoreWebViewThreshold);
+                applyWebViewPrunePolicy(child, webViewClassPatterns, alwaysIgnoreWebView, ignoreWebViewThreshold);
             }
         }
 
-        void applyApeIgnoreActionsInWebView(const ElementPtr &node,
+        void applyIgnoreActionsInWebView(const ElementPtr &node,
                                             const std::vector<std::string> &webViewClassPatterns,
                                             bool ignore) {
             if (!node) {
                 return;
             }
-            bool nowIgnore = ignore || apeIsWebViewNode(node, webViewClassPatterns);
+            bool nowIgnore = ignore || isWebViewNode(node, webViewClassPatterns);
             if (nowIgnore) {
                 node->reSetClickable(false);
                 node->reSetLongClickable(false);
@@ -145,7 +150,7 @@ namespace fastbotx {
                 node->reSetScrollable(false);
             }
             for (const auto &child : node->getChildren()) {
-                applyApeIgnoreActionsInWebView(child, webViewClassPatterns, nowIgnore);
+                applyIgnoreActionsInWebView(child, webViewClassPatterns, nowIgnore);
             }
         }
 
@@ -224,13 +229,13 @@ namespace fastbotx {
             return true;
         }
 
-        void applyApeClickablePatching(const ElementPtr &node,
+        void applyClickablePatching(const ElementPtr &node,
                                        const std::vector<std::string> &webViewClassPatterns) {
             if (!node) {
                 return;
             }
-            if (apeIsWebViewNode(node, webViewClassPatterns)) {
-                // APE: do not patch inside WebView.
+            if (isWebViewNode(node, webViewClassPatterns)) {
+                // Do not rewrite click targets inside WebView containers.
                 return;
             }
             const auto &childrenRef = node->getChildren();
@@ -262,34 +267,34 @@ namespace fastbotx {
                 }
             }
             for (const auto &ch : childrenRef) {
-                applyApeClickablePatching(ch, webViewClassPatterns);
+                applyClickablePatching(ch, webViewClassPatterns);
             }
         }
 
-        bool apeIsImageButtonClassName(const std::string &cls) {
+        bool isImageButtonClassName(const std::string &cls) {
             return cls == "android.widget.ImageButton";
         }
 
-        void applyApeComputeImageTextHash(const ElementPtr &node,
+        void applyComputeImageTextHash(const ElementPtr &node,
                                           const std::vector<std::string> &webViewClassPatterns,
                                           bool inWebView) {
             if (!node) {
                 return;
             }
-            const bool nowWebView = inWebView || apeIsWebViewNode(node, webViewClassPatterns);
+            const bool nowWebView = inWebView || isWebViewNode(node, webViewClassPatterns);
             const auto &childrenRef = node->getChildren();
             for (const auto &ch : childrenRef) {
-                applyApeComputeImageTextHash(ch, webViewClassPatterns, nowWebView);
+                applyComputeImageTextHash(ch, webViewClassPatterns, nowWebView);
             }
 
-            // APE computeImageText runs after patchGUITree and before ignoreActionsInWebView.
+            // Pseudo-text injection runs after clickable patch and before stripping WebView actions.
             if (nowWebView) {
                 return;
             }
             if (!childrenRef.empty()) {
                 return;
             }
-            if (!apeIsImageButtonClassName(node->getClassname())) {
+            if (!isImageButtonClassName(node->getClassname())) {
                 return;
             }
             if (!node->getEnable()) {
@@ -805,7 +810,7 @@ namespace fastbotx {
      * @note Performance: Tree traversal reduced from 3 passes to 2 passes
      *       (resolveBlackWidgets + resolveElement which includes deMixResMapping)
      * 
-     * @note APE-aligned L-input normalization order:
+     * @note UI-tree normalization order (compatible with shared naming tooling):
      *       - WebView prune (before external rules)
      *       - external rules (avoid/modify)
      *       - clickable patch (after external rules)
@@ -862,10 +867,10 @@ namespace fastbotx {
         addRulesForActivity(activity);
         addRulesForActivity("");
 
-        // APE-aligned: WebView strategy first (reduce WebView noise before applying rules).
+        // WebView handling first (reduce noisy subtrees before external rules).
         if (!this->_useStaticReuseAbstraction) {
             if (this->_apeAlwaysIgnoreWebView || this->_apeIgnoreWebViewThreshold > 0) {
-                applyApeWebViewPrunePolicy(rootXML, this->_apeWebViewClassPatterns,
+                applyWebViewPrunePolicy(rootXML, this->_apeWebViewClassPatterns,
                                            this->_apeAlwaysIgnoreWebView,
                                            this->_apeIgnoreWebViewThreshold);
             }
@@ -873,25 +878,25 @@ namespace fastbotx {
 
 
         // External rules mechanism (avoid/modify/validText pruning). todo test it
-        // APE-aligned: apply Modify rules before patching.
+        // Apply Modify-type avoid rules before clickable patching.
         this->resolveElementWithAvoid(rootXML, activity, ResolveRulePhase::ModifyOnly);
 
-        // APE-aligned: clickable patch after external rules.
+        // Clickable patching after external Modify rules.
         if (!this->_useStaticReuseAbstraction && this->_apePatchGUITree) {
-            applyApeClickablePatching(rootXML, this->_apeWebViewClassPatterns);
+            applyClickablePatching(rootXML, this->_apeWebViewClassPatterns);
         }
 
-        // APE-aligned: compute stable pseudo-text for icon-only widgets.
+        // Stable pseudo-text for icon-only leaf widgets when enabled.
         if (!this->_useStaticReuseAbstraction && this->_apeComputeImageText) {
-            applyApeComputeImageTextHash(rootXML, this->_apeWebViewClassPatterns, false);
+            applyComputeImageTextHash(rootXML, this->_apeWebViewClassPatterns, false);
         }
 
-        // APE-aligned: optionally ignore actions inside WebView subtree.
+        // Optionally strip actionable flags under WebView subtrees.
         if (!this->_useStaticReuseAbstraction && this->_apeAlwaysIgnoreWebViewAction) {
-            applyApeIgnoreActionsInWebView(rootXML, this->_apeWebViewClassPatterns, false);
+            applyIgnoreActionsInWebView(rootXML, this->_apeWebViewClassPatterns, false);
         }
 
-        // APE-aligned: apply Avoid rules after patching (and after optional WebView ignore policy).
+        // Apply Avoid rules after patching (and after optional WebView policy).
         this->resolveElementWithAvoid(rootXML, activity, ResolveRulePhase::AvoidOnly);
     }
 
@@ -985,7 +990,7 @@ namespace fastbotx {
             }
         }
 
-        // APE-aligned: pruningValidTexts should run only after Avoid rules (avoid-only phase).
+        // Valid-text pruning only in the Avoid phase (after deletions are settled).
         if (phase == ResolveRulePhase::AvoidOnly && this->_pruningValidTexts) {
             this->pruningValidTexts(element);
         }
@@ -1699,7 +1704,7 @@ namespace fastbotx {
             } else if (key == ApeGraphDedupByStateKeySTR) {
                 this->_useApeGraphDedupByStateKey = (value == "true");
                 if (this->_useApeGraphDedupByStateKey) {
-                    BLOG("APE: graph dedup by StateKey enabled (max.apeGraphDedupByStateKey=true)");
+                    BLOG("preference: graph dedup by StateKey enabled (max.apeGraphDedupByStateKey=true)");
                 }
             } else if (key == ApeNamingFixedPointStepsSTR) {
                 try {
@@ -1710,10 +1715,10 @@ namespace fastbotx {
                     if (v > 256) {
                         v = 256;
                     }
-                    // Strict APE parity: StateKey evolution should not include extra native fixed-point
-                    // refinement iterations. Force this knob off even if configured.
+                    // Native policy: StateKey evolution omits extra fixed-point refinement passes.
+                    // Force this knob off even if configured.
                     if (v != 0) {
-                        BLOG("APE parity: ignore %s=%d, force 0", ApeNamingFixedPointStepsSTR, v);
+                        BLOG("preference parity: ignore %s=%d, force 0", ApeNamingFixedPointStepsSTR, v);
                     }
                     this->_apeNamingFixedPointMaxIter = 0;
                 } catch (...) {
@@ -1722,14 +1727,14 @@ namespace fastbotx {
             } else if (key == ApeNamingPeriodicRefinementSTR) {
                 this->_apeNamingPeriodicRefinement = (value == "true");
                 if (!this->_apeNamingPeriodicRefinement) {
-                    BLOG("APE: periodic naming refinement disabled (max.apeNamingPeriodicRefinement=false)");
+                    BLOG("preference: periodic naming refinement disabled (max.apeNamingPeriodicRefinement=false)");
                 }
             } else if (key == ApeNamingOnlySTR) {
                 this->_apeNamingOnly = (value == "true");
                 if (this->_apeNamingOnly) {
-                    BLOG("APE: apeNamingOnly enabled (skip legacy widget/mask batch; only used when built without pugixml)");
+                    BLOG("preference: apeNamingOnly enabled (skip legacy widget/mask batch; only used when built without pugixml)");
                 } else {
-                    BLOG("APE: apeNamingOnly disabled (run legacy widget/mask batch when no pugixml)");
+                    BLOG("preference: apeNamingOnly disabled (run legacy widget/mask batch when no pugixml)");
                 }
             } else if (key == ApeNamingActionRefineHopsSTR) {
                 try {
@@ -1741,7 +1746,7 @@ namespace fastbotx {
                         v = 64;
                     }
                     this->_apeNamingActionRefineHops = v;
-                    BLOG("APE: periodic action refinement hops=%d (max.apeNamingActionRefineHops)", v);
+                    BLOG("preference: periodic action refinement hops=%d (max.apeNamingActionRefineHops)", v);
                 } catch (...) {
                     BLOGE("invalid max.apeNamingActionRefineHops value: %s", value.c_str());
                 }
@@ -1750,7 +1755,7 @@ namespace fastbotx {
                 // Backward-compatible alias: map old boolean switch to predicate mode.
                 this->_apeNamingActionRefinePredicateMode =
                     this->_apeNamingActionRefineRequireFingerprintChange ? "fingerprint_change" : "always_accept";
-                BLOG("APE: action refinement require fingerprint change=%s (%s)",
+                BLOG("preference: action refinement require fingerprint change=%s (%s)",
                      this->_apeNamingActionRefineRequireFingerprintChange ? "true" : "false",
                      ApeNamingActionRefineRequireFpChangeSTR);
             } else if (key == ApeNamingActionRefinePredicateModeSTR) {
@@ -1762,7 +1767,7 @@ namespace fastbotx {
                 if (mode == "fingerprint_change" || mode == "always_accept" ||
                     mode == "fineness_increase") {
                     this->_apeNamingActionRefinePredicateMode = mode;
-                    BLOG("APE: action refinement predicate mode=%s (%s)",
+                    BLOG("preference: action refinement predicate mode=%s (%s)",
                          this->_apeNamingActionRefinePredicateMode.c_str(),
                          ApeNamingActionRefinePredicateModeSTR);
                 } else {
@@ -1771,7 +1776,7 @@ namespace fastbotx {
             } else if (key == ApeNamingActionRefineSelectionModeSTR) {
                 if (value == "first_accept" || value == "deepest_accept") {
                     this->_apeNamingActionRefineSelectionMode = value;
-                    BLOG("APE: action refinement selection mode=%s (%s)",
+                    BLOG("preference: action refinement selection mode=%s (%s)",
                          this->_apeNamingActionRefineSelectionMode.c_str(),
                          ApeNamingActionRefineSelectionModeSTR);
                 } else {
@@ -1787,7 +1792,7 @@ namespace fastbotx {
                         v = 10000;
                     }
                     this->_apeNamingActionRefineMinActivityStates = v;
-                    BLOG("APE: action refinement min activity states=%d (%s)", v,
+                    BLOG("preference: action refinement min activity states=%d (%s)", v,
                          ApeNamingActionRefineMinActivityStatesSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeNamingActionRefineMinActivityStates value: %s", value.c_str());
@@ -1802,7 +1807,7 @@ namespace fastbotx {
                         v = 10000;
                     }
                     this->_apeNamingActionRefineMinNonDetPairs = v;
-                    BLOG("APE: action refinement min nonDet pairs=%d (%s)", v,
+                    BLOG("preference: action refinement min nonDet pairs=%d (%s)", v,
                          ApeNamingActionRefineMinNonDetPairsSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeNamingActionRefineMinNonDetPairs value: %s", value.c_str());
@@ -1817,7 +1822,7 @@ namespace fastbotx {
                         v = 100;
                     }
                     this->_apeNamingMinNonDetTargets = v;
-                    BLOG("APE: nonDet target threshold=%d (%s)", v, ApeNamingMinNonDetTargetsSTR);
+                    BLOG("preference: nonDet target threshold=%d (%s)", v, ApeNamingMinNonDetTargetsSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeNamingMinNonDetTargets value: %s", value.c_str());
                 }
@@ -1831,7 +1836,7 @@ namespace fastbotx {
                         v = 10000;
                     }
                     this->_apeNamingActionRefineMinStateDelta = v;
-                    BLOG("APE: action refinement min state delta=%d (%s)", v,
+                    BLOG("preference: action refinement min state delta=%d (%s)", v,
                          ApeNamingActionRefineMinStateDeltaSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeNamingActionRefineMinStateDelta value: %s", value.c_str());
@@ -1846,7 +1851,7 @@ namespace fastbotx {
                         v = 10000;
                     }
                     this->_apeNamingActionRefineMinNonDetPairDelta = v;
-                    BLOG("APE: action refinement min nonDet-pair delta=%d (%s)", v,
+                    BLOG("preference: action refinement min nonDet-pair delta=%d (%s)", v,
                          ApeNamingActionRefineMinNonDetPairDeltaSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeNamingActionRefineMinNonDetPairDelta value: %s", value.c_str());
@@ -1856,7 +1861,7 @@ namespace fastbotx {
                     value == "java_rule_01_preview" || value == "java_rule_02_preview" ||
                     value == "java_rule_03_preview") {
                     this->_apeNamingActionRefineRuleProfile = value;
-                    BLOG("APE: action refinement rule profile=%s (%s)",
+                    BLOG("preference: action refinement rule profile=%s (%s)",
                          this->_apeNamingActionRefineRuleProfile.c_str(),
                          ApeNamingActionRefineRuleProfileSTR);
                 } else {
@@ -1864,17 +1869,17 @@ namespace fastbotx {
                 }
             } else if (key == ApeNamingCandidateTransitionReplaySTR) {
                 this->_apeNamingCandidateTransitionReplay = (value == "true");
-                BLOG("APE: candidate transition replay=%s (%s)",
+                BLOG("preference: candidate transition replay=%s (%s)",
                      this->_apeNamingCandidateTransitionReplay ? "true" : "false",
                      ApeNamingCandidateTransitionReplaySTR);
             } else if (key == ApeNamingActionRefinementFirstSTR) {
                 this->_apeNamingActionRefinementFirst = (value == "true");
-                BLOG("APE: actionRefinementFirst pass order=%s (%s)",
+                BLOG("preference: actionRefinementFirst pass order=%s (%s)",
                      this->_apeNamingActionRefinementFirst ? "true" : "false",
                      ApeNamingActionRefinementFirstSTR);
             } else if (key == ApeNamingEnableReplacingNameletSTR) {
                 this->_apeNamingEnableReplacingNamelet = (value == "true");
-                BLOG("APE: enableReplacingNamelet=%s (%s)",
+                BLOG("preference: enableReplacingNamelet=%s (%s)",
                      this->_apeNamingEnableReplacingNamelet ? "true" : "false",
                      ApeNamingEnableReplacingNameletSTR);
             } else if (key == ApeMaxStatesPerActivitySTR) {
@@ -1887,7 +1892,7 @@ namespace fastbotx {
                         v = 100000;
                     }
                     this->_apeMaxStatesPerActivity = v;
-                    BLOG("APE: maxStatesPerActivity=%d (%s)", v, ApeMaxStatesPerActivitySTR);
+                    BLOG("preference: maxStatesPerActivity=%d (%s)", v, ApeMaxStatesPerActivitySTR);
                 } catch (...) {
                     BLOGE("invalid max.apeMaxStatesPerActivity value: %s", value.c_str());
                 }
@@ -1901,13 +1906,13 @@ namespace fastbotx {
                         v = 100000;
                     }
                     this->_apeMaxGuitreesPerState = v;
-                    BLOG("APE: maxGuitreesPerState=%d (%s)", v, ApeMaxGuitreesPerStateSTR);
+                    BLOG("preference: maxGuitreesPerState=%d (%s)", v, ApeMaxGuitreesPerStateSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeMaxGuitreesPerState value: %s", value.c_str());
                 }
             } else if (key == ApeEvolveModelSTR) {
                 this->_apeEvolveModel = (value == "true");
-                BLOG("APE: evolveModel=%s (%s)", this->_apeEvolveModel ? "true" : "false", ApeEvolveModelSTR);
+                BLOG("preference: evolveModel=%s (%s)", this->_apeEvolveModel ? "true" : "false", ApeEvolveModelSTR);
             } else if (key == ApeActionRefinementThresholdSTR) {
                 try {
                     int v = std::stoi(value);
@@ -1918,7 +1923,7 @@ namespace fastbotx {
                         v = 10000;
                     }
                     this->_apeActionRefinementThreshold = v;
-                    BLOG("APE: actionRefinementThreshold=%d (%s)", v, ApeActionRefinementThresholdSTR);
+                    BLOG("preference: actionRefinementThreshold=%d (%s)", v, ApeActionRefinementThresholdSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeActionRefinementThreshold value: %s", value.c_str());
                 }
@@ -1932,18 +1937,18 @@ namespace fastbotx {
                         v = 100000;
                     }
                     this->_apeMaxInitialNamesPerState = v;
-                    BLOG("APE: maxInitialNamesPerState=%d (%s)", v, ApeMaxInitialNamesPerStateSTR);
+                    BLOG("preference: maxInitialNamesPerState=%d (%s)", v, ApeMaxInitialNamesPerStateSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeMaxInitialNamesPerState value: %s", value.c_str());
                 }
             } else if (key == ApeAlwaysIgnoreWebViewSTR) {
                 this->_apeAlwaysIgnoreWebView = (value == "true");
-                BLOG("APE: alwaysIgnoreWebView=%s (%s)",
+                BLOG("preference: alwaysIgnoreWebView=%s (%s)",
                      this->_apeAlwaysIgnoreWebView ? "true" : "false",
                      ApeAlwaysIgnoreWebViewSTR);
             } else if (key == ApeAlwaysIgnoreWebViewActionSTR) {
                 this->_apeAlwaysIgnoreWebViewAction = (value == "true");
-                BLOG("APE: alwaysIgnoreWebViewAction=%s (%s)",
+                BLOG("preference: alwaysIgnoreWebViewAction=%s (%s)",
                      this->_apeAlwaysIgnoreWebViewAction ? "true" : "false",
                      ApeAlwaysIgnoreWebViewActionSTR);
             } else if (key == ApeIgnoreWebViewThresholdSTR) {
@@ -1956,7 +1961,7 @@ namespace fastbotx {
                         v = 100000;
                     }
                     this->_apeIgnoreWebViewThreshold = v;
-                    BLOG("APE: ignoreWebViewThreshold=%d (%s)", v, ApeIgnoreWebViewThresholdSTR);
+                    BLOG("preference: ignoreWebViewThreshold=%d (%s)", v, ApeIgnoreWebViewThresholdSTR);
                 } catch (...) {
                     BLOGE("invalid max.apeIgnoreWebViewThreshold value: %s", value.c_str());
                 }
@@ -1991,40 +1996,40 @@ namespace fastbotx {
                     }
                     flush();
                 }
-                BLOG("APE: webViewClassPatterns=%zu (%s)", this->_apeWebViewClassPatterns.size(),
+                BLOG("preference: webViewClassPatterns=%zu (%s)", this->_apeWebViewClassPatterns.size(),
                      ApeWebViewClassPatternsSTR);
             } else if (key == ApeComputeImageTextSTR) {
                 this->_apeComputeImageText = (value == "true");
-                BLOG("APE: computeImageText=%s (%s)",
+                BLOG("preference: computeImageText=%s (%s)",
                      this->_apeComputeImageText ? "true" : "false",
                      ApeComputeImageTextSTR);
             } else if (key == ApePatchGUITreeSTR) {
                 this->_apePatchGUITree = (value == "true");
-                BLOG("APE: patchGUITree=%s (%s)",
+                BLOG("preference: patchGUITree=%s (%s)",
                      this->_apePatchGUITree ? "true" : "false",
                      ApePatchGUITreeSTR);
             } else if (key == ApeIgnoreEmptySTR) {
                 this->_apeIgnoreEmpty = (value == "true");
-                BLOG("APE: ignoreEmpty=%s (%s)",
+                BLOG("preference: ignoreEmpty=%s (%s)",
                      this->_apeIgnoreEmpty ? "true" : "false",
                      ApeIgnoreEmptySTR);
             } else if (key == ApeIgnoreOutOfBoundsSTR) {
                 this->_apeIgnoreOutOfBounds = (value == "true");
-                BLOG("APE: ignoreOutOfBounds=%s (%s)",
+                BLOG("preference: ignoreOutOfBounds=%s (%s)",
                      this->_apeIgnoreOutOfBounds ? "true" : "false",
                      ApeIgnoreOutOfBoundsSTR);
             } else if (key == ApeExcludeEmptyChildSTR) {
                 this->_apeExcludeEmptyChild = (value == "true");
-                BLOG("APE: excludeEmptyChild=%s (%s)",
+                BLOG("preference: excludeEmptyChild=%s (%s)",
                      this->_apeExcludeEmptyChild ? "true" : "false",
                      ApeExcludeEmptyChildSTR);
             } else if (key == ApeExcludeInvisibleNodeSTR) {
                 this->_apeExcludeInvisibleNode = (value == "true");
-                BLOG("APE: excludeInvisibleNode=%s (%s)",
+                BLOG("preference: excludeInvisibleNode=%s (%s)",
                      this->_apeExcludeInvisibleNode ? "true" : "false",
                      ApeExcludeInvisibleNodeSTR);
             } else if (key == ApeBaseNamingSTR || key == ApeBaseNamingAliasSTR) {
-                // Align Java APE createBaseNaming(): configurable via ape.baseNaming,
+                // Mirrors reference createBaseNaming(): configurable via max.ape.baseNaming / ape.baseNaming,
                 // default to actiontype when unknown.
                 std::string mode = value;
                 std::transform(mode.begin(), mode.end(), mode.begin(), [](unsigned char c) {
@@ -2044,33 +2049,33 @@ namespace fastbotx {
                 } else if (mode == "actiontype" || mode == "ape" || mode == "default" || mode.empty()) {
                     m = naming::ApeBaseNamingMode::ActionType;
                 } else {
-                    BLOG("APE: unknown %s=%s, fallback to actiontype", key.c_str(), value.c_str());
+                    BLOG("preference: unknown %s=%s, fallback to actiontype", key.c_str(), value.c_str());
                 }
                 naming::NamingFactory::setDefaultRootNamingMode(m);
-                BLOG("APE: base naming mode=%s (%s)", mode.c_str(), key.c_str());
+                BLOG("preference: base naming mode=%s (%s)", mode.c_str(), key.c_str());
             } else if (key == UseAncestorNamerSTR) {
                 const bool enabled = (value == "true");
                 naming::setUseAncestorNamer(enabled);
-                BLOG("APE: useAncestorNamer=%s (%s)", enabled ? "true" : "false", UseAncestorNamerSTR);
+                BLOG("preference: useAncestorNamer=%s (%s)", enabled ? "true" : "false", UseAncestorNamerSTR);
             } else if (key == UsePatchNamerSTR) {
                 const bool enabled = (value == "true");
                 naming::setUsePatchNamer(enabled);
-                BLOG("APE: usePatchNamer=%s (%s) — matches ape.usePatchNamer", enabled ? "true" : "false",
+                BLOG("preference: usePatchNamer=%s (%s) — matches ape.usePatchNamer", enabled ? "true" : "false",
                      UsePatchNamerSTR);
             } else if (key == ApeActionPatchProfileSTR) {
                 naming::setActionPatchProfile(value);
-                BLOG("APE: actionPatchProfile=%s (%s)", naming::getActionPatchProfile().c_str(),
+                BLOG("preference: actionPatchProfile=%s (%s)", naming::getActionPatchProfile().c_str(),
                      ApeActionPatchProfileSTR);
             } else if (key == ApeActionPatchDeriveActionsSTR) {
                 const bool enabled = (value == "true");
                 naming::setActionPatchDeriveActionsFromName(enabled);
-                BLOG("APE: actionPatchDeriveActions=%s (%s)", enabled ? "true" : "false",
+                BLOG("preference: actionPatchDeriveActions=%s (%s)", enabled ? "true" : "false",
                      ApeActionPatchDeriveActionsSTR);
             } else if (key == LlmdroidEnabledSTR) {
                 // Conservative: only explicit "true" enables; any other value keeps false.
                 this->_llmdroidEnabled = (value == "true");
                 if (this->_llmdroidEnabled) {
-                    BLOG("LLMDroid: %s=true (MergedState/GPT phases 4+ when implemented)", LlmdroidEnabledSTR);
+                    BLOG("planner pipeline: %s=true (MergedState/GPT phases 4+ when implemented)", LlmdroidEnabledSTR);
                 }
             } else if (key == LlmdroidExploreWindowSecSTR) {
                 try {
@@ -2081,7 +2086,7 @@ namespace fastbotx {
                         sec = 86400;
                     }
                     this->_llmdroidExploreWindowSec = sec;
-                    BLOG("LLMDroid: time-mode explore window=%d sec (%s)",
+                    BLOG("planner pipeline: time-mode explore window=%d sec (%s)",
                          this->_llmdroidExploreWindowSec, LlmdroidExploreWindowSecSTR);
                 } catch (...) {
                     BLOGE("invalid %s value: %s", LlmdroidExploreWindowSecSTR, value.c_str());
@@ -2142,7 +2147,7 @@ namespace fastbotx {
                 }
             }
         }
-        // Final guardrail for fixed-point iterations (APE java baseline).
+        // Final guardrail for fixed-point iterations (reference baseline keeps this at zero on native).
         this->_apeNamingFixedPointMaxIter = 0;
 
         const char *baseNamingMode = "actiontype";
@@ -2167,7 +2172,7 @@ namespace fastbotx {
             baseNamingMode = "actiontype";
             break;
         }
-        BLOG("APE config snapshot: baseNaming=%s useAncestorNamer=%s usePatchNamer=%s periodicRefine=%s "
+        BLOG("preference config snapshot: baseNaming=%s useAncestorNamer=%s usePatchNamer=%s periodicRefine=%s "
              "fixedPointSteps=%d "
              "ruleProfile=%s predicateMode=%s selectionMode=%s candidateTransitionReplay=%s "
              "actionRefinementFirst=%s enableReplacingNamelet=%s maxStatesPerActivity=%d maxGuitreesPerState=%d "

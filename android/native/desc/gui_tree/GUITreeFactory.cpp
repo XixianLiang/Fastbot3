@@ -44,6 +44,7 @@ namespace {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 
+    /** Parses a signed decimal integer starting at `p` and advances `p` past the digits. */
     int parseIntAndAdvance(const char *&p) {
         bool neg = (*p == '-');
         if (neg) ++p;
@@ -53,6 +54,10 @@ namespace {
         return neg ? -v : v;
     }
 
+    /**
+     * Reads a string attribute (short or long name). On success sets `out` to the C string value
+     * and returns true only if the value is non-empty.
+     */
     bool readString(pugi::xml_node el, const char *shortName, const char *longName, const char *&out) {
         pugi::xml_attribute a = el.attribute(shortName);
         if (!a) a = el.attribute(longName);
@@ -61,6 +66,7 @@ namespace {
         return out && *out;
     }
 
+    /** Reads an integer attribute via short or long name; returns whether the attribute existed. */
     bool readInt(pugi::xml_node el, const char *shortName, const char *longName, int &out) {
         pugi::xml_attribute a = el.attribute(shortName);
         if (!a) a = el.attribute(longName);
@@ -69,6 +75,7 @@ namespace {
         return true;
     }
 
+    /** Reads `true`/`false` string attributes only (short or long name). */
     bool readBool(pugi::xml_node el, const char *shortName, const char *longName, bool &out) {
         pugi::xml_attribute a = el.attribute(shortName);
         if (!a) a = el.attribute(longName);
@@ -85,6 +92,7 @@ namespace {
         return false;
     }
 
+    /** Returns whether `cls` is one of the EditText-like widget class names we treat specially for text. */
     bool isEditTextClassName(const char *cls) {
         if (!cls || !*cls) {
             return false;
@@ -96,6 +104,10 @@ namespace {
                (len == 42 && std::strcmp(cls, "android.widget.MultiAutoCompleteTextView") == 0);
     }
 
+    /**
+     * Maps UI XML scrollable attribute strings to a compact bitmask (0–3):
+     * `true`→3, `false`/empty→0, or a numeric value clamped to [0,3].
+     */
     int parseScrollableBitsFromAttr(const char *scrollableStr) {
         if (!scrollableStr || !*scrollableStr) {
             return 0;
@@ -128,6 +140,10 @@ namespace {
         return v;
     }
 
+    /**
+     * Human-readable scroll axis label for DOM `scroll-type`: none, vertical, horizontal, or all
+     * from `scrollableBits` and known Android widget class names.
+     */
     const char *computeScrollTypeString(int scrollableBits, const char *className) {
         if (scrollableBits == 0) {
             return "none";
@@ -155,6 +171,10 @@ namespace {
         return "all";
     }
 
+    /**
+     * Copies hierarchy XML attributes into `gn`, normalizes text/content-desc for APE,
+     * and mirrors canonical attribute values on `xmlNode` for XPath naming (`text`, `checked`, etc.).
+     */
     void fillFromAttributes(pugi::xml_node xmlNode, GUITreeNodePtr gn) {
         int indexOfNode = 0;
         if (readInt(xmlNode, "idx", "index", indexOfNode)) {
@@ -264,6 +284,7 @@ namespace {
         if (readBool(xmlNode, "pwd", "password", b)) gn->setPassword(b);
     }
 
+    /** Post-order walk: sets each node’s descendant count and height from its children. */
     void postOrderStats(GUITreeNodePtr n) {
         int dc = 1;
         int h = 1;
@@ -276,6 +297,7 @@ namespace {
         n->setHeight(h);
     }
 
+    /** ASCII case-insensitive comparison of C strings; both must end together for a match. */
     bool asciiLiteralEqualsIgnoreCase(const char *v, const char *lit) {
         if (!v || !lit) {
             return false;
@@ -297,8 +319,10 @@ namespace {
     }
 
     /**
-     * when excludeInvisibleNode (default true), skip non-visible children;
-     * when excludeEmptyChild (default true), skip null-slot analogues (leaf + empty bounds attr).
+     * True if this pugixml node should be dropped when building the GUITree, per APE preferences:
+     * when “exclude invisible” is on, drop non–visible-to-user or gone/invisible;
+     * when “exclude empty child” is on, drop leaf nodes with an empty `bounds` attribute.
+     * The outer document root is never excluded.
      */
     bool xmlSubtreeExcludedByApePreference(const pugi::xml_node &xe, bool isOuterXmlRoot) {
         if (!xe || xe.type() != pugi::node_element || isOuterXmlRoot) {
@@ -340,6 +364,10 @@ namespace {
         return false;
     }
 
+    /**
+     * Element-tree counterpart to xmlSubtreeExcludedByApePreference: same filters using
+     * `Element` APE visibility/empty-bounds fields. The outer root is never excluded.
+     */
     bool elementSubtreeExcludedByApePreference(const ElementPtr &xe, bool isOuterElementRoot) {
         if (!xe || isOuterElementRoot) {
             return false;
@@ -365,6 +393,10 @@ namespace {
         return false;
     }
 
+    /**
+     * Recursively builds a GUITree from UI XML: registers element nodes in `dom`, applies
+     * fillFromAttributes, and skips subtrees excluded by APE preferences.
+     */
     GUITreeNodePtr parseElement(pugi::xml_node xe, const GUITreeNodeWeakPtr &parentWeak,
                                 XPathNodeMapper &dom, bool isOuterXmlRoot) {
         if (xmlSubtreeExcludedByApePreference(xe, isOuterXmlRoot)) {
@@ -387,6 +419,7 @@ namespace {
         return gn;
     }
 
+    /** Copies fields from a native `Element` into an existing `GUITreeNode` (normalized text/desc). */
     void fillFromElement(const ElementPtr &el, GUITreeNodePtr gn) {
         if (!el || !gn) {
             return;
@@ -412,6 +445,10 @@ namespace {
         gn->setPassword(el->getPassword());
     }
 
+    /**
+     * Writes long-name UI attributes onto a pugixml `node` element from `el` so the DOM matches
+     * the shape expected for XPath (bounds, text, scroll-type, optional APE visibility).
+     */
     void fillPugiFromElement(pugi::xml_node xml, const ElementPtr &el) {
         if (!xml || !el) {
             return;
@@ -465,6 +502,10 @@ namespace {
         }
     }
 
+    /**
+     * Recursively builds GUITree nodes from the `Element` tree while appending matching pugixml
+     * `node` children and registering them in `dom`; drops excluded subtrees and prunes unused XML.
+     */
     GUITreeNodePtr parseElementFromElementWithDom(const ElementPtr &xe, const GUITreeNodeWeakPtr &parentWeak,
                                                   pugi::xml_node xmlNode, XPathNodeMapper &dom,
                                                   bool isOuterElementRoot) {
@@ -501,6 +542,10 @@ namespace {
 
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML
 
+    /**
+     * Parses UTF-8 UI hierarchy XML into a `GUITree`, XPath bridge (`dom`), post-order stats,
+     * and activity metadata. Returns empty result if XML load or parse yields no usable root.
+     */
     GUITreeBuildResult GUITreeFactory::buildFromXml(const std::string &utf8, const std::string &activity_package,
                                                     const std::string &activity_class) {
         GUITreeBuildResult r;
@@ -531,6 +576,10 @@ namespace {
         return r;
     }
 
+    /**
+     * Walks an in-memory `Element` tree, builds a parallel pugixml DOM for XPath, and returns
+     * `GUITree` + `dom` (no string round-trip through Element::toXML). Empty if root is null or filtered out.
+     */
     GUITreeBuildResult GUITreeFactory::buildFromElement(const ElementPtr &root, const std::string &activity_package,
                                                         const std::string &activity_class) {
         GUITreeBuildResult r;
@@ -558,10 +607,12 @@ namespace {
 
 #else
 
+    /** Stub when pugixml is disabled: always returns an empty build result. */
     GUITreeBuildResult GUITreeFactory::buildFromXml(const std::string &, const std::string &, const std::string &) {
         return GUITreeBuildResult{};
     }
 
+    /** Stub when pugixml is disabled: always returns an empty build result. */
     GUITreeBuildResult GUITreeFactory::buildFromElement(const ElementPtr &, const std::string &, const std::string &) {
         return GUITreeBuildResult{};
     }
