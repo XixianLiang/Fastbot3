@@ -356,12 +356,16 @@ namespace fastbotx {
         const LlmRuntimeConfig &getLlmRuntimeConfig() const { return this->_llmRuntimeConfig; }
 
         /**
-         * Enables merged-state / planner-heavy exploration wiring (e.g. optional enrichment phases).
-         * Named under max.llm.* for discoverability; orthogonal to max.llm.enabled (LLM HTTP task gate).
-         * Default false. Only the literal value "true" enables; omitted key or any other value stays off after reload.
+         * Enables merged-state / planner-heavy exploration (GPTAgent overview, guide, test-function).
+         * Requires both max.llm.llmdroid=true and max.llm.enabled=true (HTTP LlmClient).
+         * Default false. Only the literal value "true" on llmdroid enables the feature flag; omitted key stays off.
          * max.config: max.llm.llmdroid=true|false
          */
-        bool isLlmdroidEnabled() const { return this->_llmdroidEnabled; }
+        bool isLlmdroidEnabled() const {
+            return this->_llmdroidEnabled && this->_llmRuntimeConfig.enabled;
+        }
+        /** Raw max.llm.llmdroid flag before the max.llm.enabled gate. */
+        bool isLlmdroidConfigRequested() const { return this->_llmdroidEnabled; }
         /**
          * EXPLORE stage window in seconds for time-mode switching when planner pipeline features are on.
          * max.config: max.llm.llmdroid.exploreWindowSec=N (default 120s).

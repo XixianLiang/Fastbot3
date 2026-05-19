@@ -426,7 +426,7 @@ namespace fastbotx {
             j["bounds"] = "[null]";
             BLOGE("Widget::toJson: _bounds is null for widget");
         }
-        return j.dump();
+        return jsonDumpUtf8Safe(j);
     }
 
     /** Concatenates this widget and ancestors’ synthetic XPath fragments from leaf toward root. */

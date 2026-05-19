@@ -121,7 +121,7 @@ namespace fastbotx {
             retJson["editable"] = BOOL_TO_STR(this->editable);
             retJson["jAction"] = this->jAction;
             retJson["widget"] = this->widget;
-            ret = retJson.dump();
+            ret = jsonDumpUtf8Safe(retJson);
         }
         catch (nlohmann::json::exception &e) {
             BLOGE("Parse Operate For Device Error! %s", e.what());

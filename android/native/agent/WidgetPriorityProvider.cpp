@@ -130,7 +130,7 @@ namespace fastbotx {
             elements.push_back(el);
         }
         payload["elements"] = std::move(elements);
-        std::string payloadStr = payload.dump();
+        std::string payloadStr = jsonDumpUtf8Safe(payload);
 
         BDLOG("WidgetPriorityProvider: widget_priority request absStateId=%llu elements=%zu",
               (unsigned long long) absStateId, validActions.size());

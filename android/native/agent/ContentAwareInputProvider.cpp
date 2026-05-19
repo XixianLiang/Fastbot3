@@ -76,7 +76,7 @@ namespace fastbotx {
         payload["resource_id"] = resourceId;
         payload["text"] = text;
         payload["content_desc"] = contentDesc;
-        std::string payloadStr = payload.dump();
+        std::string payloadStr = jsonDumpUtf8Safe(payload);
 
         // Prompt type is fixed; remote side maps it to the content-aware input template.
         BDLOG("ContentAwareInput: cache miss, request LLM resource_id=%s", resourceId.c_str());

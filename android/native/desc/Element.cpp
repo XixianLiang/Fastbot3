@@ -446,6 +446,7 @@ namespace {
             if (!readBytes(buf, len, offset, &tag, 1) || !readBytes(buf, len, offset, &slen, 2) || *offset + slen > len) break;
             std::string s(buf + *offset, slen);
             *offset += slen;
+            s = sanitizeUtf8ForJson(std::move(s));
             if (tag == TAG_TEXT) _text = std::move(s);
             else if (tag == TAG_RID) _resourceID = std::move(s);
             else if (tag == TAG_CLASS) _classname = std::move(s);
@@ -511,7 +512,7 @@ namespace {
         j["scrollable"] = this->_scrollable ? "true" : "false";
         j["long-clickable"] = this->_longClickable ? "true" : "false";
         j["password"] = this->_password ? "true" : "false";
-        return j.dump();
+        return jsonDumpUtf8Safe(j);
     }
 
     /** Writes one `<node>` element and recurses for children (uiautomator-compatible attribute names). */

@@ -185,7 +185,7 @@ namespace fastbotx {
          * LLMDroid overlay: called from `Model::getOperateOpt` when `max.llm.llmdroid` is enabled, after
          * `addState` / visit / `recordTransition`, once canonical graph state identity is fixed.
          * Updates `MergedStateGraph` and queues `STATE_OVERVIEW` / `REANALYSIS` work to `GPTAgent`.
-         * Requires a non-null LLM client (`max.llm.enabled` with URL/key) from `Model::getLlmClient()`.
+         * Active only when `max.llm.llmdroid=true` and `max.llm.enabled=true` (non-null `Model::getLlmClient()`).
          * Must not call `applyDynamicAbstractionIdentityHash`, mutate `naming::StateKey` for RL identity,
          * or use `getMergedState()` inside `resolveNewAction` / `selectAction` (DoubleSarsa / curiosity).
          */

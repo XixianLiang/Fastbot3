@@ -650,7 +650,7 @@ namespace fastbotx {
         std::vector<Path> ret;
         int num = 0;
         for (const auto &path : all_paths) {
-            if (path.empty()) {
+            if (path.empty() && source != dest) {
                 continue;
             }
             auto latest = std::max_element(path.begin(), path.end(),
@@ -668,8 +668,38 @@ namespace fastbotx {
         return ret;
     }
 
+    namespace {
+
+        Path mergePathQueues(const Path &first, const Path &second) {
+            Path merged;
+            std::queue<Step> steps = first.steps;
+            while (!steps.empty()) {
+                merged.steps.push(steps.front());
+                steps.pop();
+            }
+            steps = second.steps;
+            while (!steps.empty()) {
+                merged.steps.push(steps.front());
+                steps.pop();
+            }
+            merged.length = merged.steps.size();
+            merged.time = std::max(first.time, second.time);
+            return merged;
+        }
+
+        void appendUniqueAnchor(std::vector<int> *anchors, int id) {
+            if (!anchors || id < 0) {
+                return;
+            }
+            if (std::find(anchors->begin(), anchors->end(), id) == anchors->end()) {
+                anchors->push_back(id);
+            }
+        }
+
+    } // namespace
+
     /** Paths from the current reuse state to `dest`, optionally restarting from state id 0 first. */
-    std::vector<Path> Graph::findPath(int dest, bool forceRestart) {
+    std::vector<Path> Graph::findPath(int dest, bool forceRestart, const std::vector<int> *extraAnchorIds) {
         ReuseStatePtr destination = findReuseStateById(dest);
         if (!destination || !_llmdroidCurrentState) {
             return {};
@@ -678,20 +708,77 @@ namespace fastbotx {
         BLOG("[GRAPH] findPath from ReuseState%d to ReuseState%d (forceRestart=%d)", source_id, dest,
              forceRestart ? 1 : 0);
 
-        if (!forceRestart) {
-            std::vector<Path> forwardPath = dijkstra(source_id, dest);
-            if (!forwardPath.empty()) {
-                processPaths(forwardPath, source_id, dest);
-                return forwardPath;
+        auto runDijkstra = [&](int src, int dst) -> std::vector<Path> {
+            if (!findReuseStateById(src) || !findReuseStateById(dst)) {
+                return {};
             }
-        } else {
-            BLOG("[GRAPH] findPath from R0 to ReuseState%d", dest);
-            std::vector<Path> originPath = dijkstra(0, dest);
-            if (!originPath.empty()) {
-                processPaths(originPath, 0, dest);
-                return originPath;
+            if (src == dst) {
+                Path trivial;
+                trivial.length = 0;
+                trivial.time = 0.0;
+                std::vector<Path> out{trivial};
+                processPaths(out, src, dst);
+                return out;
+            }
+            std::vector<Path> paths = dijkstra(src, dst);
+            if (!paths.empty()) {
+                processPaths(paths, src, dst);
+            }
+            return paths;
+        };
+
+        auto tryLeg = [&](int src, int dst, const char *tag) -> std::vector<Path> {
+            std::vector<Path> leg = runDijkstra(src, dst);
+            if (!leg.empty() && tag != nullptr) {
+                BLOG("[GRAPH] findPath %s ReuseState%d -> ReuseState%d", tag, src, dst);
+            }
+            return leg;
+        };
+
+        std::vector<Path> direct = tryLeg(source_id, dest, "via current");
+        if (!direct.empty()) {
+            return direct;
+        }
+
+        std::vector<int> anchors;
+        if (_llmdroidFirstState) {
+            appendUniqueAnchor(&anchors, _llmdroidFirstState->getIdi());
+        }
+        appendUniqueAnchor(&anchors, 0);
+        if (extraAnchorIds) {
+            for (int id : *extraAnchorIds) {
+                appendUniqueAnchor(&anchors, id);
             }
         }
+
+        for (int anchor : anchors) {
+            if (anchor == source_id || anchor == dest) {
+                continue;
+            }
+            std::vector<Path> toAnchor = tryLeg(source_id, anchor, nullptr);
+            std::vector<Path> fromAnchor = tryLeg(anchor, dest, nullptr);
+            if (!toAnchor.empty() && !fromAnchor.empty()) {
+                Path combined = mergePathQueues(toAnchor[0], fromAnchor[0]);
+                std::vector<Path> out{combined};
+                processPaths(out, source_id, dest);
+                BLOG("[GRAPH] findPath via anchor ReuseState%d (%d -> %d -> %d)", anchor, source_id, anchor,
+                     dest);
+                return out;
+            }
+        }
+
+        if (forceRestart) {
+            for (int anchor : anchors) {
+                if (anchor == dest) {
+                    continue;
+                }
+                std::vector<Path> fromOrigin = tryLeg(anchor, dest, "from origin");
+                if (!fromOrigin.empty()) {
+                    return fromOrigin;
+                }
+            }
+        }
+
         BLOG("[GRAPH] no path found to ReuseState%d", dest);
         return {};
     }

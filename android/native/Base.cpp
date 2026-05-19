@@ -12,6 +12,50 @@
 #include <algorithm>
 
 namespace fastbotx {
+
+    std::string sanitizeUtf8ForJson(std::string s) {
+        if (s.empty()) {
+            return s;
+        }
+        std::string out;
+        out.reserve(s.size());
+        const size_t n = s.size();
+        size_t i = 0;
+        while (i < n) {
+            const unsigned char c = static_cast<unsigned char>(s[i]);
+            size_t step = 1;
+            if ((c & 0x80U) == 0U) {
+                step = 1;
+            } else if ((c & 0xE0U) == 0xC0U) {
+                step = 2;
+            } else if ((c & 0xF0U) == 0xE0U) {
+                step = 3;
+            } else if ((c & 0xF8U) == 0xF0U) {
+                step = 4;
+            } else {
+                ++i;
+                continue;
+            }
+            if (i + step > n) {
+                break;
+            }
+            for (size_t j = 0; j < step; ++j) {
+                const unsigned char b = static_cast<unsigned char>(s[i + j]);
+                if (j > 0 && (b & 0xC0U) != 0x80U) {
+                    step = 0;
+                    break;
+                }
+            }
+            if (step == 0) {
+                ++i;
+                continue;
+            }
+            out.append(s, i, step);
+            i += step;
+        }
+        return out;
+    }
+
     std::string safe_utf8_substr(const std::string &str, size_t start, size_t len) {
         if (str.empty() || len == 0) {
             return "";

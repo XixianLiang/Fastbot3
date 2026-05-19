@@ -2147,6 +2147,10 @@ namespace fastbotx {
                 }
             }
         }
+        if (this->_llmdroidEnabled && !this->_llmRuntimeConfig.enabled) {
+            BLOG("planner pipeline: %s=true but %s is not true; LLMDroid disabled (enable HTTP LLM first)",
+                 LlmdroidEnabledSTR, LlmEnabledSTR);
+        }
         // Final guardrail for fixed-point iterations (reference baseline keeps this at zero on native).
         this->_apeNamingFixedPointMaxIter = 0;
 

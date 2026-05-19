@@ -47,6 +47,18 @@ namespace fastbotx {
     /// UTF-8 safe substring (index and len are in code points, not bytes).
     std::string safe_utf8_substr(const std::string &str, size_t start, size_t len);
 
+    /**
+     * Drops trailing bytes that do not complete a UTF-8 codepoint and skips lone continuation bytes.
+     * Use before assigning Android UI strings to nlohmann::json when possible.
+     */
+    std::string sanitizeUtf8ForJson(std::string s);
+
+    /** json::dump() with error_handler_t::replace so malformed UI text cannot abort (type_error.316). */
+    inline std::string jsonDumpUtf8Safe(const nlohmann::json &j, int indent = -1,
+                                        char indent_char = ' ', bool ensure_ascii = false) {
+        return j.dump(indent, indent_char, ensure_ascii, nlohmann::json::error_handler_t::replace);
+    }
+
 
     class PriorityNode {
     public:

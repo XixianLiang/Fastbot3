@@ -128,7 +128,7 @@ namespace fastbotx {
 
         body["messages"] = json::array({systemMsg, userMsg});
 
-        return body.dump();
+        return jsonDumpUtf8Safe(body);
     }
 
 #if FASTBOTX_HAS_CURL

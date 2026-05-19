@@ -14,6 +14,7 @@
 #include "LLMTaskAgent.h"
 #include "ReuseState.h"
 #include "../desc/Action.h"
+#include "../model/Graph.h"
 #include "../utils.hpp"
 #include "../thirdpart/json/json.hpp"
 
@@ -26,6 +27,86 @@
 namespace fastbotx {
 
 namespace {
+
+/** Escape raw control characters inside JSON string literals so nlohmann can parse LLM output. */
+std::string repairJsonControlChars(std::string s) {
+    std::string out;
+    out.reserve(s.size() + 16);
+    bool inString = false;
+    bool escape = false;
+    for (size_t i = 0; i < s.size(); ++i) {
+        const char c = s[i];
+        if (escape) {
+            out.push_back(c);
+            escape = false;
+            continue;
+        }
+        if (c == '\\' && inString) {
+            out.push_back(c);
+            escape = true;
+            continue;
+        }
+        if (c == '"') {
+            inString = !inString;
+            out.push_back(c);
+            continue;
+        }
+        if (inString) {
+            const unsigned char uc = static_cast<unsigned char>(c);
+            if (uc < 0x20U) {
+                if (c == '\n') {
+                    out += "\\n";
+                } else if (c == '\r') {
+                    out += "\\r";
+                } else if (c == '\t') {
+                    out += "\\t";
+                }
+                continue;
+            }
+        }
+        out.push_back(c);
+    }
+    return out;
+}
+
+/** Pick a reuse-state id that exists in the exploration graph and hosts the function label. */
+int resolveReachableGuideTargetId(const MergedStatePtr &destination, const std::string &function,
+                                  const GraphPtr &graph) {
+    if (!destination || !graph || function.empty()) {
+        return -1;
+    }
+    std::vector<ReuseStatePtr> candidates;
+    ReuseStatePtr primary = destination->getTargetState(function);
+    if (primary) {
+        candidates.push_back(primary);
+    }
+    for (const ReuseStatePtr &state : destination->getReuseStates()) {
+        if (!state) {
+            continue;
+        }
+        bool hasLabel = false;
+        for (const WidgetPtr &widget : state->getAllWidgets()) {
+            if (widget && widget->getFunctionLabel() == function) {
+                hasLabel = true;
+                break;
+            }
+        }
+        if (!hasLabel) {
+            continue;
+        }
+        if (std::find_if(candidates.begin(), candidates.end(),
+                         [&](const ReuseStatePtr &c) { return c && c->getIdi() == state->getIdi(); }) ==
+            candidates.end()) {
+            candidates.push_back(state);
+        }
+    }
+    for (const ReuseStatePtr &state : candidates) {
+        if (state && graph->findReuseStateById(state->getIdi())) {
+            return state->getIdi();
+        }
+    }
+    return -1;
+}
 
 /** Bound prompt size for overview prompts (state descriptions can be large). */
 std::string trimStateDescription(std::string s, size_t maxLen) {
@@ -75,9 +156,29 @@ std::string GPTAgent::promptTypeForAsk(AskModel type) {
  * Enqueues work and wakes the worker. REANALYSIS may go to the low queue only if its merged state id is in the
  * top slice of `_topValuedMergedState`; GUIDE/TEST_FUNCTION and other types use the high-priority queue.
  */
+namespace {
+
+void failPromiseForDroppedPayload(AskModel type, const PromiseIntPtr &promInt,
+                                  const PromiseActionPtr &promAction) {
+    if (type == AskModel::GUIDE && promInt) {
+        try {
+            promInt->set_value(-1);
+        } catch (const std::future_error &) {
+        }
+    } else if (type == AskModel::TEST_FUNCTION && promAction) {
+        try {
+            promAction->set_value(nullptr);
+        } catch (const std::future_error &) {
+        }
+    }
+}
+
+} // namespace
+
 void GPTAgent::pushStateToQueue(QuestionPayload payload) {
     if (!_llm) {
-        BLOG("GPTAgent: no LlmClient, drop payload (enable max.llm.* HTTP for LLMDroid overview)");
+        BLOG("GPTAgent: no LlmClient, drop payload (enable max.llm.enabled HTTP for LLMDroid)");
+        failPromiseForDroppedPayload(payload.type, _promiseInt, _promiseAction);
         return;
     }
 
@@ -215,7 +316,14 @@ nlohmann::json GPTAgent::getResponseJson(const nlohmann::json &payload, AskModel
     constexpr int kMaxAttempts = 3;
     for (int attempt = 1; attempt <= kMaxAttempts; ++attempt) {
         std::string raw;
-        if (!_llm->predictWithPayload(promptTypeForAsk(type), payload.dump(), {}, raw)) {
+        std::string payloadJson;
+        try {
+            payloadJson = jsonDumpUtf8Safe(payload);
+        } catch (const std::exception &e) {
+            BLOGE("GPTAgent: payload JSON dump failed: %s", e.what());
+            return {};
+        }
+        if (!_llm->predictWithPayload(promptTypeForAsk(type), payloadJson, {}, raw)) {
             BLOGE("GPTAgent: predictWithPayload failed (attempt %d/%d)", attempt, kMaxAttempts);
             continue;
         }
@@ -229,6 +337,12 @@ nlohmann::json GPTAgent::getResponseJson(const nlohmann::json &payload, AskModel
             return nlohmann::json::parse(s);
         } catch (const std::exception &e) {
             BLOGE("GPTAgent: JSON parse error (attempt %d/%d): %s", attempt, kMaxAttempts, e.what());
+            try {
+                return nlohmann::json::parse(repairJsonControlChars(s));
+            } catch (const std::exception &e2) {
+                BLOGE("GPTAgent: JSON parse after repair failed (attempt %d/%d): %s", attempt, kMaxAttempts,
+                      e2.what());
+            }
             BLOGE("GPTAgent: JSON parse raw response (attempt %d/%d): %s", attempt, kMaxAttempts, raw.c_str());
         }
     }
@@ -478,8 +592,13 @@ void GPTAgent::askForGuiding(QuestionPayload & /*payload*/) {
         _promiseInt->set_value(-1);
         return;
     }
-    ReuseStatePtr rs = destination->getTargetState(_targetFunction);
-    _promiseInt->set_value(rs ? rs->getIdi() : -1);
+    GraphPtr graph = _mergedStateGraph ? _mergedStateGraph->getGraph() : nullptr;
+    const int reachableId = resolveReachableGuideTargetId(destination, _targetFunction, graph);
+    if (reachableId < 0) {
+        BLOG("[LLMDroid] guide: no graph node for function '%s' in MergedState%d", _targetFunction.c_str(),
+             _targetMergedStateId);
+    }
+    _promiseInt->set_value(reachableId);
 }
 
 /** Resolves widget element id + action opcode from JSON and fulfills `_promiseAction`. */

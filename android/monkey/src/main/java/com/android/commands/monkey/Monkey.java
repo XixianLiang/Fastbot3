@@ -653,7 +653,8 @@ public class Monkey {
 
     private void logFastbotStartupSummary() {
         String pkg = (mMainApps != null && !mMainApps.isEmpty()) ? mMainApps.get(0).getPackageName() : "unknown";
-        boolean llmdroidEnabled = Config.getBoolean("max.llm.llmdroid", false);
+        boolean llmdroidConfig = Config.getBoolean("max.llm.llmdroid", false);
+        boolean llmdroidEnabled = llmdroidConfig && Config.llmEnabled;
         String llmModel = Config.get("max.llm.model", "");
         String llmApiUrl = resolveEnvPlaceholder(Config.get("max.llm.apiUrl", ""));
         boolean hasApiKey = !Config.get("max.llm.apiKey", "").isEmpty();
@@ -663,6 +664,7 @@ public class Monkey {
         Logger.println("========== Fastbot Startup ==========");
         Logger.println("[Startup] package=" + pkg + ", agent=" + agent + ", seed=" + mSeed + ", count=" + mCount);
         Logger.println("[Startup] LLM enabled=" + Config.llmEnabled + ", LLMDroid enabled=" + llmdroidEnabled
+                + (llmdroidConfig && !Config.llmEnabled ? " (max.llm.llmdroid set but max.llm.enabled is off)" : "")
                 + ", model=" + (llmModel.isEmpty() ? "<empty>" : llmModel));
         Logger.println("[Startup] LLM apiUrl=" + (llmApiUrl.isEmpty() ? "<empty>" : llmApiUrl)
                 + ", apiKeyConfigured=" + hasApiKey);

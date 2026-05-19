@@ -2160,7 +2160,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 05142119, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 05182133, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -8123,7 +8123,7 @@ namespace {
             arr.push_back(a);
         }
         j["testedActivities"] = arr;
-        return j.dump();
+        return jsonDumpUtf8Safe(j);
     }
 
     /** @brief Returns the stagnation metric used by the exploration scheduler. */
@@ -8223,7 +8223,7 @@ namespace {
                 BLOGE("state abstraction: cannot open temp policy file %s for writing", tmpPath.c_str());
                 return;
             }
-            out << j.dump();
+            out << jsonDumpUtf8Safe(j);
             out.close();
             if (std::rename(tmpPath.c_str(), path.c_str()) != 0) {
                 BLOGE("state abstraction: failed to rename policy file %s -> %s", tmpPath.c_str(), path.c_str());

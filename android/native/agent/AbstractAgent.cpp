@@ -77,7 +77,9 @@ namespace fastbotx {
         /** Lower bound on reuse-state similarity when matching path steps (relaxed after retries). */
         float currentSimilarityCheck{0.6f};
         static constexpr float kMaxSimilarity = 0.6f;
-        static constexpr float kMinSimilarity = 0.49f;
+        static constexpr float kMinSimilarity = 0.45f;
+        /** Accept arrival at guide target when widget-tree similarity exceeds this (final hop). */
+        static constexpr float kGuideArrivalSimilarity = 0.5f;
         ActivityStateActionPtr actionByGpt;
         std::future<int> futureInt;
         std::future<ActivityStateActionPtr> futureAction;
@@ -129,7 +131,6 @@ namespace fastbotx {
             L.executedSteps = 0;
             L.actionByGpt.reset();
             if (L.gptAgent) {
-                L.gptAgent->addTestedFunction();
                 L.gptAgent->clearExecutedEvents();
             }
             if (!L.mergedStateGraph || !L.gptAgent) {
@@ -149,6 +150,9 @@ namespace fastbotx {
         void llmdroidOnNavigationOver(LlmdroidAgentOverlay &L, bool success, AbstractAgent &agent) {
             if (success) {
                 L.successGuideTime++;
+                if (L.gptAgent) {
+                    L.gptAgent->addTestedFunction();
+                }
                 L.mode = LlmdroidMode::TEST_FUNCTION;
                 BLOG("LLMDroid: navigation success -> TEST_FUNCTION");
             } else {
@@ -175,9 +179,6 @@ namespace fastbotx {
                 return;
             }
             if (L.guideTime < 3) {
-                if (L.gptAgent) {
-                    L.gptAgent->addTestedFunction();
-                }
                 llmdroidPrepareForNavigation(L, model, agent);
                 return;
             }
@@ -206,7 +207,41 @@ namespace fastbotx {
                 llmdroidOnNavigationFailed(L, model, agent);
                 return;
             }
-            L.paths = L.graph->findPath(L.guideTarget, true);
+            if (L.mCurrentState && L.mCurrentState->getIdi() == L.guideTarget) {
+                BLOG("LLMDroid: already at guide target ReuseState %d", L.guideTarget);
+                llmdroidOnNavigationOver(L, true, agent);
+                return;
+            }
+            std::vector<int> pathAnchors;
+            if (L.mergedStateGraph) {
+                for (const MergedStatePtr &ms : L.mergedStateGraph->getMergedStates()) {
+                    if (!ms) {
+                        continue;
+                    }
+                    bool containsTarget = false;
+                    for (const ReuseStatePtr &rs : ms->getReuseStates()) {
+                        if (rs && rs->getIdi() == L.guideTarget) {
+                            containsTarget = true;
+                            break;
+                        }
+                    }
+                    if (!containsTarget) {
+                        continue;
+                    }
+                    for (const ReuseStatePtr &rs : ms->getReuseStates()) {
+                        if (rs) {
+                            pathAnchors.push_back(rs->getIdi());
+                        }
+                    }
+                    ReuseStatePtr root = ms->getRootState();
+                    if (root) {
+                        pathAnchors.push_back(root->getIdi());
+                    }
+                    break;
+                }
+            }
+            L.paths = L.graph->findPath(L.guideTarget, true,
+                                        pathAnchors.empty() ? nullptr : &pathAnchors);
             if (L.paths.empty()) {
                 BLOG("LLMDroid: no path to ReuseState %d", L.guideTarget);
                 llmdroidOnNavigationFailed(L, model, agent);
@@ -226,6 +261,22 @@ namespace fastbotx {
             ReuseStatePtr mcs = L.mCurrentState;
             if (!mcs) {
                 return 3;
+            }
+            if (L.guideTarget >= 0) {
+                if (mcs->getIdi() == L.guideTarget) {
+                    return 2;
+                }
+                if (L.graph) {
+                    ReuseStatePtr goal = L.graph->findReuseStateById(L.guideTarget);
+                    if (goal) {
+                        const float simToGoal = mcs->computeSimilarity(goal);
+                        if (simToGoal >= LlmdroidAgentOverlay::kGuideArrivalSimilarity) {
+                            BLOG("LLMDroid: guideCheck arrived at target R%d (sim=%f)", L.guideTarget,
+                                 simToGoal);
+                            return 2;
+                        }
+                    }
+                }
             }
             while (!L.currentPath.steps.empty()) {
                 Step currentStep = L.currentPath.steps.front();
@@ -252,8 +303,11 @@ namespace fastbotx {
                     ReuseStatePtr targetState = L.graph->findReuseStateById(targetId);
                     const float sim = targetState ? mcs->computeSimilarity(targetState) : 0.f;
                     BLOG("LLMDroid guideCheck sim target R%d now R%d -> %f", targetId, mcs->getIdi(), sim);
-                    if (sim > L.currentSimilarityCheck) {
-                        if (L.currentPath.steps.empty()) {
+                    const bool atGuideTarget =
+                            (L.guideTarget >= 0 && (targetId == L.guideTarget || mcs->getIdi() == L.guideTarget));
+                    if (sim > L.currentSimilarityCheck ||
+                        (atGuideTarget && sim >= LlmdroidAgentOverlay::kGuideArrivalSimilarity)) {
+                        if (L.currentPath.steps.empty() || atGuideTarget) {
                             isCorrect = true;
                             break;
                         }
@@ -476,10 +530,14 @@ namespace fastbotx {
         if (!model) {
             return;
         }
+        std::shared_ptr<LlmClient> llm = model->getLlmClient();
+        if (!llm) {
+            BLOG("LLMDroid: no LlmClient (set max.llm.enabled=true with apiUrl/apiKey); skipping runtime init");
+            return;
+        }
         _llmdroid = std::make_unique<LlmdroidAgentOverlay>();
         _llmdroid->graph = model->getGraph();
         _llmdroid->mergedStateGraph = std::make_shared<MergedStateGraph>(_llmdroid->graph);
-        std::shared_ptr<LlmClient> llm = model->getLlmClient();
         std::string startPrompt = "I'm testing an Android app.\n";
         _llmdroid->gptAgent =
                 std::make_unique<GPTAgent>(_llmdroid->mergedStateGraph, std::move(llm), std::move(startPrompt));

@@ -384,7 +384,7 @@ namespace fastbotx {
         } else {
             j["planner_step"] = nullptr;
         }
-        return j.dump();
+        return jsonDumpUtf8Safe(j);
     }
 
     // Minimal task/todos/history bundle for the "planner" prompt (no full widget tree).
@@ -418,7 +418,7 @@ namespace fastbotx {
         } else {
             j["history_summaries"] = json::array();
         }
-        return j.dump();
+        return jsonDumpUtf8Safe(j);
     }
 
     // Single-step facts for the optional "step_summary" follow-up call.
@@ -430,7 +430,7 @@ namespace fastbotx {
         j["target_by"] = entry.targetBy;
         j["target_value"] = entry.targetValue;
         j["action_reason"] = entry.actionReason;
-        return j.dump();
+        return jsonDumpUtf8Safe(j);
     }
 
     // Pull JSON objects out of raw LLM text; shared by Executor/Planner parsers.

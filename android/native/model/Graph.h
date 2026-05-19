@@ -208,7 +208,8 @@ namespace fastbotx {
          * chain is populated from `addState` / `recordStateVisit` when `Preference::isLlmdroidEnabled()` enables
          * activity-graph bookkeeping.
          */
-        std::vector<Path> findPath(int dest, bool forceRestart);
+        std::vector<Path> findPath(int dest, bool forceRestart,
+                                   const std::vector<int> *extraAnchorIds = nullptr);
 
         ReuseStatePtr findReuseStateById(int id);
 

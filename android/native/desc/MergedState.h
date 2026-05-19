@@ -239,6 +239,8 @@ public:
      */
     std::vector<Path> findPaths(int reuseStateId, bool forceRestart);
 
+    GraphPtr getGraph() const { return _graph; }
+
 private:
     /** Guards timeline mutators and readers; recursive because `findPaths` may consult merged ids internally. */
     mutable std::recursive_mutex _mergedStateGraphMutex;

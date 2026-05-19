@@ -299,6 +299,10 @@ void MergedState::setFunctionToWidget(const std::vector<std::pair<std::string, i
         std::string function = functionList[i].first;
         widget->setFunctionLabel(function);
         BLOG("successfully set function: %s to root's widget", function.c_str());
+        auto anchorIt = _functionList.find(function);
+        if (anchorIt != _functionList.end()) {
+            anchorIt->second.state = _root;
+        }
 
         int whichWidget = _root->findWhichWidget(widget);
         if (whichWidget < -1) {
@@ -314,6 +318,9 @@ void MergedState::setFunctionToWidget(const std::vector<std::pair<std::string, i
             if (similarWidget) {
                 similarWidget->setFunctionLabel(function);
                 BLOG("successfully set function: %s to R%d's widget", function.c_str(), state->getIdi());
+                if (anchorIt != _functionList.end()) {
+                    anchorIt->second.state = state;
+                }
             } else {
                 BLOG("widget:%s doesn't have similar one in R%d", widget->toHTML().c_str(), state->getIdi());
             }
@@ -583,11 +590,24 @@ std::vector<Path> MergedStateGraph::findPaths(int reuseStateId, bool forceRestar
 ReuseStatePtr MergedState::getTargetState(const std::string &function) {
     std::lock_guard<std::recursive_mutex> lock(_mergedStateMutex);
     auto it = _functionList.find(function);
-    if (it != _functionList.end()) {
+    if (it == _functionList.end()) {
+        BLOG("function{%s} doesn't belong to any state in MergedState{%d}", function.c_str(), _id);
+        return nullptr;
+    }
+    for (const ReuseStatePtr &state : _states) {
+        if (!state) {
+            continue;
+        }
+        for (const WidgetPtr &widget : state->getAllWidgets()) {
+            if (widget && widget->getFunctionLabel() == function) {
+                return state;
+            }
+        }
+    }
+    if (it->second.state) {
         return it->second.state;
     }
-    BLOG("function{%s} doesn't belong to any state in MergedState{%d}", function.c_str(), _id);
-    return nullptr;
+    return _root;
 }
 
 } // namespace fastbotx
