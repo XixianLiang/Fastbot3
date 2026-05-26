@@ -4,8 +4,8 @@
 # Prerequisites: export NDK_ROOT=/path/to/ndk
 #
 # Crash / tombstone symbolication (llvm-addr2line, ndk-stack):
-#   Default FASTBOT_STRIP_NATIVE_SO=OFF -> Release + -g, unstripped .so under android/libs/<ABI>/
-#   Smaller APK: FASTBOT_STRIP_NATIVE_SO=ON ./build_native.sh
+#   Default FASTBOT_STRIP_NATIVE_SO=ON -> stripped Release .so under android/libs/<ABI>/
+#   Keep debug symbols: FASTBOT_STRIP_NATIVE_SO=OFF ./build_native.sh
 #
 # Examples:
 #   ./build_native.sh                          # all ABIs (armeabi-v7a, arm64-v8a, x86, x86_64)
@@ -31,8 +31,8 @@ if [[ ! -f "$TOOLCHAIN_FILE" ]]; then
     exit 1
 fi
 
-# OFF = keep symbols for addr2line/ndk-stack (see CMakeLists FASTBOT_STRIP_NATIVE_SO).
-STRIP_OPT="${FASTBOT_STRIP_NATIVE_SO:-OFF}"
+# ON = strip Release .so (default). OFF = -g + unstripped for addr2line/ndk-stack.
+STRIP_OPT="${FASTBOT_STRIP_NATIVE_SO:-ON}"
 
 JOBS="$(nproc 2>/dev/null || sysctl -n hw.ncpu 2>/dev/null || echo 4)"
 

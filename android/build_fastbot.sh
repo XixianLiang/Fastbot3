@@ -3,15 +3,14 @@
 # Top-level Fastbot Android build wrapper.
 #
 # Native crash/tombstone symbolication (llvm-addr2line, ndk-stack):
-#   Default matches android/native/build_native.sh: FASTBOT_STRIP_NATIVE_SO=OFF
-#   -> Release + -g, output is not stripped (see native/CMakeLists FASTBOT_STRIP_NATIVE_SO).
-#   Smaller release artifacts: FASTBOT_STRIP_NATIVE_SO=ON ./build_fastbot.sh native
+#   Default matches android/native/build_native.sh: FASTBOT_STRIP_NATIVE_SO=ON (stripped Release .so).
+#   Keep debug symbols: FASTBOT_STRIP_NATIVE_SO=OFF ./build_fastbot.sh native
 #
 # Examples:
 #   ./build_fastbot.sh all
 #   ./build_fastbot.sh native                 # all four ABIs
-#   ./build_fastbot.sh native arm64-v8a       # build arm64 only, useful for device symbolication
-#   FASTBOT_STRIP_NATIVE_SO=ON ./build_fastbot.sh native x86_64
+#   ./build_fastbot.sh native arm64-v8a       # build arm64 only
+#   FASTBOT_STRIP_NATIVE_SO=OFF ./build_fastbot.sh native arm64-v8a
 
 set -euo pipefail
 
@@ -19,7 +18,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Explicit default to keep behavior consistent with docs; child process
 # build_native.sh reads this variable as well.
-export FASTBOT_STRIP_NATIVE_SO="${FASTBOT_STRIP_NATIVE_SO:-OFF}"
+export FASTBOT_STRIP_NATIVE_SO="${FASTBOT_STRIP_NATIVE_SO:-ON}"
 
 build_native() {
   echo "==== Building native (FASTBOT_STRIP_NATIVE_SO=$FASTBOT_STRIP_NATIVE_SO) ===="
@@ -69,8 +68,8 @@ Usage: $0 [native|monkeyq|all] [abi ...]
 
   all [abi ...]      native (same ABI args) then monkeyq.
 
-  Symbolication: unstripped + debug by default (FASTBOT_STRIP_NATIVE_SO=OFF).
-    Smaller .so: FASTBOT_STRIP_NATIVE_SO=ON $0 native
+  Default: stripped Release .so (FASTBOT_STRIP_NATIVE_SO=ON).
+    Symbolication: FASTBOT_STRIP_NATIVE_SO=OFF $0 native
 
   Env: NDK_ROOT required for native.
 EOF
