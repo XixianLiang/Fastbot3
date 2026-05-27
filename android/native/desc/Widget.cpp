@@ -113,18 +113,19 @@ namespace fastbotx {
     }
 
     void Widget::initFormElement(const ElementPtr &element) {
-        if (element->getCheckable())
-            enableOperate(OperateType::Checkable);
-        if (element->getEnable())
-            enableOperate(OperateType::Enable);
-        if (element->getClickable())
-            enableOperate(OperateType::Clickable);
-        if (element->getScrollable())
-            enableOperate(OperateType::Scrollable);
-        if (element->getLongClickable()) {
-            enableOperate(OperateType::LongClickable);
-            this->_actions.insert(ActionType::LONG_CLICK);
-        }
+      bool validActionBounds = !FASTBOT_FILTER_INVALID_ACTION_BOUNDS || element->hasValidActionBounds();
+      if (validActionBounds && element->getCheckable())
+        enableOperate(OperateType::Checkable);
+      if (element->getEnable())
+        enableOperate(OperateType::Enable);
+      if (validActionBounds && element->getClickable())
+        enableOperate(OperateType::Clickable);
+      if (validActionBounds && element->getScrollable())
+        enableOperate(OperateType::Scrollable);
+      if (validActionBounds && element->getLongClickable()) {
+        enableOperate(OperateType::LongClickable);
+        this->_actions.insert(ActionType::LONG_CLICK);
+      }
         if (this->hasOperate(OperateType::Checkable) ||
             this->hasOperate(OperateType::Clickable)) {
             this->_actions.insert(ActionType::CLICK);

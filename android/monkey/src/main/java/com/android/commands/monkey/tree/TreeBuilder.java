@@ -4,6 +4,7 @@
 
 package com.android.commands.monkey.tree;
 
+import android.graphics.Bitmap;
 import android.graphics.Rect;
 import android.util.Xml;
 import android.view.accessibility.AccessibilityNodeInfo;
@@ -125,6 +126,7 @@ public class TreeBuilder {
     private static final String ATTR_LONG_CLICKABLE = "lclk";
     private static final String ATTR_PASSWORD = "pwd";
     private static final String ATTR_SELECTED = "sel";
+    private static final String ATTR_SCROLL_TYPE = "st";
 
     /** Max depth for XML/binary dump to avoid stack overflow and huge output. */
     private static final int MAX_TREE_DEPTH = 25;
@@ -165,12 +167,98 @@ public class TreeBuilder {
         return sb.toString();
     }
 
+    private static boolean hasVisibleChild(AccessibilityNodeInfo node) {
+        int count = node.getChildCount();
+        for (int i = 0; i < count; i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                try {
+                    if (child.isVisibleToUser()) {
+                        return true;
+                    }
+                } finally {
+                    child.recycle();
+                }
+            }
+        }
+        return false;
+    }
+
+    private static String getScrollType(AccessibilityNodeInfo node) {
+        if (!node.isScrollable()) {
+            return "none";
+        }
+        String cls = safeCharSeqToString(node.getClassName());
+        if ("android.widget.ScrollView".equals(cls) || "android.widget.ListView".equals(cls)
+                || "android.widget.ExpandableListView".equals(cls)
+                || "android.support.v17.leanback.widget.VerticalGridView".equals(cls)
+                || "android.support.v7.widget.RecyclerView".equals(cls)
+                || "androidx.recyclerview.widget.RecyclerView".equals(cls)) {
+            return "vertical";
+        }
+        if ("android.widget.HorizontalScrollView".equals(cls)
+                || "android.support.v17.leanback.widget.HorizontalGridView".equals(cls)
+                || "android.support.v4.view.ViewPager".equals(cls)) {
+            return "horizontal";
+        }
+        return "all";
+    }
+
+    private static byte getScrollTypeCode(AccessibilityNodeInfo node) {
+        String st = getScrollType(node);
+        if ("horizontal".equals(st)) return 1;
+        if ("vertical".equals(st)) return 2;
+        if ("none".equals(st)) return 3;
+        return 0;
+    }
+
+    private static String computeImageTextIfNeeded(AccessibilityNodeInfo node, Rect bounds, Bitmap image) {
+        if (image == null || node == null || bounds == null || bounds.isEmpty()) {
+            return null;
+        }
+        if (!(node.isClickable() || node.isLongClickable() || node.isCheckable() || node.isScrollable())) {
+            return null;
+        }
+        if (safeCharSeqToString(node.getText()).length() > 0
+                || safeCharSeqToString(node.getContentDescription()).length() > 0) {
+            return null;
+        }
+        String cls = safeCharSeqToString(node.getClassName());
+        if (!cls.contains("ImageButton") && !cls.contains("ImageView")) {
+            return null;
+        }
+        if (hasVisibleChild(node)) {
+            return null;
+        }
+        int left = bounds.left;
+        int top = bounds.top;
+        int width = bounds.right - bounds.left;
+        int height = bounds.bottom - bounds.top;
+        if (left < 0 || top < 0 || width < 2 || height < 2
+                || left + width > image.getWidth() || top + height > image.getHeight()) {
+            return null;
+        }
+        int stepX = Math.max(1, width / 16);
+        int stepY = Math.max(1, height / 16);
+        int hash = 17;
+        for (int y = top; y < top + height; y += stepY) {
+            for (int x = left; x < left + width; x += stepX) {
+                hash = hash * 31 + image.getPixel(x, y);
+            }
+        }
+        return String.format("#img%x", hash);
+    }
+
     // copy from AccessibilityNodeInfoDumper
     private static void dumpNodeRec(AccessibilityNodeInfo node, XmlSerializer serializer, int index,
-                                    int depth)  throws IOException {
+                                    int depth, Bitmap image) throws IOException {
         serializer.startTag("", "node");
         serializer.attribute("", ATTR_INDEX, indexToString(index));
-        serializer.attribute("", ATTR_TEXT, safeCharSeqToString(node.getText()));
+        Rect xmlRect = sXmlDumpRect.get();
+        getVisibleBoundsInScreen(node, xmlRect);
+        String text = safeCharSeqToString(node.getText());
+        String imageText = computeImageTextIfNeeded(node, xmlRect, image);
+        serializer.attribute("", ATTR_TEXT, imageText != null ? imageText : text);
         serializer.attribute("", ATTR_RESOURCE_ID, safeCharSeqToString(node.getViewIdResourceName()));
         serializer.attribute("", ATTR_CLASS, safeCharSeqToString(node.getClassName()));
         serializer.attribute("", ATTR_PACKAGE, safeCharSeqToString(node.getPackageName()));
@@ -185,8 +273,7 @@ public class TreeBuilder {
         serializer.attribute("", ATTR_LONG_CLICKABLE, node.isLongClickable() ? VAL_TRUE : VAL_FALSE);
         serializer.attribute("", ATTR_PASSWORD, node.isPassword() ? VAL_TRUE : VAL_FALSE);
         serializer.attribute("", ATTR_SELECTED, node.isSelected() ? VAL_TRUE : VAL_FALSE);
-        Rect xmlRect = sXmlDumpRect.get();
-        getVisibleBoundsInScreen(node, xmlRect);
+        serializer.attribute("", ATTR_SCROLL_TYPE, getScrollType(node));
         serializer.attribute("", ATTR_BOUNDS, boundsToShortString(xmlRect));
 
         depth += 1;
@@ -194,9 +281,14 @@ public class TreeBuilder {
             int count = node.getChildCount();
             for (int i = 0; i < count; i++) {
                 AccessibilityNodeInfo child = node.getChild(i);
-                if (child != null && child.isVisibleToUser()) {
-                    dumpNodeRec(child, serializer, i, depth);
-                    child.recycle();
+                if (child != null) {
+                    try {
+                        if (child.isVisibleToUser()) {
+                            dumpNodeRec(child, serializer, i, depth, image);
+                        }
+                    } finally {
+                        child.recycle();
+                    }
                 }
             }
         }
@@ -232,6 +324,7 @@ public class TreeBuilder {
         serializer.attribute("", ATTR_LONG_CLICKABLE, getAttr(node, ATTR_LONG_CLICKABLE, "long-clickable"));
         serializer.attribute("", ATTR_PASSWORD, getAttr(node, ATTR_PASSWORD, "password"));
         serializer.attribute("", ATTR_SELECTED, getAttr(node, ATTR_SELECTED, "selected"));
+        serializer.attribute("", ATTR_SCROLL_TYPE, getAttr(node, ATTR_SCROLL_TYPE, "scroll-type"));
         serializer.attribute("", ATTR_BOUNDS, getAttr(node, ATTR_BOUNDS, "bounds"));
 
 
@@ -252,9 +345,9 @@ public class TreeBuilder {
     }
 
     // Binary format for C++ createFromBinary (SECURITY_AND_OPTIMIZATION §7 opt1). Little-endian.
-    private static final byte[] BINARY_MAGIC = {'F', 'B', 0, 1};
+    private static final byte[] BINARY_MAGIC = {'F', 'B', 0, 2};
     private static final int TAG_TEXT = 0, TAG_RID = 1, TAG_CLASS = 2, TAG_PKG = 3, TAG_CD = 4;
-    private static final int MIN_NODE_BYTES = 4 + 16 + 2 + 2 + 1 + 2; // magic + bounds + index + flags + numStrings + numChildren
+    private static final int MIN_NODE_BYTES = 16 + 2 + 2 + 1 + 1 + 2; // bounds + index + flags + scrollType + numStrings + numChildren
     private static final byte[] EMPTY_BYTES = new byte[0];  // PERFORMANCE_OPTIMIZATION_ITEMS §3.5: avoid "".getBytes() per node
 
     /**
@@ -266,15 +359,19 @@ public class TreeBuilder {
      * @return bytes written, or -1 if buffer too small
      */
     public static int dumpToBinary(AccessibilityNodeInfo rootInfo, ByteBuffer buffer) {
+        return dumpToBinary(rootInfo, buffer, null);
+    }
+
+    public static int dumpToBinary(AccessibilityNodeInfo rootInfo, ByteBuffer buffer, Bitmap image) {
         if (rootInfo == null || buffer == null || !buffer.isDirect()) return -1;
-        buffer = buffer.order(ByteOrder.LITTLE_ENDIAN);
+        buffer.order(ByteOrder.LITTLE_ENDIAN);
         if (buffer.remaining() < BINARY_MAGIC.length) return -1;
         buffer.put(BINARY_MAGIC);
-        if (dumpNodeRecBinary(rootInfo, buffer, 0, 1) < 0) return -1;
+        if (dumpNodeRecBinary(rootInfo, buffer, 0, 1, image) < 0) return -1;
         return buffer.position();
     }
 
-    private static int dumpNodeRecBinary(AccessibilityNodeInfo node, ByteBuffer buf, int index, int depth) {
+    private static int dumpNodeRecBinary(AccessibilityNodeInfo node, ByteBuffer buf, int index, int depth, Bitmap image) {
         if (depth > MAX_TREE_DEPTH || buf.remaining() < MIN_NODE_BYTES) return -1;
         Rect r = sBinaryDumpRect.get();
         getVisibleBoundsInScreen(node, r);
@@ -293,7 +390,10 @@ public class TreeBuilder {
         if (node.isPassword()) flags |= 256;
         if (node.isSelected()) flags |= 512;
         buf.putShort((short) flags);
-        byte[] text = toUtf8Bytes(safeCharSeqToString(node.getText()));
+        buf.put(getScrollTypeCode(node));
+        String textString = safeCharSeqToString(node.getText());
+        String imageText = computeImageTextIfNeeded(node, r, image);
+        byte[] text = toUtf8Bytes(imageText != null ? imageText : textString);
         byte[] rid = toUtf8Bytes(safeCharSeqToString(node.getViewIdResourceName()));
         byte[] clazz = toUtf8Bytes(safeCharSeqToString(node.getClassName()));
         byte[] pkg = toUtf8Bytes(safeCharSeqToString(node.getPackageName()));
@@ -318,7 +418,7 @@ public class TreeBuilder {
             if (child != null) {
                 try {
                     if (child.isVisibleToUser()) {
-                        if (dumpNodeRecBinary(child, buf, written, depth + 1) < 0) return -1;
+                        if (dumpNodeRecBinary(child, buf, written, depth + 1, image) < 0) return -1;
                         written++;
                     }
                 } finally {
@@ -340,6 +440,10 @@ public class TreeBuilder {
     private static final int XML_WRITER_INITIAL_CAPACITY = 256 * 1024;  // PERFORMANCE_OPTIMIZATION_ITEMS §2.3: reduce resize
 
     public static String dumpDocumentStrWithOutTree(AccessibilityNodeInfo rootInfo) {
+        return dumpDocumentStrWithOutTree(rootInfo, null);
+    }
+
+    public static String dumpDocumentStrWithOutTree(AccessibilityNodeInfo rootInfo, Bitmap image) {
         String result = "";
         try {
             StringWriter textWriter = new StringWriter(XML_WRITER_INITIAL_CAPACITY);
@@ -350,7 +454,7 @@ public class TreeBuilder {
             serializer.setFeature("http://xmlpull.org/v1/doc/features.html#indent-output", false);
 
             int depth = 1;
-            dumpNodeRec(rootInfo, serializer, 0, depth);
+            dumpNodeRec(rootInfo, serializer, 0, depth, image);
             serializer.endDocument();
             result = textWriter.toString();
         } catch (IllegalArgumentException | IOException | IllegalStateException e) {
