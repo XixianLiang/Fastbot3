@@ -130,15 +130,12 @@ namespace fastbotx {
         /** When true, graph logic may collapse transitions by identical StateKey (max.apeGraphDedupByStateKey). */
         bool useApeGraphDedupByStateKey() const;
 
-        /**
-         * Greedy naming lattice steps in Model::buildApeStateKeyFromElementTree (0 = off).
-         * max.config: max.apeNamingFixedPointSteps=N (capped, e.g. 256).
-         */
+        /** Native APE parity keeps StateKey-time naming fixed-point refinement disabled. */
         int getApeNamingFixedPointMaxIter() const { return _apeNamingFixedPointMaxIter; }
 
         /**
          * When false, Model skips periodic aming refinement (non-determinism-driven refine batch).
-         * Use with max.apeNamingFixedPointSteps to avoid double refinement. Default true.
+         * Default true.
          * max.config: max.apeNamingPeriodicRefinement=true|false
          */
         bool useApeNamingPeriodicRefinement() const { return _apeNamingPeriodicRefinement; }

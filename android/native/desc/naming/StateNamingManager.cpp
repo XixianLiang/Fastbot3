@@ -896,7 +896,7 @@ namespace {
         return n;
     }
 
-    /** `treeToNaming` then `batchRefineWithRebuildFixedPoint`; persists the result under `activity_key`. */
+    /** `treeToNaming` plus optional fixed-point refinement for explicit callers; normal StateKey builds keep this disabled. */
     NamingPtr StateNamingManager::getNamingFixedPoint(const std::string &activity_key, gui_tree::GUITree &tree,
                                                       const std::shared_ptr<gui_tree::XPathNodeMapper> &dom,
                                                       int max_iter) {

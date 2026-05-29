@@ -74,7 +74,7 @@ namespace naming {
         }
     };
 
-    /** Counters for `treeToNaming` / fixed-point failures (rebuild, hash, cycles). */
+    /** Counters for `treeToNaming` and explicit fixed-point callers (rebuild, hash, cycles). */
     struct StateNamingTreeWalkDiagStats {
         uint64_t tree_to_naming_dom_entries{0};
         uint64_t tree_to_naming_rebuild_failed{0};
@@ -94,7 +94,7 @@ namespace naming {
 
     /**
      * Owns activity-scoped naming roots and maps `(source naming, state key)` to successor namings after
-     * refine/abstract updates. Exposes `treeToNaming` walks and bitmask fixed-point refinement.
+     * refine/abstract updates. StateKey builds use `treeToNaming`; fixed-point refinement is explicit-only.
      */
     class StateNamingManager {
     public:
@@ -141,9 +141,8 @@ namespace naming {
         NamingPtr getNamingFixedPoint(const std::string &activity_key, const gui_tree::GUITree &tree, int max_iter);
 
         /**
-         * Bitmask refinement with rebuild after each step: refineNaming → rebuildTree → compare StateKey::hash();
-         * stops when refineNaming has no step, or StateKey unchanged (fixed point), or max_iter steps.
-         * Persists result in ActivityNamingManager.
+         * Explicit bitmask refinement with rebuild after each step. Normal StateKey construction keeps
+         * max_iter at zero for APE parity; callers that pass a positive max_iter opt into this behavior.
          */
         NamingPtr getNamingFixedPoint(const std::string &activity_key, gui_tree::GUITree &tree,
                                       const std::shared_ptr<gui_tree::XPathNodeMapper> &dom, int max_iter);

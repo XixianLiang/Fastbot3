@@ -106,7 +106,7 @@ namespace {
         return __builtin_popcount(x);
     }
 
-    /** Builds the `v3|…` content key from ordered namelets and namer dimension masks. */
+    /** Builds the `v4|…` content key from ordered namelets, parent links, and namer dimension masks. */
     std::string computeFingerprintString(
         const std::vector<std::shared_ptr<Namelet>> &namelets) {
         auto appendHex32 = [](std::string &dst, uint32_t v) {
@@ -115,11 +115,22 @@ namespace {
                 dst.push_back(kHex[(v >> shift) & 0xF]);
             }
         };
+        auto parentIndex = [&](const std::shared_ptr<Namelet> &parent) -> int {
+            if (!parent) {
+                return -1;
+            }
+            for (size_t i = 0; i < namelets.size(); ++i) {
+                if (namelets[i].get() == parent.get()) {
+                    return static_cast<int>(i);
+                }
+            }
+            return -1;
+        };
         // Order-sensitive fingerprint for naming identity and blacklist keys—do not sort namelets.
-        // Printable `v3|…` format for stable logging and persistence.
+        // Printable `v4|…` format for stable logging and persistence.
         std::string out;
         out.reserve(namelets.size() * 48);
-        out.append("v3");
+        out.append("v4");
         for (size_t idx = 0; idx < namelets.size(); ++idx) {
             const auto &nl = namelets[idx];
             if (!nl) {
@@ -134,6 +145,10 @@ namespace {
             out.append(nl->getExprString());
             out.push_back('#');
             appendHex32(out, nl->getNamer().typeDimensionMask());
+            out.append("@d");
+            out.append(std::to_string(nl->getDepth()));
+            out.append("p");
+            out.append(std::to_string(parentIndex(nl->getParent())));
         }
         return out;
     }

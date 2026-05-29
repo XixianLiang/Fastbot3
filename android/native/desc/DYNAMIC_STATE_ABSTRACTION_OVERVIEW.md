@@ -124,13 +124,14 @@ StateKey = (activityKey, namingFingerprint, sorted(widgetXPath[]))
 它在代码里是这样构造的（实现：`android/native/desc/naming/Naming.cpp` 的 `computeFingerprintString(...)`）：
 
 ```text
-out = "v3"
+out = "v4"
 for (i, Namelet nl) in enumerate(naming.namelets) in order:
   out += "|" + to_string(i) + ":" + (isBase(nl) ? "B" : "R") + ":" + nl.expr_str + "#" + hex32(nl.namer.typeDimensionMask)
+  out += "@d" + nl.depth + "p" + parent_index(nl.parent)
 fingerprint = out
 ```
 
-注意：**v3** 格式为可打印字符串（无 `\x1e` 等控制字符）；**不会**对 namelet 排序；顺序由 `i:` 与向量下标一致；`B`/`R` 区分 base/refine namelet。
+注意：**v4** 格式为可打印字符串（无 `\x1e` 等控制字符）；**不会**对 namelet 排序；顺序由 `i:` 与向量下标一致；`B`/`R` 区分 base/refine namelet，`@d...p...` 区分 refinement tree 中的父子结构。
 
 ##### 一个示例（形状示意）
 
@@ -142,7 +143,7 @@ fingerprint = out
 那么 fingerprint 大致长这样（省略 bit 的具体数字，只展示结构；顺序与 `namelets` 向量一致）：
 
 ```text
-v3|0:B://*[@clickable='true']#<hex mask>|1:B://*[@clickable='false']#<hex mask>
+v4|0:B://*[@clickable='true']#<hex mask>@d0p-1|1:B://*[@clickable='false']#<hex mask>@d0p-1
 ```
 （`#` 后为 8 位十六进制 `typeDimensionMask`；示例省略具体 hex。）
 

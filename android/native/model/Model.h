@@ -32,6 +32,7 @@
 #endif
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
 #include <deque>
+#include <list>
 #include "../desc/gui_tree/GUITree.h"
 #endif
 
@@ -836,7 +837,7 @@ namespace gui_tree {
         /// Correctness counters (debug/telemetry).
         ApeCorrectnessCounters _ape_correctness_counters{};
 
-        /// Naming manager wrapper + optional getNamingFixedPoint(actionRefinement on same dom).
+        /// Naming manager wrapper. StateKey construction follows registered naming edges only; refinements are evidence-driven.
         std::shared_ptr<naming::StateNamingManager> _apeStateNamingManager;
 
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
@@ -869,6 +870,8 @@ namespace gui_tree {
         std::unordered_set<uintptr_t> _apeRefineActionIdentityBlacklist;
         /// actionRefinementBlacklist during preEvolveModel over-abstracted phase.
         std::unordered_set<uint64_t> _apeOverAbstractedPreEvolveActionBlacklist;
+        /// Stable negative cache for failed over-abstracted pre-evolve refinement attempts.
+        std::unordered_set<std::string> _apeOverAbstractedPreEvolveNegativeCache;
         /// AssertActionDivergent2 predicates persisted after successful action-refinement.
         std::unordered_map<std::string, std::vector<ApeActionDivergentPredicate>>
             _apeActionRefinementPredicates;
@@ -884,9 +887,22 @@ namespace gui_tree {
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
         /** State tree history: capped deque of immutable GUITree clones per concrete state hash. */
         static constexpr size_t kMaxApeGuiTreeSnapshotsPerState = 64;
+        /**
+         * Cap on the number of distinct state hashes that retain GUITree snapshots. Without this
+         * the map grows unbounded as new states are discovered, which is a primary source of the
+         * gradual rpc-cost / memory growth (worse on low-end devices). Least-recently-written
+         * states are evicted; evicted states transparently fall back to rebuilding from cached XML,
+         * so dynamic-abstraction correctness is preserved.
+         */
+        static constexpr size_t kMaxApeGuiTreeSnapshotStates = 512;
         std::unordered_map<uintptr_t, std::deque<gui_tree::GUITreePtr>> _apeGuiTreeSnapshotsByStateHash;
+        /** LRU order of state hashes present in `_apeGuiTreeSnapshotsByStateHash` (front = oldest). */
+        std::list<uintptr_t> _apeGuiTreeSnapshotLru;
+        std::unordered_map<uintptr_t, std::list<uintptr_t>::iterator> _apeGuiTreeSnapshotLruIter;
         void apeRememberGuiTreeSnapshot(uintptr_t stateHash, const gui_tree::GUITree &tree);
         gui_tree::GUITreePtr apeLatestGuiTreeSnapshot(uintptr_t stateHash) const;
+        /** Drops a state hash from the snapshot cache + LRU bookkeeping (releasing tree caches). */
+        void apeForgetGuiTreeSnapshots(uintptr_t stateHash);
         /** Prefer snapshot whose cached XML equals `xml` (transition-tree consistency). */
         gui_tree::GUITreePtr apeGuiTreeSnapshotForExactCachedXml(const std::string &xml) const;
 #endif

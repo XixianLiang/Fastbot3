@@ -986,6 +986,25 @@ bool apeStateHashFromXmlWithTwoNamings(const std::string &activity, const std::s
     }
     *outHash1 = 0;
     *outHash2 = 0;
+    // Single XML parse + two rebuilds. NamingFactory::rebuildTree recomputes all naming-derived state
+    // from the immutable tree structure + DOM (evaluateNaming does not read prior per-node names; it
+    // overwrites them via setCurrentNaming), so rebuilding the same tree under naming1 then naming2
+    // yields hashes identical to two independent parses — the same idempotent-rebuild contract the
+    // fixed-point path already relies on — while parsing the XML only once. This halves the cost of
+    // the per-refine remap loop, which calls this for every cached state of the activity.
+    gui_tree::GUITreeBuildResult built;
+    if (apeGuitreeFromXmlWithNamingRebuilt(activity, xml, naming1, &built, preferGuiSnapshot) &&
+        built.tree && built.dom) {
+        *outHash1 = naming::StateKey::hashFromGUITree(*built.tree);
+        if (safeRebuildTree(naming2, *built.tree, built.dom, "state_check")) {
+            *outHash2 = naming::StateKey::hashFromGUITree(*built.tree);
+            return true;
+        }
+    }
+    // Fallback to two independent parses if the shared-tree path could not produce both hashes
+    // (initial build failed, or the second rebuild hit non-determinism). Preserves legacy semantics.
+    *outHash1 = 0;
+    *outHash2 = 0;
     const bool ok1 =
         apeStateHashFromXmlWithNaming(activity, xml, naming1, outHash1, 0, nullptr, preferGuiSnapshot);
     const bool ok2 =
@@ -1006,8 +1025,9 @@ void apeStateKeyPairFromXmlCoarsenPath(const std::string &activity, const std::s
     }
     *tgtKeyHash = 0;
     *prevKeyHash = 0;
-    (void)apeStateHashFromXmlWithNaming(activity, xml, namingCur, tgtKeyHash);
-    (void)apeStateHashFromXmlWithNaming(activity, xml, namingPrev, prevKeyHash);
+    // One XML parse + two rebuilds (with two-parse fallback inside the helper). Best-effort: ignore
+    // the return and keep whatever hashes were produced, matching the previous behavior.
+    (void)apeStateHashFromXmlWithTwoNamings(activity, xml, namingCur, tgtKeyHash, namingPrev, prevKeyHash);
 }
 
 /** @brief Upper bound on distinct state hashes allowed when evaluating a refinement candidate (depends on naming fineness). */
@@ -2160,7 +2180,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 05182133, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 05290754, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -2404,12 +2424,14 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         }
         std::string activityStr = activityPtr ? *activityPtr : "";
         WidgetKeyMask mask = getActivityKeyMask(activityStr);
-        const std::string &xmlForLog = element->toXMLCached();
-        const uint64_t xmlSigForLog = hashStringForLog(xmlForLog);
         StatePtr state = StateFactory::createState(agent->getAlgorithmType(), activityPtr, element, mask);
         static std::atomic<uint64_t> g_build_state_only{0};
         const uint64_t n = ++g_build_state_only;
         if (state && (n <= 20 || (n % 400) == 0)) {
+            // Compute log-only XML signature inside the sampling gate so the per-step path does not
+            // hash the entire serialized tree for a line that fires ~1/400 steps.
+            const std::string &xmlForLog = element->toXMLCached();
+            const uint64_t xmlSigForLog = hashStringForLog(xmlForLog);
             BLOG("naming state build: buildStateOnly source activity=%s seq=%" PRIu64
                  " elementPtr=%p xmlSig=%" PRIu64 " xmlLen=%zu %s",
                  activityStr.c_str(), n, element.get(), xmlSigForLog, xmlForLog.size(),
@@ -2731,8 +2753,14 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     _apeStateElementByStateHash[sh] = element;
                 }
                 apeMiniHistoryTouchState(actKeyCanonical, sh);
+                // Batched eviction: rebuilding `protectedHashes` from all mini-history and evicting
+                // on every step (once over the cap) is per-step overhead that grows with the number
+                // of tracked activities. Instead let the cache grow to a high watermark, then sweep
+                // down to the target in one pass, amortizing the scan over many steps. The cache is
+                // best-effort (XML is rebuilt on miss), so the looser bound is correctness-neutral.
                 constexpr size_t kMaxApeXmlCache = 2048;
-                if (_apeStateXmlByStateHash.size() > kMaxApeXmlCache) {
+                constexpr size_t kApeXmlCacheHighWater = kMaxApeXmlCache + 256;
+                if (_apeStateXmlByStateHash.size() > kApeXmlCacheHighWater) {
                     // Q8 (local rebuild): protect mini-history referenced XML from cache eviction.
                     std::unordered_set<uintptr_t> protectedHashes;
                     protectedHashes.reserve(128);
@@ -2848,6 +2876,11 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             }
         }
         double buildStateEndTimestamp = currentStamp();
+        double evolveCostMs = 0.0;
+        double evolveUnderPreMs = 0.0;
+        double evolveOverMs = 0.0;
+        double evolveUnderPostMs = 0.0;
+        double evolveRecordMs = 0.0;
         bool fromLlm = (_llmTaskAgent && _llmTaskAgent->inSession());
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         auto runApeUnderAbstractedStateCheck = [&](const char *coarsenPhase) -> size_t {
@@ -2949,16 +2982,79 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             return rollbackCount;
         };
 
+        struct ApeUnderPostSkipSnapshot {
+            std::string namingFp;
+            uint64_t lastRefineSeedSeq{0};
+            uintptr_t triggerSourceKeyHash{0};
+            size_t old2newSize{0};
+            size_t oldObsSize{0};
+            size_t oldObsTotal{0};
+        };
+        auto captureUnderPostSkipSnapshot = [&]() -> ApeUnderPostSkipSnapshot {
+            ApeUnderPostSkipSnapshot snap;
+            const std::string actKey = naming::StateKey::canonicalActivityString(activity);
+            if (_apeStateNamingManager) {
+                naming::NamingPtr cur = _apeStateNamingManager->activityManager().getNaming(actKey);
+                if (cur) {
+                    snap.namingFp = cur->fingerprintString();
+                }
+            }
+            auto itCtx = _apeNamingContext.find(actKey);
+            if (itCtx != _apeNamingContext.end()) {
+                const ApeNamingAbstractionContext &ctx = itCtx->second;
+                snap.lastRefineSeedSeq = ctx.lastRefineSeedSeq;
+                snap.triggerSourceKeyHash = ctx.triggerSourceKeyHash;
+                snap.old2newSize = ctx.oldKeyHashToNewKeyHashes.size();
+                snap.oldObsSize = ctx.oldKeyHashToObservationCount.size();
+                for (const auto &p : ctx.oldKeyHashToObservationCount) {
+                    snap.oldObsTotal += p.second;
+                }
+            }
+            return snap;
+        };
+        auto sameUnderPostSkipSnapshot = [](const ApeUnderPostSkipSnapshot &a,
+                                            const ApeUnderPostSkipSnapshot &b) -> bool {
+            return a.namingFp == b.namingFp &&
+                   a.lastRefineSeedSeq == b.lastRefineSeedSeq &&
+                   a.triggerSourceKeyHash == b.triggerSourceKeyHash &&
+                   a.old2newSize == b.old2newSize &&
+                   a.oldObsSize == b.oldObsSize &&
+                   a.oldObsTotal == b.oldObsTotal;
+        };
+
+        double evolvePhaseStart = currentStamp();
         const size_t underRollbacksPre = runApeUnderAbstractedStateCheck("pre_over_evolve");
+        evolveUnderPreMs = currentStamp() - evolvePhaseStart;
+        const ApeUnderPostSkipSnapshot underPostBeforeOver = captureUnderPostSkipSnapshot();
+
+        evolvePhaseStart = currentStamp();
         const size_t overRefinements =
             (_preference && _preference->useApeEvolveModel()) ? runApeOverAbstractedPreEvolvePhase(activity, state)
                                                              : static_cast<size_t>(0);
-        const size_t underRollbacksPost = runApeUnderAbstractedStateCheck("post_over_evolve");
+        evolveOverMs = currentStamp() - evolvePhaseStart;
+
+        size_t underRollbacksPost = 0;
+        const ApeUnderPostSkipSnapshot underPostAfterOver = captureUnderPostSkipSnapshot();
+        const bool skipUnderPost =
+            underRollbacksPre == 0 && overRefinements == 0 &&
+            sameUnderPostSkipSnapshot(underPostBeforeOver, underPostAfterOver);
+        if (skipUnderPost) {
+            BDLOG("naming: under-abstracted-check phase=post_over_evolve activity=%s "
+                  "rollbacks=0 changed=0 skipped=no_evolve_context_delta",
+                  activity.c_str());
+        } else {
+            evolvePhaseStart = currentStamp();
+            underRollbacksPost = runApeUnderAbstractedStateCheck("post_over_evolve");
+            evolveUnderPostMs = currentStamp() - evolvePhaseStart;
+        }
 
         if (state) {
             state->visit(this->_graph->getTimestamp());
         }
+        evolvePhaseStart = currentStamp();
         recordTransition(agent, state);
+        evolveRecordMs = currentStamp() - evolvePhaseStart;
+        evolveCostMs = evolveUnderPreMs + evolveOverMs + evolveUnderPostMs + evolveRecordMs;
         BDLOG("naming: evolve-step activity=%s underRollbacks_pre=%zu overRefine=%zu underRollbacks_post=%zu",
               activity.c_str(), underRollbacksPre, overRefinements, underRollbacksPost);
         if (state && state->getVisitedCount() == 0) {
@@ -3046,13 +3142,25 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         double totalCostMs = methodEndTimestamp - methodStartTimestamp;
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
         if (state && state->usesDynamicAbstractionIdentityHash()) {
-            BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms dims=[Ape abstraction]",
+            BLOG("build state cost: %.3fms evolve cost: %.3fms (under_pre=%.3f over=%.3f under_post=%.3f record=%.3f) "
+                 "action cost: %.3fms total cost: %.3fms dims=[Ape abstraction]",
                  buildStateCostMs,
+                 evolveCostMs,
+                 evolveUnderPreMs,
+                 evolveOverMs,
+                 evolveUnderPostMs,
+                 evolveRecordMs,
                  actionCostMs,
                  totalCostMs);
         } else {
-            BLOG("build state cost: %.3fms action cost: %.3fms total cost: %.3fms dims=[%s]",
+            BLOG("build state cost: %.3fms evolve cost: %.3fms (under_pre=%.3f over=%.3f under_post=%.3f record=%.3f) "
+                 "action cost: %.3fms total cost: %.3fms dims=[%s]",
                  buildStateCostMs,
+                 evolveCostMs,
+                 evolveUnderPreMs,
+                 evolveOverMs,
+                 evolveUnderPostMs,
+                 evolveRecordMs,
                  actionCostMs,
                  totalCostMs,
                  maskToDimensionString(getActivityKeyMask(activity)).c_str());
@@ -3219,6 +3327,68 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     pruneDivergentApeStatesForActivity(actKey);
                 }
 
+                auto makeOverRefineNegativeKey = [&]() -> std::string {
+                    uintptr_t storedStateKeyHash = 0;
+                    if (!tryGetApeStateKeyHash(state->hash(), &storedStateKeyHash, actKey) ||
+                        storedStateKeyHash == 0) {
+                        storedStateKeyHash = state->hash();
+                    }
+                    std::vector<uintptr_t> mergedHashes;
+                    mergedHashes.reserve(mergedConcretes.size());
+                    for (const WidgetPtr &w : mergedConcretes) {
+                        if (w) {
+                            mergedHashes.push_back(w->hash());
+                        }
+                    }
+                    std::sort(mergedHashes.begin(), mergedHashes.end());
+
+                    std::string key;
+                    key.reserve(256 + mergedHashes.size() * 24);
+                    key.append(actKey);
+                    key.push_back('|');
+                    key.append(cur ? cur->fingerprintString() : std::string("-"));
+                    key.push_back('|');
+                    key.append(std::to_string(static_cast<unsigned long long>(storedStateKeyHash)));
+                    key.push_back('|');
+                    key.append(std::to_string(static_cast<unsigned long long>(asa->hash())));
+                    key.push_back('|');
+                    key.append(std::to_string(static_cast<unsigned long long>(tw->hash())));
+                    if (auto ana = std::dynamic_pointer_cast<ActivityNameAction>(asa)) {
+                        key.push_back('|');
+                        key.append(std::to_string(static_cast<unsigned long long>(
+                            ana->getApeDynamicTargetFullPathHash())));
+                    }
+                    key.push_back('|');
+                    key.append(std::to_string(static_cast<unsigned long long>(mergedHashes.size())));
+                    for (uintptr_t h : mergedHashes) {
+                        key.push_back(',');
+                        key.append(std::to_string(static_cast<unsigned long long>(h)));
+                    }
+                    return key;
+                };
+                const std::string overNegativeKey = makeOverRefineNegativeKey();
+                if (_apeOverAbstractedPreEvolveNegativeCache.count(overNegativeKey) != 0) {
+                    BDLOG("naming: skip pre-evolve refine activity=%s reason=negative_cache "
+                          "stateHash=%lu actionHash=%lu targetHash=%lu merged=%zu",
+                          actKey.c_str(), static_cast<unsigned long>(state->hash()),
+                          static_cast<unsigned long>(asa->hash()), static_cast<unsigned long>(tw->hash()),
+                          mergedConcretes.size());
+                    return false;
+                }
+                auto rememberOverNegative = [&](const char *reason) {
+                    constexpr size_t kMaxOverNegativeCache = 4096;
+                    if (_apeOverAbstractedPreEvolveNegativeCache.size() > kMaxOverNegativeCache) {
+                        _apeOverAbstractedPreEvolveNegativeCache.clear();
+                    }
+                    _apeOverAbstractedPreEvolveNegativeCache.insert(overNegativeKey);
+                    BDLOG("naming: pre-evolve refine negative-cache activity=%s reason=%s "
+                          "stateHash=%lu actionHash=%lu targetHash=%lu merged=%zu cacheSize=%zu",
+                          actKey.c_str(), reason ? reason : "unknown",
+                          static_cast<unsigned long>(state->hash()),
+                          static_cast<unsigned long>(asa->hash()), static_cast<unsigned long>(tw->hash()),
+                          mergedConcretes.size(), _apeOverAbstractedPreEvolveNegativeCache.size());
+                };
+
                 std::string pkg;
                 std::string cls;
                 naming::StateKey::splitActivityPackageClass(activity, &pkg, &cls);
@@ -3238,6 +3408,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 const naming::StateKey skProbe = naming::StateKey::fromGUITree(*builtProbe.tree);
                 if (maxInitial > 0 &&
                     static_cast<int>(skProbe.sortedXPaths().size()) > maxInitial) {
+                    rememberOverNegative("max_initial_names");
                     return false;
                 }
 
@@ -3249,6 +3420,9 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                                                        &targetXPathName, &targetNameNamer,
                                                        apeVisitSnapPtr) ||
                     !targetNameNamer) {
+                    if (apeVisitSnapPtr && *apeVisitSnapPtr) {
+                        rememberOverNegative("target_name_unresolved");
+                    }
                     return false;
                 }
 
@@ -3257,16 +3431,21 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 if (!apeResolveParentNameletAndWidgetXPath(activity, cur, targetXPathName, targetNameNamer,
                                                            screenXml, screenXml, &pIdx, &wxp,
                                                            apeVisitSnapPtr, apeVisitSnapPtr)) {
+                    if (apeVisitSnapPtr && *apeVisitSnapPtr) {
+                        rememberOverNegative("parent_namelet_unresolved");
+                    }
                     return false;
                 }
 
                 if (pIdx >= cur->getNamelets().size()) {
+                    rememberOverNegative("parent_index_out_of_range");
                     return false;
                 }
 
                 naming::NameletPtr anchorNL = cur->getNamelets()[pIdx];
                 naming::NamerPtr curNam = anchorNL ? anchorNL->getNamerPtr() : nullptr;
                 if (!anchorNL || !curNam) {
+                    rememberOverNegative("anchor_namer_missing");
                     return false;
                 }
 
@@ -3332,6 +3511,8 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
 #endif
 
                     bool rejectRefineCandidate = false;
+                    bool directChild = false;
+                    bool siblingReplace = false;
                     {
                         const naming::NamingPtr oldN = cur;
                         const naming::NamingPtr newN = child;
@@ -3340,6 +3521,8 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                         const int direct_child = (oldN && newPar && newPar == oldN) ? 1 : 0;
                         const int sibling_share_parent =
                             (oldPar && newPar && oldPar == newPar) ? 1 : 0;
+                        directChild = direct_child != 0;
+                        siblingReplace = sibling_share_parent != 0;
                         static std::atomic<uint64_t> g_updateNaming_refine_entry_diag{0};
                         const uint64_t ud = ++g_updateNaming_refine_entry_diag;
                         if (ud <= 80 || direct_child == 0) {
@@ -3356,7 +3539,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                                 oldN ? oldN->getFineness() : -1, newN ? newN->getFineness() : -1,
                                 oldFp.c_str(), newFp.c_str());
                         }
-                        if (direct_child == 0 && candidate_source == "extendUnderNamelet") {
+                        if (!directChild && !siblingReplace) {
                             static std::atomic<uint64_t> g_extend_parent_mismatch_diag{0};
                             const uint64_t md = ++g_extend_parent_mismatch_diag;
                             BLOG("naming diag [Model.extendUnderNamelet-parentMismatch] seq=%llu act=%s "
@@ -3381,10 +3564,108 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     if (rejectRefineCandidate) {
                         return false;
                     }
-                    _apeStateNamingManager->updateNaming(actKey, naming::NamingUpdateKind::Refine,
-                                                         std::move(child));
+                    const naming::NamingUpdateKind updateKind =
+                        siblingReplace ? naming::NamingUpdateKind::Abstract : naming::NamingUpdateKind::Refine;
+                    _apeStateNamingManager->updateNamingWithStateKey(actKey, updateKind, cur, child, skProbe);
+                    naming::NamingPtr storedAfter = _apeStateNamingManager->getNamingForActivity(actKey);
+                    if (!storedAfter || storedAfter->fingerprintString() != child->fingerprintString()) {
+                        BDLOG("naming: pre-evolve refine rejected by StateNamingManager activity=%s "
+                              "updateKind=%s directChild=%d siblingReplace=%d",
+                              actKey.c_str(),
+                              updateKind == naming::NamingUpdateKind::Refine ? "Refine" : "Abstract",
+                              directChild ? 1 : 0, siblingReplace ? 1 : 0);
+                        rememberOverNegative("state_naming_rejected");
+                        return false;
+                    }
+
+                    ApeNamingAbstractionContext &ctx = _apeNamingContext[actKey];
+                    ctx.previousNamingBeforeRefine = cur;
+                    ctx.previousNamingFingerprintBeforeRefine = fpCur;
+                    ctx.oldKeyHashToNewKeyHashes.clear();
+                    ctx.oldKeyHashToObservationCount.clear();
+                    ctx.stateCountAtLastNamingRefinement =
+                        getApeStateCountByActivityAndNamingFingerprint(actKey, fpCur);
+                    ctx.nonDetPairsAtLastNamingRefinement = 0;
+                    ctx.triggerSourceKeyHash = skProbe.hash();
+                    ctx.triggerSourceKeyHashOriginal = skProbe.hash();
+                    ctx.triggerSourceKeyHashUsed = skProbe.hash();
+                    ctx.triggerSourceKeyExact = true;
+                    ctx.triggerSourceKey = skProbe;
+                    ctx.triggerActionHash = asa->hash();
+                    ctx.triggerTargetKeyHashes.clear();
+                    ctx.triggerTargetCountAtRefine = mergedConcretes.size();
+                    {
+                        static std::atomic<uint64_t> g_pre_evolve_seed_seq{0};
+                        ctx.lastRefineSeedSeq = ++g_pre_evolve_seed_seq;
+                        ctx.lastRefineSeedTriggerHash = ctx.triggerSourceKeyHash;
+                    }
+
+                    std::unordered_set<uintptr_t> focusOldKeyHashes;
+                    focusOldKeyHashes.insert(ctx.triggerSourceKeyHash);
+#if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
+                    // Candidate-set narrowing: instead of recomputing two StateKeys for EVERY cached
+                    // state of the activity (O(cachedStates) tree builds per refine), only test the
+                    // concrete source states actually associated with the trigger source key. The
+                    // trigger's stored (current-naming) key hash is the trigger state's identity hash;
+                    // every concrete source state that shares it is recorded in the transition log /
+                    // evidence pools, so gather candidates from there (plus the trigger state itself).
+                    // Each candidate is still verified via the XML recompute (oldH == trigger), so no
+                    // false positives are introduced — we only skip states that cannot be the trigger
+                    // source under the current naming.
+                    uintptr_t storedTriggerKeyHash = 0;
+                    if (!tryGetApeStateKeyHash(state->hash(), &storedTriggerKeyHash, actKey) ||
+                        storedTriggerKeyHash == 0) {
+                        storedTriggerKeyHash = state->hash();
+                    }
+                    std::unordered_set<uintptr_t> candidateSourceStateHashes;
+                    candidateSourceStateHashes.reserve(32);
+                    candidateSourceStateHashes.insert(state->hash());
+                    for (const auto &te : _apeTransitionLog) {
+                        if (te.valid && te.sourceActivity == actKey &&
+                            te.sourceKeyHash == storedTriggerKeyHash && te.sourceStateHash != 0) {
+                            candidateSourceStateHashes.insert(te.sourceStateHash);
+                        }
+                    }
+                    for (const auto &poolKv : _apeEvidencePools) {
+                        if (poolKv.first.sourceKeyHash != storedTriggerKeyHash) {
+                            continue;
+                        }
+                        poolKv.second.forEach([&](const ApeEvidenceSample &s) {
+                            if (s.sourceStateHash != 0) {
+                                candidateSourceStateHashes.insert(s.sourceStateHash);
+                            }
+                        });
+                    }
+                    BDLOG("naming: pre-evolve refine remap candidates activity=%s candidates=%zu "
+                          "cachedStates=%zu storedTrigger=%lu",
+                          actKey.c_str(), candidateSourceStateHashes.size(),
+                          _apeStateXmlByStateHash.size(),
+                          static_cast<unsigned long>(storedTriggerKeyHash));
+                    for (uintptr_t sh : candidateSourceStateHashes) {
+                        auto itXml = _apeStateXmlByStateHash.find(sh);
+                        if (itXml == _apeStateXmlByStateHash.end() || itXml->second.empty()) {
+                            continue;
+                        }
+                        const std::string &xml = itXml->second;
+                        naming::StateKey storedKey = naming::StateKey::fromParts("", nullptr, {});
+                        if (!tryGetApeStateKey(sh, &storedKey, actKey) || storedKey.activity() != actKey) {
+                            continue;
+                        }
+                        uintptr_t oldH = 0;
+                        uintptr_t newH = 0;
+                        gui_tree::GUITreePtr snapForRemap = apeLatestGuiTreeSnapshot(sh);
+                        const gui_tree::GUITreePtr *snapForRemapPtr = snapForRemap ? &snapForRemap : nullptr;
+                        if (apeStateHashFromXmlWithTwoNamings(activity, xml, cur, &oldH, child, &newH,
+                                                              snapForRemapPtr) &&
+                            oldH == ctx.triggerSourceKeyHash && newH != 0 && oldH != newH) {
+                            ctx.oldKeyHashToNewKeyHashes[oldH].insert(newH);
+                            ctx.oldKeyHashToObservationCount[oldH]++;
+                        }
+                    }
+#endif
+                    remapApeTransitionAggregationForActivity(activity, cur, child, &focusOldKeyHashes);
                     invalidateApeGraphStateKeyDedupMap();
-                    pruneDivergentApeStatesForActivity(actKey);
+                    pruneStaleApeStatesForActivity(actKey, fpCur, nullptr);
                     notifyAgentsOfApeNamingChange();
                     return true;
                 };
@@ -3450,6 +3731,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                 }
 
                 _apeOverAbstractedPreEvolveActionBlacklist.insert(blkKey);
+                rememberOverNegative("no_accepted_candidate");
                 return false;
             };
 
@@ -3764,11 +4046,14 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         treeSlot.valid = true;
 #if defined(FASTBOT_HAS_PUGIXML) && FASTBOT_HAS_PUGIXML && DYNAMIC_STATE_ABSTRACTION_ENABLED
         if (snapSrcLive) {
+            // Source tree must be an independent immutable copy: some consumers rebuild snapshots
+            // in place (buildGuitreeFromSnapshotObjectOrCachedXml), so sharing the deque pointer
+            // would corrupt the logged tree. apeSourceGuiTree is read back during replay/refine.
             treeSlot.apeSourceGuiTree = gui_tree::GUITree::cloneDeep(*snapSrcLive);
         }
-        if (gui_tree::GUITreePtr snapTgt = apeLatestGuiTreeSnapshot(tgt->hash())) {
-            treeSlot.apeTargetGuiTree = gui_tree::GUITree::cloneDeep(*snapTgt);
-        }
+        // Note: apeTargetGuiTree was previously deep-cloned here every transition but is never
+        // read anywhere, so the clone is pure per-step cost with no consumer. Dropped for
+        // performance; behavior is unchanged because no code path consumes the target tree.
 #endif
         if (treeSlot.resolvedNodeStableIds.empty()) {
             BDLOG("naming: transition record resolvedNodes_empty seq=%llu activity=%s "
@@ -4615,6 +4900,48 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
             }
             dq.pop_front();
         }
+
+        // Touch LRU: move this state hash to the most-recently-written position.
+        auto itPos = _apeGuiTreeSnapshotLruIter.find(stateHash);
+        if (itPos != _apeGuiTreeSnapshotLruIter.end()) {
+            _apeGuiTreeSnapshotLru.erase(itPos->second);
+        }
+        _apeGuiTreeSnapshotLru.push_back(stateHash);
+        auto lruBack = _apeGuiTreeSnapshotLru.end();
+        --lruBack;
+        _apeGuiTreeSnapshotLruIter[stateHash] = lruBack;
+
+        // Bound the number of distinct states that retain snapshots. Evict the oldest (never the
+        // entry we just wrote). Evicted states rebuild from cached XML on demand, so correctness is
+        // unaffected; only the snapshot fast-path is lost for cold states.
+        while (_apeGuiTreeSnapshotsByStateHash.size() > kMaxApeGuiTreeSnapshotStates &&
+               !_apeGuiTreeSnapshotLru.empty()) {
+            const uintptr_t victim = _apeGuiTreeSnapshotLru.front();
+            if (victim == stateHash) {
+                break;
+            }
+            apeForgetGuiTreeSnapshots(victim);
+        }
+    }
+
+    /** @brief Drops a state hash from the snapshot cache + LRU bookkeeping (releasing tree caches). */
+    void Model::apeForgetGuiTreeSnapshots(uintptr_t stateHash) {
+        auto itSnap = _apeGuiTreeSnapshotsByStateHash.find(stateHash);
+        if (itSnap != _apeGuiTreeSnapshotsByStateHash.end()) {
+            if (_apeStateNamingManager) {
+                for (const auto &snap : itSnap->second) {
+                    if (snap) {
+                        _apeStateNamingManager->releaseTreeCache(*snap);
+                    }
+                }
+            }
+            _apeGuiTreeSnapshotsByStateHash.erase(itSnap);
+        }
+        auto itPos = _apeGuiTreeSnapshotLruIter.find(stateHash);
+        if (itPos != _apeGuiTreeSnapshotLruIter.end()) {
+            _apeGuiTreeSnapshotLru.erase(itPos->second);
+            _apeGuiTreeSnapshotLruIter.erase(itPos);
+        }
     }
 
     /** @brief Returns the most recently cached GUI tree for a state hash, if any. */
@@ -4707,15 +5034,7 @@ namespace {
                 _apeStateXmlByStateHash.erase(sh);
             }
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
-            auto itSnap = _apeGuiTreeSnapshotsByStateHash.find(sh);
-            if (itSnap != _apeGuiTreeSnapshotsByStateHash.end() && _apeStateNamingManager) {
-                for (const auto &snap : itSnap->second) {
-                    if (snap) {
-                        _apeStateNamingManager->releaseTreeCache(*snap);
-                    }
-                }
-            }
-            _apeGuiTreeSnapshotsByStateHash.erase(sh);
+            apeForgetGuiTreeSnapshots(sh);
 #endif
 #endif
             _apeGuiTreeNamingBlacklist.erase(sh);
@@ -8364,9 +8683,9 @@ namespace {
             return fail(ApeStateKeyBuildFailReason::BuildTreeOrDomFailed);
         }
         naming::ActivityNamingManager &mgr = _apeStateNamingManager->activityManager();
-        const int fpSteps = (_preference && wantApeRlIdentity)
-                                ? _preference->getApeNamingFixedPointMaxIter()
-                                : 0;
+        // APE selects a Naming by following previously registered StateKey edges only.
+        // Do not refine during StateKey construction; refinement must be evidence-driven.
+        const int fpSteps = 0;
         naming::NamingPtr naming;
         if (fpSteps > 0) {
             naming::NamingPtr beforeNaming = mgr.getNaming(actKey);
@@ -8556,7 +8875,16 @@ namespace {
 #endif
         if (naming && built.tree) {
             const std::string &xmlForCompare = xmlSnapshotRef();
-            if (!xmlForCompare.empty()) {
+            // Element-vs-XML alignment is a pure diagnostic: outKey (kNew) below always derives
+            // from built.tree (the Element path), so this comparison never affects state identity.
+            // Recomputing the StateKey from XML on every step doubles per-step naming/XPath work
+            // (a primary driver of rpc-cost growth on low-end devices), so only run it on sampled
+            // steps. Correctness of the dynamic abstraction is unchanged because the sampled path
+            // does not feed any persistent state.
+            static std::atomic<uint64_t> g_ape_hash_align_seq{0};
+            const uint64_t alignSeq = ++g_ape_hash_align_seq;
+            const bool runAlignmentProbe = (alignSeq <= 120 || (alignSeq % 500) == 0);
+            if (runAlignmentProbe && !xmlForCompare.empty()) {
                 const uintptr_t elementPathHash = naming::StateKey::hashFromGUITree(*built.tree);
                 uintptr_t xmlPathHash = 0;
                 int hasCmpSnap = 0;
@@ -8574,12 +8902,9 @@ namespace {
                 const bool haveXmlPathHash =
                     apeStateHashFromXmlWithNaming(activity, xmlForCompare, naming, &xmlPathHash);
 #endif
-                // Low-frequency alignment probe: report element/xml hash pair even when equal,
-                // so we can compute mismatch rate from logs instead of only seeing failures.
-                static std::atomic<uint64_t> g_ape_hash_align_seq{0};
-                const uint64_t alignSeq = ++g_ape_hash_align_seq;
-                if (haveXmlPathHash && elementPathHash != 0 && xmlPathHash != 0 &&
-                    (alignSeq <= 120 || (alignSeq % 500) == 0)) {
+                // Report element/xml hash pair even when equal, so we can compute mismatch rate
+                // from logs instead of only seeing failures.
+                if (haveXmlPathHash && elementPathHash != 0 && xmlPathHash != 0) {
                     const uintptr_t stateHashForAlign =
                         (stateForDynamicApply && stateForDynamicApply->hash() != 0)
                             ? stateForDynamicApply->hash()

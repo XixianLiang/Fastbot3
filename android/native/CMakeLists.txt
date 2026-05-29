@@ -157,6 +157,19 @@ if (FASTBOT_HAS_PUGIXML)
     target_compile_definitions(fastbot_native PRIVATE FASTBOT_HAS_PUGIXML=1)
 endif()
 
+# Verbose per-step BDLOG debug logging (dynamic-abstraction "naming:" diagnostics, etc.).
+# OFF by default: BDLOG is compiled to a no-op so it costs nothing in hot paths (logcat write +
+# argument string building were a primary source of step-time growth on low-end devices). Enable
+# with -DFASTBOT_NATIVE_VERBOSE_LOG=ON when debugging the naming algorithm. BLOG/BDLOGE (important /
+# error logs) are always on.
+option(FASTBOT_NATIVE_VERBOSE_LOG "Enable verbose BDLOG debug logging (per-step; perf cost)" OFF)
+if (FASTBOT_NATIVE_VERBOSE_LOG)
+    target_compile_definitions(fastbot_native PRIVATE FASTBOT_NATIVE_VERBOSE_LOG=1)
+    message(STATUS "FASTBOT_NATIVE_VERBOSE_LOG: enabled (verbose BDLOG hot-path logging ON)")
+else()
+    message(STATUS "FASTBOT_NATIVE_VERBOSE_LOG: disabled (BDLOG compiled out for performance)")
+endif()
+
 # Optional: APE StateKey sidecar in Model (Element::toXML → GUITreeFactory + StateKey::fromGUITree); costs extra XML parse per step.
 option(FASTBOTX_APE_NATIVE_RECORD "Record APE StateKey via GUITreeFactory (requires pugixml.cpp)" OFF)
 if (FASTBOTX_APE_NATIVE_RECORD)

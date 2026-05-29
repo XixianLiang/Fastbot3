@@ -59,13 +59,21 @@ inline const char *getLogTimeStr() {
 #define ACTIVITY_VC_STR "ViewController"
 #endif
 
-//#if _DEBUG_
+// BDLOG is verbose per-step / per-transition debug logging (esp. the dynamic-abstraction "naming:"
+// diagnostics). Each call writes to logcat AND eagerly builds its arguments (summarize*/fingerprint
+// strings), so leaving it always-on is a major hot-path cost on low-end devices. It is compiled out
+// by default; define FASTBOT_NATIVE_VERBOSE_LOG=1 (CMake: -DFASTBOT_NATIVE_VERBOSE_LOG=ON) to restore
+// full verbose logging when debugging the naming algorithm. The disabled form keeps every argument
+// type-checked and "used" (no -Wunused churn) via a dead `if (false)` branch, but never evaluates
+// the arguments at runtime, so there is zero per-step cost and no behavior change (log args are
+// side-effect free).
+#if defined(FASTBOT_NATIVE_VERBOSE_LOG) && FASTBOT_NATIVE_VERBOSE_LOG
 #define BDLOG(fmt, ...)   LOGD(fmt,##__VA_ARGS__)
+#else
+#define BDLOG(fmt, ...)   do { if (false) { LOGD(fmt, ##__VA_ARGS__); } } while (0)
+#endif
+// Error-level debug log stays on: errors are rare and worth keeping in production.
 #define BDLOGE(fmt, ...)  LOGE(fmt,##__VA_ARGS__)
-//#else
-//#define BDLOGE(...)
-//#define BDLOG(...)
-//#endif
 
 #define BLOG(fmt, ...)    LOGI(fmt,##__VA_ARGS__)
 #define BLOGE(fmt, ...)   LOGE(fmt,##__VA_ARGS__)
@@ -175,7 +183,7 @@ inline void logLongStringInfo(const std::string& longStr) {
 // Set to 1 to enable detailed line-by-line XML logging (for debugging)
 // Set to 0 to disable (default) for better performance on large dumps
 #ifndef FASTBOT_LOG_RAW_GUITREE
-#define FASTBOT_LOG_RAW_GUITREE 1
+#define FASTBOT_LOG_RAW_GUITREE 0
 #endif
 
 // Performance optimization: Control xpath matching detailed logging

@@ -44,7 +44,7 @@ namespace naming {
 
         const std::string &activity() const { return activity_; }
 
-        /** Stable v3 serialization of namelets (order, base/refine, expr, hex mask); used with StateKey hash. */
+        /** Stable v4 serialization of namelets (order, parent/depth, base/refine, expr, hex mask). */
         const std::string &namingFingerprint() const { return naming_fingerprint_; }
 
         /** Sorted Name::toXPath() tokens (multiset of abstract widgets). */
