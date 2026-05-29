@@ -1017,9 +1017,10 @@ bool apeStateHashFromXmlWithTwoNamings(const std::string &activity, const std::s
  * Prefer one XML parse + two rebuilds; if that fails (e.g. second rebuildTree fails), fall back to two full
  * parses so partial success and triggerSource==0 mapping fallback (prevKeyHash -> storedKey) match legacy.
  */
-void apeStateKeyPairFromXmlCoarsenPath(const std::string &activity, const std::string &xml,
-                                       const fastbotx::naming::NamingPtr &namingCur, uintptr_t *tgtKeyHash,
-                                       const fastbotx::naming::NamingPtr &namingPrev, uintptr_t *prevKeyHash) {
+[[maybe_unused]] void apeStateKeyPairFromXmlCoarsenPath(
+    const std::string &activity, const std::string &xml,
+    const fastbotx::naming::NamingPtr &namingCur, uintptr_t *tgtKeyHash,
+    const fastbotx::naming::NamingPtr &namingPrev, uintptr_t *prevKeyHash) {
     if (!tgtKeyHash || !prevKeyHash || xml.empty() || !namingCur || !namingPrev) {
         return;
     }
@@ -1067,8 +1068,8 @@ void collectNamingSubtreeFingerprintsImpl(
 }
 
 /** Collect naming fingerprints for `root` and every descendant refinement naming (compare to graph “all states”). */
-void collectNamingSubtreeFingerprints(const fastbotx::naming::NamingPtr &root,
-                                      std::unordered_set<std::string> *out) {
+[[maybe_unused]] void collectNamingSubtreeFingerprints(const fastbotx::naming::NamingPtr &root,
+                                                       std::unordered_set<std::string> *out) {
     if (!root || !out) {
         return;
     }
@@ -2180,7 +2181,7 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code verison: 05290754, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code verison: 05291617, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -3747,11 +3748,28 @@ void fireGraphVisitStateTransitionIfModelAction(const GraphPtr &graph,
                     acts.push_back(asa);
                 }
 
-                std::sort(acts.begin(), acts.end(),
-                          [&](const ActivityStateActionPtr &a, const ActivityStateActionPtr &b) {
-                              return apeCollectResolvedNodeStableIds(state, a) <
-                                     apeCollectResolvedNodeStableIds(state, b);
-                          });
+                // APE parity (checkAndRefineOverAbstractedState): sort the targeted actions by their
+                // resolved-node ordering exactly once. APE sorts using each action's cached
+                // getResolvedNodes(); recomputing apeCollectResolvedNodeStableIds inside the
+                // std::sort comparator instead re-resolves every target O(n log n) times per pass,
+                // and this pass itself runs up to 32 times per step — a major per-step cost on
+                // homogeneous list pages. Decorate-sort-undecorate computes each key a single time.
+                {
+                    std::vector<std::pair<std::vector<int>, ActivityStateActionPtr>> decorated;
+                    decorated.reserve(acts.size());
+                    for (const auto &asa : acts) {
+                        decorated.emplace_back(apeCollectResolvedNodeStableIds(state, asa), asa);
+                    }
+                    std::sort(decorated.begin(), decorated.end(),
+                              [](const std::pair<std::vector<int>, ActivityStateActionPtr> &a,
+                                 const std::pair<std::vector<int>, ActivityStateActionPtr> &b) {
+                                  return a.first < b.first;
+                              });
+                    acts.clear();
+                    for (auto &d : decorated) {
+                        acts.push_back(std::move(d.second));
+                    }
+                }
 
                 std::unordered_set<uintptr_t> seenTargetH;
                 for (const auto &asa : acts) {
@@ -8090,7 +8108,6 @@ namespace {
                   fineness);
             return false;
         }
-        bool namingIndexWarmedThisCall = false;
         std::unordered_set<uintptr_t> totalNewKeys;
         for (const auto &p : ctx.oldKeyHashToNewKeyHashes) {
             totalNewKeys.insert(p.second.begin(), p.second.end());
@@ -8151,80 +8168,22 @@ namespace {
                 continue;
             }
             {
-                std::unordered_set<std::string> subtreeFingerprints;
-                collectNamingSubtreeFingerprints(tn, &subtreeFingerprints);
-                std::vector<StatePtr> indexedCandidates;
-                if (_graph) {
-                    _graph->apeCollectStatesByNamingFingerprints(subtreeFingerprints,
-                                                                 &indexedCandidates);
-                    if (indexedCandidates.empty() && _graph->stateSize() > 0 &&
-                        !namingIndexWarmedThisCall) {
-                        warmApeNamingGraphIndex();
-                        namingIndexWarmedThisCall = true;
-                        _graph->apeCollectStatesByNamingFingerprints(subtreeFingerprints,
-                                                                     &indexedCandidates);
-                    }
+                // APE parity (batchAbstract): read the affected-states / refined-targets counts for
+                // the trigger source from the incrementally-maintained, in-memory naming accounting
+                // (ctx.oldKeyHashToObservationCount / ctx.oldKeyHashToNewKeyHashes), which is seeded
+                // during refine and updated on every recordTransition. APE never rescans the model;
+                // it operates on the in-memory GUITree/State graph indexed by naming. The previous
+                // dynamic path re-derived these counts by scanning the naming index (and falling
+                // back to the FULL graph) and re-parsing every cached state's XML on every step,
+                // which made coarsen cost grow linearly with step count on homogeneous scrollable
+                // list pages. This now matches the non-dynamic build below exactly.
+                auto itFiltered = ctx.oldKeyHashToNewKeyHashes.find(triggerSource);
+                if (itFiltered != ctx.oldKeyHashToNewKeyHashes.end()) {
+                    auto itCnt = ctx.oldKeyHashToObservationCount.find(triggerSource);
+                    filteredAffected =
+                        (itCnt == ctx.oldKeyHashToObservationCount.end()) ? 0 : itCnt->second;
+                    filteredTargets = itFiltered->second.size();
                 }
-                const bool useNamingIndex = !indexedCandidates.empty();
-                std::unordered_set<uintptr_t> distinctTargetKeys;
-                auto considerState = [&](const StatePtr &sp) {
-                    if (!sp) {
-                        return;
-                    }
-                    auto apBa = sp->getActivityString();
-                    const std::string aBa = (apBa && apBa.get())
-                                                ? naming::StateKey::canonicalActivityString(*apBa)
-                                                : std::string();
-                    if (aBa != actKey) {
-                        return;
-                    }
-                    const uintptr_t ghBa = sp->hash();
-                    if (useNamingIndex) {
-                        naming::StateKey stateSk = naming::StateKey::fromParts("", nullptr, {});
-                        if (!tryGetApeStateKey(ghBa, &stateSk, actKey)) {
-                            return;
-                        }
-                        if (subtreeFingerprints.find(stateSk.namingFingerprint()) ==
-                            subtreeFingerprints.end()) {
-                            return;
-                        }
-                    }
-                    uintptr_t storedKeyH = 0;
-                    const bool haveStoredApeKey = tryGetApeStateKeyHash(ghBa, &storedKeyH, actKey);
-                    const uintptr_t khBa = haveStoredApeKey ? storedKeyH : ghBa;
-
-                    auto itXml = _apeStateXmlByStateHash.find(ghBa);
-                    const bool haveXml = (itXml != _apeStateXmlByStateHash.end() && !itXml->second.empty());
-                    if (!haveXml) {
-                        return;
-                    }
-                    uintptr_t tgtKeyHash = 0;
-                    uintptr_t oldH = 0;
-                    apeStateKeyPairFromXmlCoarsenPath(activity, itXml->second, tn,
-                                                      &tgtKeyHash, targetParentNaming, &oldH);
-
-                    const bool affectedBa = (oldH == triggerSource);
-
-                    if (affectedBa) {
-                        filteredAffected++;
-                        filteredAffectedStateHashes.insert(ghBa);
-                        if (tgtKeyHash != 0) {
-                            distinctTargetKeys.insert(tgtKeyHash);
-                        } else if (haveStoredApeKey) {
-                            distinctTargetKeys.insert(khBa);
-                        }
-                    }
-                };
-                if (useNamingIndex) {
-                    for (const auto &sp : indexedCandidates) {
-                        considerState(sp);
-                    }
-                } else {
-                    for (const auto &sp : getGraph()->getStates()) {
-                        considerState(sp);
-                    }
-                }
-                filteredTargets = distinctTargetKeys.size();
             }
 #else
             if (triggerSource == 0) {
