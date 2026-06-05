@@ -5,6 +5,7 @@
  * @authors Jianqiang Guo, Yuhui Su
  */
 #include "fastbot_native.h"
+#include "PerfMonitor.h"
 #include "Model.h"
 #include "Element.h"
 #include "DeviceOperateWrapper.h"
@@ -268,6 +269,7 @@ void JNICALL Java_com_bytedance_fastbot_AiClient_initAgentNative(JNIEnv *env, jo
     auto agentPointer = _fastbot_model->addAgent("", algorithmType,
                                                  (fastbotx::DeviceType) deviceType);
 
+    fastbotx::PerfMonitor::start();
     BLOG("init agent with type %d, %s,  %d", agentType, packageNameCString, deviceType);
     // Reuse model is supported by DoubleSarsaAgent and SarsaAgent.
     if (algorithmType == fastbotx::AlgorithmType::DoubleSarsa) {
@@ -397,6 +399,7 @@ jdouble JNICALL Java_com_bytedance_fastbot_AiClient_getLlmdroidCoverageMetricNat
 
 // Save reuse model when test ends normally (Agent destructor is not called because _fastbot_model is static).
 void JNICALL Java_com_bytedance_fastbot_AiClient_saveReuseModelNative(JNIEnv *, jobject) {
+    fastbotx::PerfMonitor::stop();
     if (nullptr == _fastbot_model) return;
     auto agent = _fastbot_model->getAgent("");
     if (!agent) return;
