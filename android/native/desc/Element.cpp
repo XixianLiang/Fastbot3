@@ -18,6 +18,64 @@
 
 namespace fastbotx {
 
+    static bool isEditTextClassName(const std::string &cls) {
+        const char *p = cls.c_str();
+        const size_t len = cls.size();
+        return (len == 23 && std::strcmp(p, "android.widget.EditText") == 0) ||
+               (len == 42 && std::strcmp(p, "android.inputmethodservice.ExtractEditText") == 0) ||
+               (len == 35 && std::strcmp(p, "android.widget.AutoCompleteTextView") == 0) ||
+               (len == 42 && std::strcmp(p, "android.widget.MultiAutoCompleteTextView") == 0);
+    }
+
+    static std::string removeDoubleQuotes(const std::string &input) {
+        if (input.find('"') == std::string::npos) {
+            return input;
+        }
+        std::string out;
+        out.reserve(input.size());
+        for (char c : input) {
+            if (c != '"') {
+                out.push_back(c);
+            }
+        }
+        return out;
+    }
+
+    static std::string truncateUtf8Codepoints(const std::string &input, size_t maxCodepoints) {
+        if (input.empty() || maxCodepoints == 0) {
+            return std::string();
+        }
+        size_t i = 0;
+        size_t codepoints = 0;
+        while (i < input.size() && codepoints < maxCodepoints) {
+            const unsigned char c = static_cast<unsigned char>(input[i]);
+            size_t step = 1;
+            if ((c & 0x80u) == 0x00u) {
+                step = 1;
+            } else if ((c & 0xe0u) == 0xc0u) {
+                step = 2;
+            } else if ((c & 0xf0u) == 0xe0u) {
+                step = 3;
+            } else if ((c & 0xf8u) == 0xf0u) {
+                step = 4;
+            }
+            if (i + step > input.size()) {
+                step = 1;
+            }
+            i += step;
+            ++codepoints;
+        }
+        return input.substr(0, i);
+    }
+
+    static std::string normalizeTextForGuitree(const std::string &input) {
+        return truncateUtf8Codepoints(removeDoubleQuotes(input), 8);
+    }
+
+    static std::string normalizeContentDescForGuitree(const std::string &input) {
+        return removeDoubleQuotes(input);
+    }
+
     /// Parse one integer (optional '-', then digits) and advance p past it. Used for bounds "[xl,yl][xr,yr]".
     static int parseIntAndAdvance(const char *&p) {
         bool neg = (*p == '-');
@@ -66,6 +124,48 @@ namespace fastbotx {
         if (node->QueryBoolAttribute(shortName, &out) == tinyxml2::XML_SUCCESS) return true;
         if (node->QueryBoolAttribute(longName, &out) == tinyxml2::XML_SUCCESS) return true;
         return false;
+    }
+
+    static const char *rawStringAttr(const tinyxml2::XMLElement *node, const char *shortName, const char *longName) {
+        const char *out = node->Attribute(shortName);
+        if (out) return out;
+        return node->Attribute(longName);
+    }
+
+    static bool asciiEqualsIgnoreCase(const char *value, const char *literal) {
+        if (!value || !literal) {
+            return false;
+        }
+        while (*value && *literal) {
+            char v = *value++;
+            char l = *literal++;
+            if (v >= 'A' && v <= 'Z') v = static_cast<char>(v + 32);
+            if (l >= 'A' && l <= 'Z') l = static_cast<char>(l + 32);
+            if (v != l) {
+                return false;
+            }
+        }
+        return *value == *literal;
+    }
+
+    static bool hasElementChild(const tinyxml2::XMLElement *node) {
+        return node && node->FirstChildElement() != nullptr;
+    }
+
+    static bool xmlChildExcludedByGuitreeRules(const tinyxml2::XMLElement *node) {
+        if (!node) {
+            return true;
+        }
+        bool visibleToUser = true;
+        if (queryBoolAttr(node, "vu", "visible-to-user", visibleToUser) && !visibleToUser) {
+            return true;
+        }
+        const char *visibility = rawStringAttr(node, "vis", "visibility");
+        if (asciiEqualsIgnoreCase(visibility, "gone") || asciiEqualsIgnoreCase(visibility, "invisible")) {
+            return true;
+        }
+        const char *bounds = rawStringAttr(node, "bnd", "bounds");
+        return bounds && bounds[0] == '\0' && !hasElementChild(node);
     }
 
     Element::Element()
@@ -398,6 +498,13 @@ namespace fastbotx {
             else if (tag == TAG_PKG) _packageName = std::move(s);
             else if (tag == TAG_CD) _contentDesc = std::move(s);
         }
+        _isEditable = isEditTextClassName(_classname);
+        if (_isEditable) {
+            _text.clear();
+        } else {
+            _text = normalizeTextForGuitree(_text);
+        }
+        _contentDesc = normalizeContentDescForGuitree(_contentDesc);
         uint16_t numChildren;
         if (!readBytes(buf, len, offset, &numChildren, 2)) return true;
         _children.reserve(numChildren > 32 ? 32 : numChildren);
@@ -407,7 +514,6 @@ namespace fastbotx {
             _children.push_back(child);
         }
         _childCount = static_cast<int>(_children.size());
-        _isEditable = (_classname == "android.widget.EditText");
         if (_isEditable) _longClickable = _clickable = _enabled = true;
         if (hasExplicitScrollType && explicitScrollType < static_cast<uint8_t>(ScrollType::ScrollTypeSize)) {
             _cachedScrollType = static_cast<ScrollType>(explicitScrollType);
@@ -490,7 +596,10 @@ namespace fastbotx {
         xml->SetAttribute("class", elm->getClassname().c_str());
         xml->SetAttribute("resource-id", elm->getResourceID().c_str());
         xml->SetAttribute("package", elm->getPackageName().c_str());
-        xml->SetAttribute("content-desc", elm->getContentDesc().c_str());
+        std::string text = elm->isEditText() ? std::string() : normalizeTextForGuitree(elm->getText());
+        std::string contentDesc = normalizeContentDescForGuitree(elm->getContentDesc());
+        xml->SetAttribute("text", text.c_str());
+        xml->SetAttribute("content-desc", contentDesc.c_str());
         xml->SetAttribute("checkable", elm->getCheckable() ? "true" : "false");
         xml->SetAttribute("checked", elm->_checked ? "true" : "false");
         xml->SetAttribute("clickable", elm->getClickable() ? "true" : "false");
@@ -574,6 +683,13 @@ namespace fastbotx {
         if (queryStringAttr(xmlNode, "pkg", "package", pkgname)) this->_packageName = std::string(pkgname);
         const char *content_desc = nullptr;
         if (queryStringAttr(xmlNode, "cd", "content-desc", content_desc)) this->_contentDesc = std::string(content_desc);
+        this->_isEditable = isEditTextClassName(this->_classname);
+        if (this->_isEditable) {
+            this->_text.clear();
+        } else {
+            this->_text = normalizeTextForGuitree(this->_text);
+        }
+        this->_contentDesc = normalizeContentDescForGuitree(this->_contentDesc);
         bool b = false;
         if (queryBoolAttr(xmlNode, "ck", "checkable", b)) this->_checkable = b;
         if (queryBoolAttr(xmlNode, "clk", "clickable", b)) { this->_clickable = b; if (b) _allClickableFalse = false; }
@@ -591,7 +707,6 @@ namespace fastbotx {
             this->_scrollTypeCached = true;
         }
 
-        this->_isEditable = "android.widget.EditText" == this->_classname;
         if (FORCE_EDITTEXT_CLICK_TRUE && this->_isEditable) {
             this->_longClickable = this->_clickable = this->_enabled = true;
         }
@@ -619,6 +734,9 @@ namespace fastbotx {
             const ElementPtr self = shared_from_this();
             for (const tinyxml2::XMLElement *childNode = xmlNode->FirstChildElement();
                  childNode != nullptr; childNode = childNode->NextSiblingElement()) {
+                if (xmlChildExcludedByGuitreeRules(childNode)) {
+                    continue;
+                }
                 ElementPtr childElement = std::make_shared<Element>();
                 this->_children.emplace_back(childElement);
                 childElement->fromXMLNode(childNode, self);

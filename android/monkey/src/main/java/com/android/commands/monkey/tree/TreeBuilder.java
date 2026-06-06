@@ -167,6 +167,33 @@ public class TreeBuilder {
         return sb.toString();
     }
 
+    private static String removeDoubleQuotes(String input) {
+        if (input == null || input.indexOf('"') < 0) {
+            return input == null ? "" : input;
+        }
+        StringBuilder out = new StringBuilder(input.length());
+        for (int i = 0; i < input.length(); i++) {
+            char ch = input.charAt(i);
+            if (ch != '"') {
+                out.append(ch);
+            }
+        }
+        return out.toString();
+    }
+
+    private static String normalizeTextForGuitree(String input) {
+        String text = removeDoubleQuotes(input);
+        int codePoints = text.codePointCount(0, text.length());
+        if (codePoints <= 8) {
+            return text;
+        }
+        return text.substring(0, text.offsetByCodePoints(0, 8));
+    }
+
+    private static String normalizeContentDescForGuitree(String input) {
+        return removeDoubleQuotes(input);
+    }
+
     private static boolean hasVisibleChild(AccessibilityNodeInfo node) {
         int count = node.getChildCount();
         for (int i = 0; i < count; i++) {
@@ -182,6 +209,13 @@ public class TreeBuilder {
             }
         }
         return false;
+    }
+
+    private static boolean shouldSkipChildNode(AccessibilityNodeInfo node, Rect bounds) {
+        if (node == null || !node.isVisibleToUser()) {
+            return true;
+        }
+        return bounds != null && bounds.isEmpty() && !hasVisibleChild(node);
     }
 
     private static String getScrollType(AccessibilityNodeInfo node) {
@@ -210,6 +244,30 @@ public class TreeBuilder {
         if ("vertical".equals(st)) return 2;
         if ("none".equals(st)) return 3;
         return 0;
+    }
+
+    private static boolean isEditTextClassName(String cls) {
+        return "android.widget.EditText".equals(cls)
+                || "android.inputmethodservice.ExtractEditText".equals(cls)
+                || "android.widget.AutoCompleteTextView".equals(cls)
+                || "android.widget.MultiAutoCompleteTextView".equals(cls);
+    }
+
+    private static boolean isEditableTextNode(AccessibilityNodeInfo node) {
+        if (node == null) {
+            return false;
+        }
+        if (node.isEditable()) {
+            return true;
+        }
+        return isEditTextClassName(safeCharSeqToString(node.getClassName()));
+    }
+
+    private static boolean isEditableTextElement(Element node) {
+        if (node == null) {
+            return false;
+        }
+        return isEditTextClassName(getAttr(node, ATTR_CLASS, "class"));
     }
 
     private static String computeImageTextIfNeeded(AccessibilityNodeInfo node, Rect bounds, Bitmap image) {
@@ -258,11 +316,12 @@ public class TreeBuilder {
         getVisibleBoundsInScreen(node, xmlRect);
         String text = safeCharSeqToString(node.getText());
         String imageText = computeImageTextIfNeeded(node, xmlRect, image);
-        serializer.attribute("", ATTR_TEXT, imageText != null ? imageText : text);
+        String exportText = isEditableTextNode(node) ? "" : (imageText != null ? imageText : normalizeTextForGuitree(text));
+        serializer.attribute("", ATTR_TEXT, exportText);
         serializer.attribute("", ATTR_RESOURCE_ID, safeCharSeqToString(node.getViewIdResourceName()));
         serializer.attribute("", ATTR_CLASS, safeCharSeqToString(node.getClassName()));
         serializer.attribute("", ATTR_PACKAGE, safeCharSeqToString(node.getPackageName()));
-        serializer.attribute("", ATTR_CONTENT_DESC, safeCharSeqToString(node.getContentDescription()));
+        serializer.attribute("", ATTR_CONTENT_DESC, normalizeContentDescForGuitree(safeCharSeqToString(node.getContentDescription())));
         serializer.attribute("", ATTR_CHECKABLE, node.isCheckable() ? VAL_TRUE : VAL_FALSE);
         serializer.attribute("", ATTR_CHECKED, node.isChecked() ? VAL_TRUE : VAL_FALSE);
         serializer.attribute("", ATTR_CLICKABLE, node.isClickable() ? VAL_TRUE : VAL_FALSE);
@@ -283,7 +342,9 @@ public class TreeBuilder {
                 AccessibilityNodeInfo child = node.getChild(i);
                 if (child != null) {
                     try {
-                        if (child.isVisibleToUser()) {
+                        Rect childRect = sXmlDumpRect.get();
+                        getVisibleBoundsInScreen(child, childRect);
+                        if (!shouldSkipChildNode(child, childRect)) {
                             dumpNodeRec(child, serializer, i, depth, image);
                         }
                     } finally {
@@ -306,14 +367,43 @@ public class TreeBuilder {
         return String.valueOf(fallbackIndex);
     }
 
+    private static boolean attrEqualsIgnoreCase(Element node, String shortName, String longName, String value) {
+        String attr = getAttr(node, shortName, longName);
+        return value.equalsIgnoreCase(attr);
+    }
+
+    private static boolean hasElementChild(Element node) {
+        NodeList childNodes = node.getChildNodes();
+        for (int i = 0; i < childNodes.getLength(); i++) {
+            if (childNodes.item(i).getNodeType() == Node.ELEMENT_NODE) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private static boolean isEmptyBoundsLeaf(Element node) {
+        boolean hasBounds = node.hasAttribute(ATTR_BOUNDS) || node.hasAttribute("bounds");
+        return hasBounds && getAttr(node, ATTR_BOUNDS, "bounds").isEmpty() && !hasElementChild(node);
+    }
+
+    private static boolean shouldSkipElement(Element node) {
+        if (attrEqualsIgnoreCase(node, "vu", "visible-to-user", "false")) {
+            return true;
+        }
+        return attrEqualsIgnoreCase(node, "vis", "visibility", "gone")
+                || attrEqualsIgnoreCase(node, "vis", "visibility", "invisible")
+                || isEmptyBoundsLeaf(node);
+    }
+
     private static void dumpNodeRec(Element node, XmlSerializer serializer, int index, int depth) throws IOException {
         serializer.startTag("", "node");
         serializer.attribute("", ATTR_INDEX, getIndexAttr(node, index));
-        serializer.attribute("", ATTR_TEXT, getAttr(node, ATTR_TEXT, "text"));
+        serializer.attribute("", ATTR_TEXT, isEditableTextElement(node) ? "" : normalizeTextForGuitree(getAttr(node, ATTR_TEXT, "text")));
         serializer.attribute("", ATTR_RESOURCE_ID, getAttr(node, ATTR_RESOURCE_ID, "resource-id"));
         serializer.attribute("", ATTR_CLASS, getAttr(node, ATTR_CLASS, "class"));
         serializer.attribute("", ATTR_PACKAGE, getAttr(node, ATTR_PACKAGE, "package"));
-        serializer.attribute("", ATTR_CONTENT_DESC, getAttr(node, ATTR_CONTENT_DESC, "content-desc"));
+        serializer.attribute("", ATTR_CONTENT_DESC, normalizeContentDescForGuitree(getAttr(node, ATTR_CONTENT_DESC, "content-desc")));
         serializer.attribute("", ATTR_CHECKABLE, getAttr(node, ATTR_CHECKABLE, "checkable"));
         serializer.attribute("", ATTR_CHECKED, getAttr(node, ATTR_CHECKED, "checked"));
         serializer.attribute("", ATTR_CLICKABLE, getAttr(node, ATTR_CLICKABLE, "clickable"));
@@ -336,7 +426,11 @@ public class TreeBuilder {
             for (int i = 0; i < childNodes.getLength(); i++) {
                 Node child = childNodes.item(i);
                 if (child.getNodeType() == Node.ELEMENT_NODE) {
-                    dumpNodeRec((Element) child, serializer, childElementIndex, depth);
+                    Element childElement = (Element) child;
+                    if (shouldSkipElement(childElement)) {
+                        continue;
+                    }
+                    dumpNodeRec(childElement, serializer, childElementIndex, depth);
                     childElementIndex++;
                 }
             }
@@ -393,11 +487,11 @@ public class TreeBuilder {
         buf.put(getScrollTypeCode(node));
         String textString = safeCharSeqToString(node.getText());
         String imageText = computeImageTextIfNeeded(node, r, image);
-        byte[] text = toUtf8Bytes(imageText != null ? imageText : textString);
+        byte[] text = toUtf8Bytes(isEditableTextNode(node) ? "" : (imageText != null ? imageText : normalizeTextForGuitree(textString)));
         byte[] rid = toUtf8Bytes(safeCharSeqToString(node.getViewIdResourceName()));
         byte[] clazz = toUtf8Bytes(safeCharSeqToString(node.getClassName()));
         byte[] pkg = toUtf8Bytes(safeCharSeqToString(node.getPackageName()));
-        byte[] cd = toUtf8Bytes(safeCharSeqToString(node.getContentDescription()));
+        byte[] cd = toUtf8Bytes(normalizeContentDescForGuitree(safeCharSeqToString(node.getContentDescription())));
         int numStrings = (text.length > 0 ? 1 : 0) + (rid.length > 0 ? 1 : 0) + (clazz.length > 0 ? 1 : 0) + (pkg.length > 0 ? 1 : 0) + (cd.length > 0 ? 1 : 0);
         int totalStringBytes = (text.length > 0 ? 3 + text.length : 0) + (rid.length > 0 ? 3 + rid.length : 0)
                 + (clazz.length > 0 ? 3 + clazz.length : 0) + (pkg.length > 0 ? 3 + pkg.length : 0) + (cd.length > 0 ? 3 + cd.length : 0);
@@ -417,7 +511,9 @@ public class TreeBuilder {
             AccessibilityNodeInfo child = node.getChild(i);
             if (child != null) {
                 try {
-                    if (child.isVisibleToUser()) {
+                    Rect childRect = sBinaryDumpRect.get();
+                    getVisibleBoundsInScreen(child, childRect);
+                    if (!shouldSkipChildNode(child, childRect)) {
                         if (dumpNodeRecBinary(child, buf, written, depth + 1, image) < 0) return -1;
                         written++;
                     }
