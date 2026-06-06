@@ -54,6 +54,12 @@ namespace fastbotx {
     }
 
     void Model::setActivityKeyMask(const std::string &activity, WidgetKeyMask mask) {
+#if DYNAMIC_STATE_ABSTRACTION_ENABLED
+        WidgetKeyMask oldMask = getActivityKeyMask(activity);
+        if (oldMask != mask) {
+            _activityAbstractionEpoch[activity]++;
+        }
+#endif
         _activityKeyMask[activity] = mask;
     }
 
@@ -135,7 +141,7 @@ namespace fastbotx {
         #define FASTBOT_VERSION __DATE__ " " __TIME__
     #endif
 #endif
-        BLOG("----Fastbot native code version: 06061453, build version: " FASTBOT_VERSION "----\n");
+        BLOG("----Fastbot native code version: 06061810, build version: " FASTBOT_VERSION "----\n");
         this->_graph = std::make_shared<Graph>();
         this->_preference = Preference::inst();
         this->_netActionParam.netActionTaskid = 0;
@@ -442,11 +448,8 @@ namespace fastbotx {
             double endGeneratingActionTimestamp = currentStamp();
             actionCost = endGeneratingActionTimestamp - startGeneratingActionTimestamp;
             
-            // moveForward is now called at the start of the next getOperateOpt (before addState),
-            // so (fromState, actionTaken, nextState) is correct for AIG/updateKnowledge.
-            if (state && action->isModelAct()) {
-                action->visit(this->_graph->getTimestamp());
-            }
+            // visit() is deferred until the next observed state, so resolveAt() uses the
+            // pre-execution count when rotating concrete targets under one abstract action.
         }
         
         return action;
@@ -556,6 +559,20 @@ namespace fastbotx {
             state = this->_graph->addState(state);
             state->visit(this->_graph->getTimestamp());
         }
+        // Count the previous step's model action only after observing the next state.
+        // This covers RL, xpath custom, and LLM-selected model actions while keeping
+        // resolveAt's visitedCount % concreteTargetCount aligned with actual execution.
+        if (state && agent) {
+            const std::string devKey = deviceID.empty() ? ModelConstants::DefaultDeviceID : deviceID;
+            auto pit = _pendingModelActionVisitByDevice.find(devKey);
+            if (pit != _pendingModelActionVisitByDevice.end()) {
+                ActionPtr pend = pit->second;
+                if (pend && pend->isModelAct()) {
+                    pend->visit(this->_graph->getTimestamp());
+                }
+                _pendingModelActionVisitByDevice.erase(pit);
+            }
+        }
         double buildStateEndTimestamp = currentStamp();
         bool fromLlm = (_llmTaskAgent && _llmTaskAgent->inSession());
 #if DYNAMIC_STATE_ABSTRACTION_ENABLED
@@ -638,6 +655,10 @@ namespace fastbotx {
             }
         }
 #endif
+        if (action && action->isModelAct()) {
+            const std::string devKey = deviceID.empty() ? ModelConstants::DefaultDeviceID : deviceID;
+            _pendingModelActionVisitByDevice[devKey] = action;
+        }
         return opt;
     }
 
@@ -655,11 +676,15 @@ namespace fastbotx {
             auto actPtr = srcState->getActivityString();
             e.sourceActivity = (actPtr && actPtr.get()) ? *actPtr : "";
         }
+        e.sourceMask = getActivityKeyMask(e.sourceActivity);
+        auto epochIt = _activityAbstractionEpoch.find(e.sourceActivity);
+        e.abstractionEpoch = epochIt != _activityAbstractionEpoch.end() ? epochIt->second : 0;
         e.valid = true;
         if (_transitionLog.empty()) return;
-        BDLOG("state abstraction: transition src=%lu act=%lu tgt=%lu activity=%s",
+        BDLOG("state abstraction: transition src=%lu act=%lu tgt=%lu activity=%s mask=%u epoch=%llu",
               (unsigned long)e.sourceStateHash, (unsigned long)e.actionHash, (unsigned long)e.targetStateHash,
-              e.sourceActivity.c_str());
+              e.sourceActivity.c_str(), (unsigned)e.sourceMask,
+              (unsigned long long)e.abstractionEpoch);
         _transitionLog[_transitionLogWriteIndex] = std::move(e);
         _transitionLogWriteIndex = (_transitionLogWriteIndex + 1) % _transitionLog.size();
     }
@@ -684,6 +709,10 @@ namespace fastbotx {
         std::map<Key, std::pair<std::unordered_set<uintptr_t>, std::string>> saToTargets;
         for (const auto &e : _transitionLog) {
             if (!e.valid) continue;
+            if (e.sourceMask != getActivityKeyMask(e.sourceActivity)) continue;
+            auto epochIt = _activityAbstractionEpoch.find(e.sourceActivity);
+            uint64_t currentEpoch = epochIt != _activityAbstractionEpoch.end() ? epochIt->second : 0;
+            if (e.abstractionEpoch != currentEpoch) continue;
             if (e.sourceStateHash == e.targetStateHash) continue;
             Key k(e.sourceStateHash, e.actionHash);
             saToTargets[k].first.insert(e.targetStateHash);
